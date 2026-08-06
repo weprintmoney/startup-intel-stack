@@ -1,0 +1,59 @@
+# company-profile.yaml — the single place where company-specific parameters live.
+# Every agent and workflow reads this file. /gtm-init fills it in for you.
+
+company:
+  name: "ACME AI"                  # legal/brand name as used in copy
+  domain: "acme.ai"                # primary web domain (NEVER used as send domain)
+  send_domain: "mail.acme.ai"      # dedicated send subdomain or alt domain
+  one_liner: ""                    # <=20 words, what you do and for whom
+  stage: "pre-seed"                # pre-seed | seed | series-a  (gates which agents run)
+  founded: ""                      # YYYY-MM
+  hq_timezone: "America/Chicago"
+
+people:
+  # Used for sender personas, notification routing, and CODEOWNERS.
+  - name: ""
+    role: "founder"                # founder | sales | marketing | eng
+    email: ""
+    github: ""
+    sender_persona: true           # can outbound email go out under this name?
+
+icp:
+  # Filterable criteria the crawler/pre-filter/qualifier agents apply.
+  verticals: []                    # e.g. ["fintech", "healthcare AI"]
+  company_size: { min: 20, max: 2000 }
+  geographies: ["US"]              # EU contacts are auto-routed to LinkedIn-only (no SMTP)
+  buyer_titles: []                 # e.g. ["VP Engineering", "Head of AI", "CTO"]
+  disqualifiers: []                # hard-fail conditions, e.g. ["direct competitor", "agency"]
+  qualification_thresholds:
+    pre_seed_pass: 60              # rubric score /100 to pass at pre-seed
+    standard_pass: 70
+    copy_pass: 80
+
+competitors:
+  # Drives competitive-signals monitoring and outbound suppression.
+  - name: ""
+    domain: ""
+
+channels:
+  slack_webhook_secret: ""         # name of the GitHub secret holding the webhook (optional)
+  linkedin_handle: ""
+  x_handle: ""
+  blog_path: ""                    # where published content lives, if any
+
+sending:
+  provider: "resend"               # resend | sendgrid | mailgun (see lib/smtp_send)
+  daily_cap: 100
+  send_window: { days: "Mon-Fri", start: "08:00", end: "18:00" }
+  warmup_ramp_days: 28
+
+crm:
+  provider: "none"                 # none | attio | airtable (see lib/crm adapter)
+  api_key_secret: ""               # name of the GitHub secret holding the key
+
+cadences:
+  # Cron schedules (UTC). Stagger these if you fork multiple instances.
+  competitive_signals: "0 4 * * 1"   # Mon 4am
+  aeo_monitoring: "0 5 * * 1"        # Mon 5am
+  weekly_crawl: "0 13 * * 1"         # Mon 8am ET
+  feedback_loop: "0 13 1 * *"        # monthly, 1st
