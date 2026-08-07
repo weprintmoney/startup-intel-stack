@@ -15,7 +15,7 @@ How to run a public launch. This doc is generic and reusable — every launch (p
 1. A launch is won or lost in preparation. Launch day should be ~10% of the total work.
 2. All launches are organic — no paid placements, no agencies. Your currency is early access and a genuinely novel story.
 3. Define the conversion target before anything else: visitor → signup → **activated** (first successful use). Optimize every asset for activation, not views.
-4. Every public number passes claims vetting ([`content-ops/reference/claims-vetted.md`](content-ops/reference/claims-vetted.md)) before it appears in any asset. One debunked claim poisons the whole launch.
+4. Every public number passes claims vetting ([`content-ops/claims-vetted.md`](content-ops/claims-vetted.md)) before it appears in any asset. One debunked claim poisons the whole launch.
 5. You don't get one launch. Every feature, benchmark, and integration is a launch, and each one compounds the audience the last one built.
 
 ## Roles — assign these by name in the launch plan, week 1

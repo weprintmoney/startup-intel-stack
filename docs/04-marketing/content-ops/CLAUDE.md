@@ -12,7 +12,7 @@ These are your constraints, not suggestions. Read all of them before starting.
 
 | File | What it governs |
 |------|----------------|
-| `reference/claims-vetted.md` | The ONLY product claims you may make without flagging for review |
+| `claims-vetted.md` | The ONLY product claims you may make without flagging for review |
 | `reference/taxonomy.md` | Controlled tag vocabulary — all frontmatter tags must come from here |
 | `reference/frontmatter-schemas.md` | Required frontmatter fields by content type |
 | `reference/format-rules.md` | Structure, banned phrases, voice anchors, word counts |
@@ -50,7 +50,7 @@ Confirm before writing a single word:
 - [ ] Content type and target persona selected from `docs/01-market-intelligence/buyer-personas.md`
 - [ ] Primary keyword identified (state it)
 - [ ] Every competitor claim you plan to make is citable to the competitor's own source — if not, drop it or wrap as `> CLAIM TO VERIFY:`
-- [ ] Every product capability claim is in `reference/claims-vetted.md` — if not, wrap as `> CLAIM TO VERIFY:`
+- [ ] Every product capability claim is in `claims-vetted.md` — if not, wrap as `> CLAIM TO VERIFY:`
 
 ## Step 3 — Write the content
 
@@ -117,7 +117,7 @@ Segments come from `reference/taxonomy.md` (which mirrors `icp.verticals` in `co
 
 - The topic is already in `_topic-history.md` with status `published` or `in-review`
 - You cannot find a citation for a competitor claim you want to make
-- `reference/claims-vetted.md` still carries its `SETUP NOTE` (unreviewed) or contains no vetted claims — flag this and halt; content built on unvetted claims is worse than no content
+- `claims-vetted.md` still carries its `SETUP NOTE` (unreviewed) or contains no vetted claims — flag this and halt; content built on unvetted claims is worse than no content
 
 ---
 

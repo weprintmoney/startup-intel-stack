@@ -45,7 +45,7 @@ Draft the personalized multi-touch sequence for leads that passed the qualificat
 
    A wrong claim about a prospect's stack is worse than acknowledging a gap — it kills technical credibility in the first sentence.
 
-4. **Personalize each touch** per the template instructions. Use the lead's `icp_segment` to select vertical framing, pain point, and proof point from the templates and `docs/01-market-intelligence/` docs — sharpened with stack-profile fields where the confidence rules in step 3 allow. Every product claim must be traceable to `docs/04-marketing/content-ops/reference/claims-vetted.md` — the copy-evaluator hard-fails anything it can't trace there.
+4. **Personalize each touch** per the template instructions. Use the lead's `icp_segment` to select vertical framing, pain point, and proof point from the templates and `docs/01-market-intelligence/` docs — sharpened with stack-profile fields where the confidence rules in step 3 allow. Every product claim must be traceable to `docs/04-marketing/content-ops/claims-vetted.md` — the copy-evaluator hard-fails anything it can't trace there.
 
 5. **Write queue files.** Sender comes from config: use the first `people:` entry with `sender_persona: true` in `company-profile.yaml` for `from_name`; use `company.hq_timezone` as the default `recipient_tz`.
    - Email touches (1, 2, 4) → `sends/queue/YYYY-MM-DD-{lead_id}-touch{n}.json` where the date prefix is the **scheduled send date** (touch-1 = today, touch-2 = today+4, touch-4 = today+15):
