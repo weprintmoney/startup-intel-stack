@@ -39,6 +39,14 @@ Designed to degrade gracefully when API keys are absent:
 3. Answer the interview (or point it at your website/LinkedIn/X to draft answers for you).
 4. Add secrets it tells you to add, merge the setup PR, and the crons take over.
 
+## Secrets
+
+See [SECRETS.md](SECRETS.md). Only `ANTHROPIC_API_KEY` is required; everything else is optional and workflows no-op green without it.
+
+## Syncing with upstream
+
+This template is the upstream for all instances. Generic fixes and new capabilities land here first; instances pull them down. If you improve an agent inside your instance, upstream the generic part of the change here so every instance (including the original system this was extracted from) benefits. Instance-specific content — `company-profile.yaml`, drafted docs, `leads/` — never flows upstream.
+
 ## Hard rules (non-negotiable, enforced in workflows)
 
 1. Human approval (PR merge) required before any first email to a contact.

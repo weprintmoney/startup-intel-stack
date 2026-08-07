@@ -1,0 +1,82 @@
+# Weekly lead crawl -> leads/raw/. Tier: seed.
+# Chain: weekly-crawl -> enrichment (which runs dedup + pre-filter first)
+# -> stack-profile -> dedup-review (qualifier-critic + CRM upsert).
+name: Weekly Lead Crawl
+
+on:
+  schedule:
+    - cron: "0 13 * * 1" # keep in sync with cadences.weekly_crawl in company-profile.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write # trigger downstream enrichment workflow
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (stage gate + secrets)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          STAGE=$(yq '.company.stage' company-profile.yaml)
+          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
+          if [ "$(rank "$STAGE")" -lt "$(rank seed)" ]; then
+            echo "::notice::company.stage '$STAGE' is below 'seed' — lead crawl skipped (stage gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — skipping crawl."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.run == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run crawler agent
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }} # optional; agent falls back to CSV export or exits cleanly
+        run: |
+          claude -p "$(cat agents/crawler/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 60
+
+      - name: Commit raw leads
+        if: steps.gate.outputs.run == 'true'
+        id: commit
+        run: |
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          git add leads/raw/
+          if git diff --staged --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "No new raw leads."
+          else
+            git commit -m "crawl: raw leads $(date +%F)
+
+          Agent: crawler
+          Agent-Model: claude-code
+          Triggered-By: weekly-crawl.yml"
+            git pull --rebase origin main && git push
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger enrichment (runs dedup + pre-filter first)
+        if: steps.gate.outputs.run == 'true' && steps.commit.outputs.committed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run enrichment.yml \
+            --repo ${{ github.repository }} \
+            --ref main

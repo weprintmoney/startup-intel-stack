@@ -1,0 +1,84 @@
+# Product & Market Updates — VERTICAL-DEPENDENT, OFF BY DEFAULT.
+# Only useful if your product ships from public GitHub repos and standards bodies /
+# ecosystem partners publish news your content should react to (typical for devtools
+# and infrastructure; not for most other verticals). If that's you, uncomment the
+# cron below; otherwise leave it dispatch-only or delete the file.
+#
+# Weekly sweep of your OWN product's shipped changes (releases/changelogs across your
+# GitHub org) plus standards-body and partner announcements, synthesized into a dated
+# file the content pipeline reads for fresh, reactive material. Runs early Monday so
+# content generation sees fresh product signals.
+#
+# Simplified from a source pipeline with a headless-browser scraping stack and
+# hardcoded org/roadmap paths; here the org is derived from this repo's owner and the
+# beat from company-profile.yaml.
+#
+# Tier: pre-seed (signals run at every tier).
+# Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
+# Optional secrets: SLACK_WEBHOOK_URL (failure notifications).
+name: Product & Market Updates
+
+on:
+  # Uncomment to enable the weekly run once you've confirmed this fits your setup:
+  # schedule:
+  #   - cron: "0 6 * * 1" # Mondays 06:00 UTC — keep in sync with cadences.product_market_updates in company-profile.yaml (add the key when you customize)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  updates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage gate
+        id: gate
+        run: |
+          STAGE=$(yq '.company.stage' company-profile.yaml)
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+          # signals run at every tier; no skip
+
+      - name: Run product & market updates agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ORG: ${{ github.repository_owner }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY not set — skipping"; exit 0; fi
+          npm install -g @anthropic-ai/claude-code
+          claude -p "Produce this week's product & market updates file.
+          1. Read company-profile.yaml (one_liner, icp.verticals) and docs/05-product/
+             for roadmap context.
+          2. Own-product sweep: list public repos in the GitHub org \$GITHUB_ORG
+             (gh repo list) and collect releases and CHANGELOG entries from the last
+             7 days. Prefer changelog files over the releases API, which returns
+             empty on quiet weeks. Cross-check docs/05-product/ for milestones newly
+             marked shipped.
+          3. Ecosystem sweep: check the standards bodies and named partners relevant
+             to our category (derive from docs/05-product/ and positioning docs) for
+             announcements from the last 7 days that our content should react to.
+          4. No file = no signal: if nothing material, exit cleanly without writing.
+          5. Otherwise write
+             docs/01-market-intelligence/signals/$(date +%F)-product-market-updates.md
+             with standard frontmatter, inline citations, and a '## Content angles'
+             section suggesting reactive pieces for the content pipeline;
+             git config user.name 'gtm-agent'; git config user.email
+             'agent@users.noreply.github.com'; branch product-market-updates/$(date +%F);
+             commit with the trailers 'Agent: ci' and
+             'Triggered-By: product-market-updates.yml'; push; open a PR titled
+             'product & market updates: $(date +%F)'." \
+          --allowedTools "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch"
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then echo "SLACK_WEBHOOK_URL not set — skipping"; exit 0; fi
+          curl -sS -X POST "$SLACK_WEBHOOK_URL" -H 'Content-type: application/json' \
+            -d "{\"text\":\"Workflow failed: ${{ github.workflow }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"

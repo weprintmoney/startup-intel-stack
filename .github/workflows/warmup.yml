@@ -1,0 +1,184 @@
+# Seed-address email warmup. Tier: series-a. Manual trigger only.
+# Preferred warm-up path is low-volume real sends (sequence-enrollment with
+# max_leads 10-15); this seed-address loop is a fallback. Ramp length comes
+# from sending.warmup_ramp_days in company-profile.yaml. Sends go through
+# lib/smtp_send.py, so the daily cap, send-window, and the
+# never-send-from-primary-domain assertion all still apply.
+name: Email Warmup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  warmup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write # set WARMUP_COMPLETE repo variable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (stage gate + secrets)
+        id: gate
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
+          WARMUP_SEED_ADDRESSES: ${{ secrets.WARMUP_SEED_ADDRESSES }}
+        run: |
+          STAGE=$(yq '.company.stage' company-profile.yaml)
+          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
+          if [ "$(rank "$STAGE")" -lt "$(rank series-a)" ]; then
+            echo "::notice::company.stage '$STAGE' is below 'series-a' — warmup skipped (stage gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          PROVIDER=$(yq '.sending.provider // "resend"' company-profile.yaml)
+          case "$PROVIDER" in
+            resend)   KEY="$RESEND_API_KEY";;
+            sendgrid) KEY="$SENDGRID_API_KEY";;
+            mailgun)  KEY="$MAILGUN_API_KEY";;
+            *)        KEY="";;
+          esac
+          if [ -z "$KEY" ]; then
+            echo "::notice::No API key secret set for sending.provider '$PROVIDER' — skipping warmup."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$WARMUP_SEED_ADDRESSES" ]; then
+            echo "::notice::WARMUP_SEED_ADDRESSES secret not set (comma-separated list) — skipping warmup."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install requests pyyaml
+
+      - name: Determine warmup day and run
+        if: steps.gate.outputs.run == 'true'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
+          SEND_FROM: ${{ secrets.SEND_FROM }} # optional; default outreach@{send_domain}
+          WARMUP_SEED_ADDRESSES: ${{ secrets.WARMUP_SEED_ADDRESSES }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, subprocess, sys
+          from datetime import date
+          from pathlib import Path
+
+          sys.path.insert(0, "lib")
+          import config
+          import smtp_send
+
+          profile = config.load()
+          company = config.get("company.name", "our", profile)
+          ramp_days = int(config.get("sending.warmup_ramp_days", 28, profile))
+
+          log_dir = Path("warmup/log")
+          log_dir.mkdir(parents=True, exist_ok=True)
+          existing_logs = sorted(log_dir.glob("*.json"))
+          day_number = len(existing_logs) + 1
+          today = date.today().isoformat()
+
+          print(f"Warmup day {day_number} of {ramp_days}")
+
+          def mark_complete():
+              subprocess.run([
+                  "gh", "api",
+                  f"repos/{os.environ['REPO']}/actions/variables/WARMUP_COMPLETE",
+                  "-X", "PATCH", "-f", "name=WARMUP_COMPLETE", "-f", "value=true"
+              ], check=False)
+
+          # Self-terminate after the configured ramp
+          if day_number > ramp_days:
+              print(f"Warmup complete (day {ramp_days} passed). Setting WARMUP_COMPLETE=true.")
+              mark_complete()
+              sys.exit(0)
+
+          # Daily cap by phase (first quarter / first half / remainder)
+          if day_number <= ramp_days // 4:
+              daily_cap = 20
+          elif day_number <= ramp_days // 2:
+              daily_cap = 40
+          else:
+              daily_cap = 50
+
+          seed_addresses = [
+              a.strip()
+              for a in os.environ.get("WARMUP_SEED_ADDRESSES", "").split(",")
+              if a.strip()
+          ]
+
+          results = []
+          sent = 0
+          for addr in seed_addresses[:daily_cap]:
+              try:
+                  r = smtp_send.send_email(
+                      to=addr,
+                      subject=f"{company} warmup — day {day_number}",
+                      body=(
+                          f"This is a warmup email (day {day_number}). "
+                          "Please do not reply."
+                      ),
+                  )
+              except smtp_send.DailyCap as e:
+                  print(f"Daily cap reached: {e}")
+                  break
+              except smtp_send.UnsafeSendDomain as e:
+                  print(f"HARD STOP — unsafe send domain: {e}")
+                  sys.exit(1)
+              results.append({"to": addr, "success": r["success"], "error": r.get("error")})
+              if r["success"]:
+                  sent += 1
+
+          log_path = log_dir / f"{today}.json"
+          log_path.write_text(json.dumps({
+              "date": today,
+              "day_number": day_number,
+              "daily_cap": daily_cap,
+              "sent": sent,
+              "results": results,
+          }, indent=2))
+          print(f"Sent {sent}/{daily_cap} warmup emails. Log: {log_path}")
+
+          if day_number == ramp_days:
+              print(f"Day {ramp_days} complete. Setting WARMUP_COMPLETE=true.")
+              mark_complete()
+          PYEOF
+
+      - name: Commit warmup log
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          for p in warmup/log sends/daily-count.json; do
+            if [ -e "$p" ]; then git add "$p"; fi
+          done
+          if git diff --staged --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "warmup: log $(date +%F)
+
+          Agent: warmup
+          Agent-Model: none
+          Triggered-By: warmup.yml"
+            for i in 1 2 3 4 5; do
+              if git push; then break; fi
+              echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+              git pull --rebase origin main
+              sleep $((i * 2))
+            done
+          fi

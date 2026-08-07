@@ -1,0 +1,91 @@
+# Monthly incident-to-eval synthesis for the outreach pipeline. Tier: seed.
+# Mines merged approval PRs (human edits = corrections), evaluator verdicts,
+# rejected drafts, and send outcomes for recurring patterns, then (a) writes
+# a monthly report to feedback/reports/ (committed by this workflow) and
+# (b) opens a rubric/template proposal PR against
+# docs/03-commercial-revenue/ when a pattern clears the 3x evidence bar.
+name: Monthly Feedback Loop
+
+on:
+  schedule:
+    # 1st of the month. Keep in sync with cadences.feedback_loop in
+    # company-profile.yaml.
+    - cron: "0 13 1 * *"
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Days of history to analyze"
+        default: "35"
+
+permissions:
+  contents: read
+
+jobs:
+  feedback-loop:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write # agent opens the rubric/template proposal PR
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # agent diffs bot vs human commits on approval PRs
+
+      - name: Preflight (stage gate + secrets)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          STAGE=$(yq '.company.stage' company-profile.yaml)
+          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
+          if [ "$(rank "$STAGE")" -lt "$(rank seed)" ]; then
+            echo "::notice::company.stage '$STAGE' is below 'seed' — feedback loop skipped (stage gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — skipping feedback loop."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.run == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run feedback-loop agent
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          LOOKBACK_DAYS: ${{ inputs.lookback_days || '35' }}
+        run: |
+          claude -p "$(cat agents/feedback-loop/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
+            --max-turns 100
+
+      # The agent writes the report but never commits to main itself; the
+      # proposal PR branch (if any) is the one git operation it owns.
+      - name: Commit monthly report
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          git checkout main
+          if [ -z "$(git status --porcelain feedback/reports/)" ]; then
+            echo "No report written this month (no data in window)."
+            exit 0
+          fi
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          git add feedback/reports/
+          git commit -m "feedback-loop: monthly report $(date +%Y-%m)
+
+          Agent: feedback-loop
+          Agent-Model: claude-code
+          Triggered-By: feedback-loop.yml"
+          for i in 1 2 3 4 5; do
+            if git push origin main; then break; fi
+            echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+            git pull --rebase origin main
+            sleep $((i * 2))
+          done

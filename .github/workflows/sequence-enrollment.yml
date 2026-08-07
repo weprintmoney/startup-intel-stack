@@ -1,0 +1,227 @@
+# Draft personalized touches for pending leads and open an approval PR.
+# Tier: series-a. Merging the PR is the human approval — nothing sends
+# until the queue files land on main and smtp-send picks them up.
+name: Sequence Enrollment
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_leads:
+        description: "Max leads to draft in this batch (keep low during warm-up)"
+        default: "15"
+      skip_crm_gate:
+        type: boolean
+        default: false
+        description: "Skip the CRM sequence_status=pending check. Use while CRM custom fields are unprovisioned. Source of truth becomes leads/critic/*.json (PASS or warmup_promoted)."
+
+permissions:
+  contents: read
+
+jobs:
+  enroll:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (stage gate + secrets + grounding docs)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          STAGE=$(yq '.company.stage' company-profile.yaml)
+          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
+          if [ "$(rank "$STAGE")" -lt "$(rank series-a)" ]; then
+            echo "::notice::company.stage '$STAGE' is below 'series-a' — sequence enrollment skipped (stage gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — skipping enrollment."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail-closed: never draft without templates and rubric on disk.
+          MISSING=""
+          for f in docs/03-commercial-revenue/sequences/touch-1.md \
+                   docs/03-commercial-revenue/rubrics/copy-evaluator.md; do
+            [ -f "$f" ] || MISSING="$MISSING $f"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::warning::Missing grounding docs:$MISSING — skipping enrollment (fail-closed)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "crm_secret=$(yq '.crm.api_key_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install requests pyyaml
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.run == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run enrollment agent
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CRM_API_KEY: ${{ secrets[steps.gate.outputs.crm_secret || 'CRM_API_KEY'] }}
+          MAX_LEADS: ${{ inputs.max_leads }}
+          SKIP_CRM_GATE: ${{ inputs.skip_crm_gate }}
+        run: |
+          # Prepend an explicit imperative — headless agents have been
+          # observed printing a menu of what they *could* do instead of
+          # doing it. The CLAUDE.md's "Execution contract" alone isn't
+          # always sufficient.
+          PROMPT=$'START NOW. Read the env vars (SKIP_CRM_GATE, MAX_LEADS), select eligible leads, and draft the queue files. Do not print options, do not ask what to do, do not offer a status check first. This is your batch run — write drafts to sends/queue/ and sends/linkedin/, then print a summary and exit.\n\n---\n\n'$(cat agents/sequence-enrollment/CLAUDE.md)
+          claude -p "$PROMPT" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 60
+
+      - name: Check for drafts
+        if: steps.gate.outputs.run == 'true'
+        id: drafts
+        run: |
+          if git diff --quiet && [ -z "$(git status --porcelain sends/)" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "No queue files drafted — nothing to enroll."
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Gate: blind evaluator scores each lead's touch-1 draft against the
+      # copy-evaluator rubric. Separate Claude invocation — it never sees the
+      # drafting agent's reasoning, only the drafts, the enrichment records,
+      # and the rubric.
+      - name: Run copy-evaluator gate
+        if: steps.gate.outputs.run == 'true' && steps.drafts.outputs.any == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Same START-NOW prepend pattern as enrollment: without it the
+          # evaluator has printed what it *would* do without writing the
+          # verdicts file, tripping the downstream fail-closed step.
+          PROMPT=$'START NOW. Score every touch-1 draft under sends/queue/ against the copy-evaluator rubric and write the batch verdict to sends/verdicts/YYYY-MM-DD.json (today, UTC). LinkedIn drafts under sends/linkedin/ are exempt and should NOT be scored. Do not print options, do not ask what to do — begin scoring and write the verdicts file.\n\n---\n\n'$(cat agents/copy-evaluator/CLAUDE.md)
+          claude -p "$PROMPT" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 40
+
+      # Deterministic maker/checker split: the evaluator only writes verdicts;
+      # this step moves FAILed leads' drafts to sends/rejected/ so they still
+      # appear in the PR diff (rescuable) but never land in the send queue.
+      # Fail-closed: missing verdicts file kills the run before any PR opens.
+      - name: Move failed drafts out of the queue
+        if: steps.gate.outputs.run == 'true' && steps.drafts.outputs.any == 'true'
+        run: |
+          python - <<'PYEOF'
+          import json, sys
+          from pathlib import Path
+          from datetime import date, datetime, timezone
+
+          vfile = Path(f"sends/verdicts/{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.json")
+          if not vfile.exists():
+              print(f"FAIL-CLOSED: {vfile} not found — evaluator produced no verdicts; refusing to open an ungated PR.")
+              sys.exit(1)
+
+          verdicts = json.loads(vfile.read_text())
+          failed_leads = {v["lead_id"] for v in verdicts if v.get("decision") != "PASS" and v.get("lead_id")}
+
+          rejected_dir = Path("sends/rejected")
+          moved = 0
+          for d in (Path("sends/queue"), Path("sends/linkedin")):
+              if not d.exists():
+                  continue
+              for f in list(d.glob("*.json")):
+                  try:
+                      lead_id = json.loads(f.read_text()).get("lead_id", "")
+                  except Exception:
+                      continue
+                  if lead_id in failed_leads:
+                      rejected_dir.mkdir(parents=True, exist_ok=True)
+                      f.rename(rejected_dir / f.name)
+                      moved += 1
+
+          # Any drafted email lead with no verdict is fail-closed. LinkedIn
+          # drafts (sends/linkedin/) are exempt from copy-evaluator scoring
+          # because they are short connect notes that don't fit the
+          # email-rubric criteria, and they never send automatically — a
+          # human reviews and sends them from their LinkedIn account.
+          unverdicted = []
+          scored = {v.get("lead_id") for v in verdicts}
+          queue_dir = Path("sends/queue")
+          if queue_dir.exists():
+              for f in queue_dir.glob("*.json"):
+                  try:
+                      lid = json.loads(f.read_text()).get("lead_id", "")
+                  except Exception:
+                      continue
+                  if lid and lid not in scored:
+                      unverdicted.append(lid)
+          if unverdicted:
+              print(f"FAIL-CLOSED: email drafts without verdicts: {sorted(set(unverdicted))}")
+              sys.exit(1)
+
+          print(f"Failed leads: {len(failed_leads)}; draft files moved to sends/rejected/: {moved}")
+
+          # Build PR body with the pass/fail table.
+          rows = []
+          for v in sorted(verdicts, key=lambda x: x.get("decision", "")):
+              mark = "PASS" if v.get("decision") == "PASS" else "FAIL"
+              fails = ", ".join(v.get("failing_criteria", []) + v.get("hard_block_hits", [])) or "-"
+              rows.append(f"| {mark} | {v.get('lead_email','')} | {v.get('normalized_score','')}/100 | {fails} |")
+
+          body = f"""## Review before merging
+
+          Each file under `sends/queue/` is one email that WILL BE SENT after
+          merge (on its scheduled date, via the configured email provider).
+          Files under `sends/linkedin/` are LinkedIn touches for manual sending.
+
+          ## Copy-evaluator verdicts ({date.today().isoformat()})
+
+          | Verdict | Lead | Score | Failing criteria |
+          |---|---|---|---|
+          {chr(10).join(rows)}
+
+          FAILed leads' drafts were moved to `sends/rejected/` — they will NOT send.
+          To rescue one: fix the copy per the `feedback` field in
+          `sends/verdicts/{date.today().isoformat()}.json`, move the files back to
+          `sends/queue/` on this branch, then merge.
+
+          **To approve:** review the copy in the diff, remove any leads you don't
+          want (delete their queue files from this branch), then merge.
+
+          **To reject the whole batch:** close this PR.
+          """
+          Path("/tmp/pr-body.md").write_text("\n".join(line.lstrip() for line in body.splitlines()))
+          PYEOF
+
+      - name: Open approval PR
+        if: steps.gate.outputs.run == 'true' && steps.drafts.outputs.any == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$(git status --porcelain sends/)" ]; then
+            echo "All drafts failed the copy gate and nothing remains — check sends/verdicts/."
+          fi
+          BRANCH="enroll/$(date +%Y-%m-%d-%H%M)"
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add sends/
+          git commit -m "enroll: draft batch $(date +%F)
+
+          Agent: sequence-enrollment
+          Agent-Model: claude-code
+          Triggered-By: sequence-enrollment.yml"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "Approve outreach batch $(date +%F)" \
+            --body-file /tmp/pr-body.md

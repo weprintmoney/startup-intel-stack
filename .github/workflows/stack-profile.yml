@@ -1,0 +1,99 @@
+# Stack/architecture profiling for enriched leads. Tier: seed.
+# Triggered by enrichment.yml after a batch completes, or manually.
+name: Stack Profile
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_leads:
+        description: "Max leads to profile in this run"
+        type: string
+        default: "15"
+      skip_downstream:
+        description: "Skip triggering dedup-review after profiling"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  stack-profile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write # trigger downstream dedup-review workflow
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (stage gate + secrets)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          STAGE=$(yq '.company.stage' company-profile.yaml)
+          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
+          if [ "$(rank "$STAGE")" -lt "$(rank seed)" ]; then
+            echo "::notice::company.stage '$STAGE' is below 'seed' — stack profiling skipped (stage gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — skipping stack profiling."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.run == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Install Python dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install exa-py==2.14.0 pyyaml
+
+      - name: Run stack-profile agent
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }} # optional; agent falls back to web search
+          MAX_LEADS: ${{ inputs.max_leads || '15' }}
+        run: |
+          claude -p "$(cat agents/stack-profile/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,WebSearch" \
+            --max-turns 80
+
+      - name: Commit stack profiles
+        if: steps.gate.outputs.run == 'true'
+        id: commit
+        run: |
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          git add leads/stack-profiles/
+          if git diff --staged --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "No new stack profiles."
+          else
+            git commit -m "stack-profile: architecture inference $(date +%F)
+
+          Agent: stack-profile
+          Agent-Model: claude-code
+          Triggered-By: stack-profile.yml"
+            # Push race: concurrent workflows push to main. Retry with rebase.
+            for i in 1 2 3 4 5; do
+              if git push; then break; fi
+              echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+              git pull --rebase origin main
+              sleep $((i * 2))
+            done
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger dedup-review
+        if: steps.gate.outputs.run == 'true' && inputs.skip_downstream != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run dedup-review.yml \
+            --repo ${{ github.repository }} \
+            --ref main

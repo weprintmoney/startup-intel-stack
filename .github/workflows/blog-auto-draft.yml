@@ -1,0 +1,91 @@
+# Blog Auto-Draft. Fires when the blog ideas backlog changes (or on manual dispatch),
+# picks one idea, drafts a full post per the content-ops runbook, and opens a PR with
+# the draft in docs/04-marketing/content-ops/drafts/queue/ for human review.
+# Publishing to your site is a human step after review.
+#
+# Tier: seed (content ops). Exits with a notice at pre-seed.
+# Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
+# Optional secrets: SLACK_WEBHOOK_URL (draft-ready + failure notifications).
+name: Blog Auto-Draft
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/04-marketing/content-ops/drafts/_blog-ideas-backlog.md"
+  workflow_dispatch:
+    inputs:
+      idea_override:
+        description: "Specific idea to draft (leave blank to pick from backlog)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage gate
+        id: gate
+        run: |
+          STAGE=$(yq '.company.stage' company-profile.yaml)
+          if [ "$STAGE" = "pre-seed" ]; then
+            echo "::notice::Blog Auto-Draft is a seed-tier workflow; company.stage is pre-seed — skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Draft blog post
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IDEA_OVERRIDE: ${{ github.event.inputs.idea_override || '' }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY not set — skipping"; exit 0; fi
+          npm install -g @anthropic-ai/claude-code
+          claude -p "Run the content generation runbook at
+          docs/04-marketing/content-ops/CLAUDE.md to produce ONE blog draft.
+          If the env var IDEA_OVERRIDE is non-empty, draft that idea; otherwise pick
+          the top undrafted idea from
+          docs/04-marketing/content-ops/drafts/_blog-ideas-backlog.md.
+          Respect every hard stop in the runbook (especially: halt if
+          reference/claims-vetted.md is unreviewed or empty).
+          Write the draft to docs/04-marketing/content-ops/drafts/queue/<slug>.md.
+          Then: git config user.name 'gtm-agent'; git config user.email
+          'agent@users.noreply.github.com'; branch blog-draft/$(date +%F)-<slug>;
+          commit with the trailers 'Agent: ci' and 'Triggered-By: blog-auto-draft.yml';
+          push; open a PR titled 'blog-draft: $(date +%F) <title>' using the PR body
+          template from the runbook (claims to verify listed at the top)." \
+          --allowedTools "Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch"
+
+      - name: Notify draft ready
+        if: steps.gate.outputs.run == 'true' && success()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then echo "SLACK_WEBHOOK_URL not set — skipping"; exit 0; fi
+          PR_URL=$(gh pr list --search "blog-draft: $(date +%F)" \
+            --repo "${{ github.repository }}" --json url --jq '.[0].url' 2>/dev/null || echo "")
+          [ -z "$PR_URL" ] && exit 0
+          curl -sS -X POST "$SLACK_WEBHOOK_URL" -H 'Content-type: application/json' \
+            -d "{\"text\":\"Blog draft ready for review: $PR_URL\"}"
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then echo "SLACK_WEBHOOK_URL not set — skipping"; exit 0; fi
+          curl -sS -X POST "$SLACK_WEBHOOK_URL" -H 'Content-type: application/json' \
+            -d "{\"text\":\"Workflow failed: ${{ github.workflow }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"

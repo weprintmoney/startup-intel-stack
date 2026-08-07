@@ -29,6 +29,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }} # optional; agent degrades to web search if absent
         run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY not set — skipping"; exit 0; fi
           npm install -g @anthropic-ai/claude-code
           claude -p "Read company-profile.yaml and docs/01-market-intelligence/competitive-landscape.md.
           For each competitor in the config, research the last 7 days: launches, pricing changes,

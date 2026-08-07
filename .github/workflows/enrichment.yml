@@ -1,0 +1,253 @@
+# Dedup -> pre-filter -> enrichment. Tier: seed.
+# Consolidates the pre-enrichment gates (CRM name-dedup, hard ICP filters)
+# with enrichment itself so cheap filters always run before API credits are
+# spent. Triggered by weekly-crawl / event-ingest, or manually.
+name: Lead Enrichment
+
+on:
+  workflow_dispatch:
+    inputs:
+      retry_not_found:
+        description: "Retry email lookup for leads marked email_status: not_found (no Apollo re-spend)"
+        type: boolean
+        default: false
+      signal_refresh:
+        description: "Add signal research (web search only, no API spend) to existing enriched leads missing signal fields"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write # re-dispatch + trigger stack-profile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (stage gate + secrets + config)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          STAGE=$(yq '.company.stage' company-profile.yaml)
+          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
+          if [ "$(rank "$STAGE")" -lt "$(rank seed)" ]; then
+            echo "::notice::company.stage '$STAGE' is below 'seed' — enrichment skipped (stage gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — skipping enrichment."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "crm_secret=$(yq '.crm.api_key_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install requests pyyaml exa-py==2.14.0
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.run == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      # Stage 1 — CRM name-dedup (skipped in retry/refresh modes; those
+      # operate on already-enriched files). Degrades to the local store if
+      # the configured CRM key is absent.
+      - name: Dedup against CRM
+        if: steps.gate.outputs.run == 'true' && inputs.retry_not_found != true && inputs.signal_refresh != true
+        env:
+          CRM_API_KEY: ${{ secrets[steps.gate.outputs.crm_secret || 'CRM_API_KEY'] }}
+        run: |
+          PROVIDER=$(yq '.crm.provider // "none"' company-profile.yaml)
+          if [ "$PROVIDER" != "none" ] && [ -z "$CRM_API_KEY" ]; then
+            echo "::warning::crm.provider is '$PROVIDER' but its API key secret is unset — deduping against the local store only."
+            export CRM_PROVIDER=none
+          fi
+          python - <<'PYEOF'
+          import json, sys
+          from pathlib import Path
+
+          sys.path.insert(0, "lib")
+          import crm
+
+          raw_dir = Path("leads/raw")
+          deduped_dir = Path("leads/deduped")
+          deduped_dir.mkdir(parents=True, exist_ok=True)
+
+          for raw_path in sorted(raw_dir.glob("*.json")):
+              out_path = deduped_dir / raw_path.name
+              if out_path.exists():
+                  print(f"Already deduped: {raw_path.name}")
+                  continue
+
+              try:
+                  leads = json.loads(raw_path.read_text())
+              except Exception as e:
+                  print(f"Skipping {raw_path}: {e}")
+                  continue
+              if not isinstance(leads, list):
+                  leads = [leads]
+
+              survivors, skipped = [], 0
+              for lead in leads:
+                  name = lead.get("contact_name", "")
+                  company = lead.get("company_name", "")
+                  if not name:
+                      lead["prior_contact"] = False
+                      survivors.append(lead)
+                      continue
+                  matches = crm.search_by_name(name)
+                  if matches:
+                      skipped += 1
+                      print(f"Skipping {name} at {company}: already in CRM ({len(matches)} record(s))")
+                  else:
+                      lead["prior_contact"] = False
+                      survivors.append(lead)
+
+              out_path.write_text(json.dumps(survivors, indent=2))
+              print(f"\nDedup summary {raw_path.name}")
+              print(f"  Input:   {len(leads)} leads")
+              print(f"  Skipped: {skipped} (already in CRM)")
+              print(f"  Output:  {len(survivors)} leads -> {out_path}")
+          PYEOF
+
+      # Stage 2 — pre-filter (hard ICP gates, no API spend)
+      - name: Run pre-filter agent
+        if: steps.gate.outputs.run == 'true' && inputs.retry_not_found != true && inputs.signal_refresh != true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat agents/pre-filter/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 40
+
+      # Stage 3 — enrichment (email finding + signal research)
+      - name: Run enrichment agent
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }} # optional
+          APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }} # optional
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }} # optional; agent falls back to web search
+          RETRY_NOT_FOUND: ${{ inputs.retry_not_found }}
+          SIGNAL_REFRESH: ${{ inputs.signal_refresh }}
+        run: |
+          claude -p "$(cat agents/enrichment/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,WebSearch" \
+            --max-turns 200
+
+      - name: Commit pipeline output
+        if: steps.gate.outputs.run == 'true'
+        id: commit
+        run: |
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          git add leads/deduped/ leads/pre-filtered/ leads/enriched/
+          if git diff --staged --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "enrich: dedup + pre-filter + enriched leads $(date +%F)
+
+          Agent: enrichment
+          Agent-Model: claude-code
+          Triggered-By: enrichment.yml"
+            # Push race: concurrent workflows push to main. Retry with rebase.
+            for i in 1 2 3 4 5; do
+              if git push; then break; fi
+              echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+              git pull --rebase origin main
+              sleep $((i * 2))
+            done
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The agent processes at most 40 leads per run. If it made progress and
+      # work remains, re-dispatch with the same inputs to continue the batch.
+      # No progress + work remaining means something is wrong — don't loop.
+      - name: Re-dispatch if work remains
+        id: redispatch
+        if: steps.gate.outputs.run == 'true' && steps.commit.outputs.committed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNAL_REFRESH: ${{ inputs.signal_refresh }}
+          RETRY_NOT_FOUND: ${{ inputs.retry_not_found }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, subprocess
+          from pathlib import Path
+
+          signal_refresh = os.environ.get("SIGNAL_REFRESH") == "true"
+          remaining = 0
+
+          def suppressed_sets():
+              emails, domains = set(), set()
+              p = Path("suppression/list.jsonl")
+              if p.exists():
+                  for line in p.read_text().splitlines():
+                      if line.strip():
+                          r = json.loads(line)
+                          if r.get("email"):
+                              emails.add(r["email"].lower())
+                          if r.get("domain"):
+                              domains.add(r["domain"].lower())
+              return emails, domains
+
+          if signal_refresh:
+              SIGNALS = ("pain_points", "event_date", "funding_date",
+                         "hiring_signal", "product_launch_date", "rfp_status")
+              sup_emails, sup_domains = suppressed_sets()
+              seen = set()
+              for f in Path("leads/enriched").glob("*.json"):
+                  for lead in json.loads(f.read_text()):
+                      email = (lead.get("email") or "").lower()
+                      if not email or lead.get("email_status") != "deliverable":
+                          continue
+                      if email in seen or email in sup_emails:
+                          continue
+                      if email.split("@")[-1] in sup_domains:
+                          continue
+                      seen.add(email)
+                      if not any(k in lead for k in SIGNALS) and "signals_checked" not in lead:
+                          remaining += 1
+          else:
+              enriched = {p.stem for p in Path("leads/enriched").glob("*.json")}
+              remaining = sum(
+                  1 for p in Path("leads/pre-filtered").glob("*.json")
+                  if not p.stem.endswith("-rejects") and p.stem not in enriched
+              )
+
+          print(f"remaining work items: {remaining}")
+          gh_out = os.environ.get("GITHUB_OUTPUT")
+          if gh_out:
+              with open(gh_out, "a") as f:
+                  f.write(f"remaining={remaining}\n")
+          if remaining > 0:
+              args = ["gh", "workflow", "run", "enrichment.yml",
+                      "--repo", os.environ["GITHUB_REPOSITORY"], "--ref", "main"]
+              if signal_refresh:
+                  args += ["-f", "signal_refresh=true"]
+              if os.environ.get("RETRY_NOT_FOUND") == "true":
+                  args += ["-f", "retry_not_found=true"]
+              subprocess.run(args, check=True)
+              print("re-dispatched enrichment to continue")
+          PYEOF
+
+      - name: Trigger stack-profile
+        if: steps.gate.outputs.run == 'true' && steps.commit.outputs.committed == 'true' && steps.redispatch.outputs.remaining == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run stack-profile.yml \
+            --repo ${{ github.repository }} \
+            --ref main

@@ -1,0 +1,91 @@
+# Parse an event attendee list into leads/raw/. Tier: seed. Manual trigger.
+name: Event Ingest
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_file:
+        description: "Path to the event attendee file in the repo (CSV or XLSX). Example: leads/sources/my-conference-2026.xlsx"
+        required: true
+        type: string
+      event_slug:
+        description: "Short kebab-case label for this event. Used in the output filename. Example: my-conference-2026"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  event-ingest:
+    name: Parse and classify event attendees
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write # trigger downstream enrichment workflow
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (stage gate + secrets)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          STAGE=$(yq '.company.stage' company-profile.yaml)
+          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
+          if [ "$(rank "$STAGE")" -lt "$(rank seed)" ]; then
+            echo "::notice::company.stage '$STAGE' is below 'seed' — event ingest skipped (stage gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — skipping event ingest."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.run == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run event-ingest agent
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVENT_FILE: ${{ inputs.event_file }}
+          EVENT_SLUG: ${{ inputs.event_slug }}
+        run: |
+          claude -p "$(cat agents/event-ingest/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,WebSearch" \
+            --max-turns 40
+
+      - name: Commit results
+        if: steps.gate.outputs.run == 'true'
+        id: commit
+        run: |
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          git add leads/raw/
+          if git diff --staged --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "No leads produced."
+          else
+            git commit -m "event-ingest: ${{ inputs.event_slug }} $(date +%F)
+
+          Agent: event-ingest
+          Agent-Model: claude-code
+          Triggered-By: event-ingest.yml"
+            git pull --rebase origin main && git push
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Chain: enrichment.yml runs dedup + pre-filter before spending
+      # enrichment credits, then triggers stack-profile -> dedup-review.
+      - name: Trigger enrichment
+        if: steps.gate.outputs.run == 'true' && steps.commit.outputs.committed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run enrichment.yml \
+            --repo ${{ github.repository }} \
+            --ref main

@@ -1,0 +1,181 @@
+# Poll the outreach inbox for replies. Tier: series-a.
+# Hard rule: pause-on-reply — the moment a reply is detected, the contact's
+# sequence_status is set to paused in the CRM and no further automated
+# sends happen. Unsubscribe requests are auto-suppressed.
+name: Reply Monitor
+
+on:
+  schedule:
+    # Hourly sweep on business days. Keep this at least as frequent as the
+    # smtp-send cron so replies pause sequences before the next send batch.
+    - cron: "0 8-23 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (stage gate + IMAP secrets + config)
+        id: gate
+        env:
+          IMAP_HOST: ${{ secrets.IMAP_HOST }}
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
+        run: |
+          STAGE=$(yq '.company.stage' company-profile.yaml)
+          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
+          if [ "$(rank "$STAGE")" -lt "$(rank series-a)" ]; then
+            echo "::notice::company.stage '$STAGE' is below 'series-a' — reply monitoring skipped (stage gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$IMAP_HOST" ] || [ -z "$IMAP_USER" ] || [ -z "$IMAP_PASSWORD" ]; then
+            echo "::notice::IMAP_HOST / IMAP_USER / IMAP_PASSWORD not fully set — skipping reply monitoring."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "crm_secret=$(yq '.crm.api_key_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
+          echo "webhook_secret=$(yq '.channels.slack_webhook_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install requests pyyaml
+
+      - name: Poll for replies
+        if: steps.gate.outputs.run == 'true'
+        env:
+          IMAP_HOST: ${{ secrets.IMAP_HOST }}
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
+          CRM_API_KEY: ${{ secrets[steps.gate.outputs.crm_secret || 'CRM_API_KEY'] }}
+          SLACK_WEBHOOK_URL: ${{ secrets[steps.gate.outputs.webhook_secret || 'SLACK_WEBHOOK_URL'] }}
+          SUPPRESSION_LIST_PATH: suppression/list.jsonl
+        run: |
+          PROVIDER=$(yq '.crm.provider // "none"' company-profile.yaml)
+          if [ "$PROVIDER" != "none" ] && [ -z "$CRM_API_KEY" ]; then
+            echo "::warning::crm.provider is '$PROVIDER' but its API key secret is unset — updating the local store only."
+            export CRM_PROVIDER=none
+          fi
+          python - <<'PYEOF'
+          import json, os, sys, urllib.request
+
+          sys.path.insert(0, "lib")
+          import imap_poll
+          import crm
+          import suppression
+
+          UNSUBSCRIBE_KEYWORDS = ["unsubscribe", "opt out", "opt-out", "remove me", "take me off"]
+
+          def is_unsubscribe(reply: dict) -> bool:
+              haystack = (
+                  reply.get("subject", "") + " " + reply.get("body_snippet", "")
+              ).lower()
+              return any(kw in haystack for kw in UNSUBSCRIBE_KEYWORDS)
+
+          def notify(text: str) -> None:
+              url = os.environ.get("SLACK_WEBHOOK_URL")
+              if not url:
+                  return
+              req = urllib.request.Request(
+                  url,
+                  data=json.dumps({"text": text}).encode(),
+                  headers={"Content-Type": "application/json"},
+              )
+              try:
+                  urllib.request.urlopen(req, timeout=10)
+              except Exception as e:
+                  print(f"Notification failed: {e}")
+
+          replies = imap_poll.check_replies(since_hours=2)
+          if not replies:
+              print("No new replies detected.")
+              sys.exit(0)
+
+          for reply in replies:
+              from_addr = reply.get("from", "")
+              subject = reply.get("subject", "")
+              date_str = reply.get("date", "")
+              print(f"Reply detected: {from_addr} — {subject}")
+
+              email = from_addr.split("<")[-1].rstrip(">").strip() if "<" in from_addr else from_addr
+              contact = crm.get_contact(email)
+              contact_id = contact.get("id") if contact else None
+
+              if is_unsubscribe(reply):
+                  # Auto-suppress and close out cleanly
+                  try:
+                      suppression.add(email, "unsubscribed", "reply-monitor")
+                      print(f"Suppressed (unsubscribe): {email}")
+                  except Exception as e:
+                      print(f"Suppression error: {e}")
+                  if contact_id:
+                      try:
+                          crm.set_field(contact_id, "suppressed", True)
+                          crm.set_field(contact_id, "sequence_status", "paused")
+                          crm.log_interaction(
+                              contact_id,
+                              f"Unsubscribe request received on {date_str}. Contact suppressed. Sequence stopped."
+                          )
+                      except Exception as e:
+                          print(f"CRM update error: {e}")
+                  notify(
+                      f":no_entry: Unsubscribe request — contact suppressed\n"
+                      f"From: {from_addr}\nDate: {date_str}\n"
+                      f"Added to suppression list. No further sends."
+                  )
+              else:
+                  # Normal reply — pause sequence, notify
+                  if contact_id:
+                      try:
+                          crm.set_field(contact_id, "sequence_status", "paused")
+                          crm.set_field(contact_id, "reply_received", True)
+                          crm.log_interaction(
+                              contact_id,
+                              f"Reply received on {date_str}. Subject: {subject}. Sequence paused."
+                          )
+                          print(f"CRM: sequence paused for {email}")
+                      except Exception as e:
+                          print(f"CRM update error: {e}")
+                  notify(
+                      f":email: Reply received — sequence paused\n"
+                      f"From: {from_addr}\nSubject: {subject}\nDate: {date_str}\n"
+                      f"Sequence for this contact is now paused. Review and respond manually."
+                  )
+          PYEOF
+
+      - name: Commit suppression + local CRM updates
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          for p in suppression/list.jsonl leads/crm-local; do
+            if [ -e "$p" ]; then git add "$p"; fi
+          done
+          if git diff --staged --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "reply-monitor: suppression update $(date +%Y-%m-%dT%H:%M)
+
+          Agent: reply-monitor
+          Agent-Model: none
+          Triggered-By: reply-monitor.yml"
+            for i in 1 2 3 4 5; do
+              if git push; then break; fi
+              echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+              git pull --rebase origin main
+              sleep $((i * 2))
+            done
+          fi
