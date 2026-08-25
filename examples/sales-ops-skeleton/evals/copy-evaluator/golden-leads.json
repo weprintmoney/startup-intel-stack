@@ -1,0 +1,31 @@
+[
+  {
+    "TOY_FIXTURE": true,
+    "note": "Replace with your own historical copy-evaluator cases. Golden drafts live in ./golden-drafts/ — one JSON per draft, with the same lead_email tying it back.",
+    "company_name": "Vantage Insights Co",
+    "website": "vantage-insights.example",
+    "employee_count": 180,
+    "industry": "data analytics",
+    "contact_name": "Sam Rivera",
+    "contact_title": "VP of Engineering",
+    "linkedin_url": "https://www.linkedin.com/in/sam-rivera-fixture",
+    "icp_segment": "segment-a",
+    "icp_rationale": "Mid-market analytics platform embedding AI features",
+    "country_code": "US",
+    "source": "toy-fixture",
+    "email": "sam.rivera@vantage-insights.example",
+    "email_verified": true,
+    "email_status": "deliverable",
+    "company_description": "Vantage Insights builds a mid-market analytics platform; recently launched an AI copilot feature.",
+    "pain_points": [
+      {
+        "quote": "we're evaluating retrieval-layer replacements — our current setup can't clear enterprise procurement",
+        "source": "https://blog.vantage-insights.example/eng/retrieval",
+        "date": "{{DAYS_AGO_18}}"
+      }
+    ],
+    "funding_date": "{{DAYS_AGO_25}}",
+    "funding_round": "Series B",
+    "announcement_link": "https://techcrunch.example/vantage-insights-series-b"
+  }
+]

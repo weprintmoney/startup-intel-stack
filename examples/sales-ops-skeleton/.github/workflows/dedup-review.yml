@@ -1,0 +1,344 @@
+name: Dedup and Attio Pending Upsert
+
+on:
+  workflow_dispatch:
+    inputs:
+      warmup_mode:
+        type: boolean
+        default: false
+        description: "Warmup override: promote top-N FAIL verdicts (score >= floor) to PASS. For real-send warmup only."
+      warmup_top_n:
+        type: string
+        default: "15"
+        description: "Max leads to promote when warmup_mode=true"
+      warmup_score_floor:
+        type: string
+        default: "30"
+        description: "Minimum normalized critic score required for promotion"
+  workflow_call:
+    inputs:
+      warmup_mode:
+        type: boolean
+        default: false
+      warmup_top_n:
+        type: string
+        default: "15"
+      warmup_score_floor:
+        type: string
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  dedup-and-upsert:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout rubric + grounding docs
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_PAT }}
+          path: internal-docs
+          sparse-checkout: |
+            03-commercial-revenue/rubrics/
+            01-market-intelligence/ideal-customer-profile.mdx
+            01-market-intelligence/buyer-personas.mdx
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      # Gate: leads only reach the Attio upsert below with a PASS verdict
+      # from the qualifier-critic rubric (23 criteria, pass >=70 + zero
+      # disqualifiers). Fail-closed — no verdict, no upsert.
+      - name: Run qualifier-critic gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat agents/qualifier-critic/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 40
+
+      - name: Commit critic verdicts
+        run: |
+          if [ -z "$(git status --porcelain leads/critic/)" ]; then
+            echo "No new verdicts to commit."
+            exit 0
+          fi
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add leads/critic/
+          git commit -m "critic: qualifier verdicts $(date +%Y-%m-%d)"
+          for i in 1 2 3 4 5; do
+            if git push; then break; fi
+            echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+            git pull --rebase origin main
+            sleep $((i * 2))
+          done
+
+      - name: Dedup and upsert to Attio as pending
+        env:
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          SUPPRESSION_LIST_PATH: suppression/list.jsonl
+          WARMUP_MODE: ${{ inputs.warmup_mode }}
+          WARMUP_TOP_N: ${{ inputs.warmup_top_n }}
+          WARMUP_SCORE_FLOOR: ${{ inputs.warmup_score_floor }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, sys
+          from pathlib import Path
+          from datetime import date
+
+          sys.path.insert(0, "lib")
+          import attio
+          import eu_router
+          import suppression
+
+          # ------------------------------------------------------------------
+          # Segment-specific personalization payloads.
+          #
+          # These dictionaries turn `icp_segment` from the enriched record into
+          # segment-relevant strings that get pushed to your CRM (pain_point,
+          # vertical_proof) and get baked into the pre-computed touch-2 fields
+          # the sequence-enrollment agent reads. Populating them is how you
+          # keep segment-personalization out of the LLM prompt (deterministic
+          # + cheap) while still letting the drafting agent focus on
+          # per-lead personalization.
+          #
+          # Replace the segment keys with your own from
+          # `internal-docs/03-commercial-revenue/icp-filter-criteria.yaml`
+          # and the strings with your own positioning copy per segment.
+          # The DEFAULT_* fallbacks below run whenever a lead has no
+          # `icp_segment` or you haven't populated a segment yet.
+          # ------------------------------------------------------------------
+          PAIN_POINTS = {
+              "<segment-a>": "<one-sentence description of the pain your product resolves in segment A, written in the buyer's language, not yours>",
+              "<segment-b>": "<same, for segment B>",
+              "<segment-c>": "<same, for segment C>",
+          }
+
+          VERTICAL_PROOFS = {
+              "<segment-a>": "<one-sentence proof point for segment A: a customer, a certification, an architectural claim they can verify>",
+              "<segment-b>": "<same, for segment B>",
+              "<segment-c>": "<same, for segment C>",
+          }
+
+          TOUCH_2_SUBJECTS = {
+              "<segment-a>": "<touch-2 subject line for segment A — the copy-evaluator rubric governs style>",
+              "<segment-b>": "<same, for segment B>",
+              "<segment-c>": "<same, for segment C>",
+          }
+
+          TOUCH_2_SCENARIOS = {
+              "<segment-a>": "<touch-2 body for segment A: paragraph 1 names the specific stall point that segment experiences; paragraph 2 gives your answer with one citable detail>",
+              "<segment-b>": "<same, for segment B>",
+              "<segment-c>": "<same, for segment C>",
+          }
+
+          DEFAULT_PAIN_POINT   = "<generic pain point for any lead whose segment isn't populated above>"
+          DEFAULT_VERTICAL_PROOF = "<generic vertical proof>"
+          DEFAULT_T2_SUBJECT   = "<generic touch-2 subject>"
+          DEFAULT_T2_SCENARIO  = "<generic touch-2 body>"
+
+          # Load qualifier-critic verdicts (all files — leads may have been
+          # scored on a prior run). Fail closed: a lead with no verdict is
+          # escalated, never upserted.
+          verdicts = {}
+          critic_dir = Path("leads/critic")
+          for vf in sorted(critic_dir.glob("*.json")) if critic_dir.exists() else []:
+              try:
+                  for v in json.loads(vf.read_text()):
+                      verdicts[v.get("lead_email", "").lower()] = v
+              except Exception as e:
+                  print(f"Bad verdict file {vf}: {e}")
+
+          if not verdicts:
+              print("FAIL-CLOSED: no qualifier-critic verdicts found in leads/critic/ — refusing to upsert.")
+              sys.exit(1)
+
+          # Warmup override: promote top-N FAIL verdicts (score >= floor) to
+          # PASS so a real-send warmup can proceed while the rubric is being
+          # tuned for cold outbound. The rubric itself is untouched — only the
+          # verdict decisions are modified, and each promoted record is
+          # marked so the audit trail is preserved. Downstream consumers
+          # (sequence-enrollment) read the critic files from disk, so the
+          # promotion is written back to disk after the in-memory update.
+          promoted_emails: set[str] = set()
+          if os.environ.get("WARMUP_MODE", "").lower() == "true":
+              top_n = int(os.environ.get("WARMUP_TOP_N", "15"))
+              floor = int(os.environ.get("WARMUP_SCORE_FLOOR", "30"))
+              fails = sorted(
+                  [v for v in verdicts.values()
+                   if v.get("decision") == "FAIL"
+                   and (v.get("normalized_score", 0) or 0) >= floor
+                   and not v.get("disqualifier_hits")],  # never promote a Cat-E hit
+                  key=lambda x: -(x.get("normalized_score", 0) or 0),
+              )
+              for v in fails[:top_n]:
+                  v["decision"] = "PASS"
+                  v["warmup_promoted"] = True
+                  v["original_decision"] = "FAIL"
+                  promoted_emails.add(v.get("lead_email", "").lower())
+              print(f"WARMUP_MODE: promoted {len(promoted_emails)} FAIL verdicts to PASS "
+                    f"(top {top_n} by score, floor >= {floor}, no Cat-E hits).")
+
+              # Persist promotions back to the critic files on disk so
+              # downstream (sequence-enrollment) sees them. Update every
+              # verdict file that contains a promoted email, in-place.
+              if promoted_emails:
+                  for vf in critic_dir.glob("*.json"):
+                      try:
+                          entries = json.loads(vf.read_text())
+                      except Exception:
+                          continue
+                      dirty = False
+                      for entry in entries:
+                          e = (entry.get("lead_email") or "").lower()
+                          if e in promoted_emails and entry.get("decision") != "PASS":
+                              entry["decision"] = "PASS"
+                              entry["warmup_promoted"] = True
+                              entry["original_decision"] = "FAIL"
+                              dirty = True
+                      if dirty:
+                          vf.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
+                          print(f"  updated {vf}")
+
+          enriched_dir = Path("leads/enriched")
+          upserted, skipped, escalated = [], [], []
+
+          for f in sorted(enriched_dir.glob("*.json")):
+              try:
+                  leads = json.loads(f.read_text())
+              except Exception as e:
+                  print(f"Skipping {f}: {e}")
+                  continue
+              if not isinstance(leads, list):
+                  leads = [leads]
+
+              for lead in leads:
+                  email = lead.get("email", "")
+                  name  = lead.get("contact_name", "")
+                  company = lead.get("company_name", "")
+
+                  if not email:
+                      skipped.append(f"{name} / {company} — no email")
+                      continue
+
+                  if suppression.check(email):
+                      skipped.append(f"{name} / {company} — suppressed")
+                      continue
+
+                  verdict = verdicts.get(email.lower())
+                  if verdict is None:
+                      escalated.append(f"{name} / {company} — NO VERDICT (fail-closed, not upserted)")
+                      continue
+                  if verdict.get("decision") == "ESCALATE":
+                      escalated.append(f"{name} / {company} — ESCALATE ({verdict.get('reason', '')})")
+                      continue
+                  if verdict.get("decision") != "PASS":
+                      skipped.append(f"{name} / {company} — critic FAIL {verdict.get('normalized_score')}/100: {verdict.get('reason', '')}")
+                      continue
+
+                  existing = attio.get_contact(email)
+                  if existing:
+                      seq_status = (
+                          existing.get("values", {})
+                          .get("sequence_status", [{}])[0]
+                          .get("status", "")
+                      )
+                      if seq_status:
+                          skipped.append(f"{name} / {company} — prior contact ({seq_status})")
+                          continue
+
+                  country = lead.get("country_code", "")
+                  is_eu   = bool(country and eu_router.is_eu(country))
+                  segment = lead.get("icp_segment", "")
+
+                  pain_point    = PAIN_POINTS.get(segment, DEFAULT_PAIN_POINT)
+                  vertical_proof = VERTICAL_PROOFS.get(segment, DEFAULT_VERTICAL_PROOF)
+                  t2_subject    = TOUCH_2_SUBJECTS.get(segment, DEFAULT_T2_SUBJECT)
+                  t2_scenario   = TOUCH_2_SCENARIOS.get(segment, DEFAULT_T2_SCENARIO)
+
+                  data = {
+                      "contact_name":    name,
+                      "email":           email,
+                      "company_name":    company,
+                      "contact_title":   lead.get("contact_title", ""),
+                      "icp_segment":     segment,
+                      "sequence_status": "pending",
+                      "outreach_channel": "linkedin_only" if is_eu else "email",
+                      "eu_contact":      is_eu,
+                      "suppressed":      False,
+                      "pain_point":      pain_point,
+                      "vertical_proof":  vertical_proof,
+                      "touch_2_subject": t2_subject,
+                      "touch_2_scenario": t2_scenario,
+                  }
+
+                  try:
+                      attio.upsert_contact(data)
+                      upserted.append(f"{name} / {company} ({'linkedin_only' if is_eu else 'email'})")
+                  except Exception as e:
+                      msg = str(e)
+                      # The Attio People schema has ~14 unprovisioned custom
+                      # attributes (sequence_status, pain_point, etc.); the
+                      # attio-schema-setup workflow needs an admin-scoped key
+                      # to create them. Until then, downstream enrollment can
+                      # run with SKIP_ATTIO_GATE=true — this branch records
+                      # the intended-upsert as an audit line rather than
+                      # blocking the run.
+                      if "Cannot find attribute" in msg or "not authorized" in msg:
+                          skipped.append(f"{name} / {company} — Attio schema unprovisioned; enrollment must run with SKIP_ATTIO_GATE=true")
+                      else:
+                          skipped.append(f"{name} / {company} — Attio error: {e}")
+
+          print(f"\n{'='*60}")
+          print(f"Attio upsert complete — {date.today().isoformat()}")
+          print(f"{'='*60}")
+          print(f"Upserted as pending: {len(upserted)}")
+          for u in upserted:
+              print(f"  ✓ {u}")
+          if escalated:
+              print(f"\nEscalated for human review (NOT upserted): {len(escalated)}")
+              for e in escalated:
+                  print(f"  ⚠ {e}")
+          if skipped:
+              print(f"\nSkipped: {len(skipped)}")
+              for s in skipped:
+                  print(f"  — {s}")
+          print(f"\nNext step: run the Sequence Enrollment workflow to draft touches; approve by merging the PR it opens.")
+          PYEOF
+
+      # If warmup_mode wrote promoted verdicts back to leads/critic/, commit
+      # them so sequence-enrollment (which reads the critic files from disk)
+      # sees the promotions on its next run.
+      - name: Commit warmup promotions
+        if: ${{ inputs.warmup_mode }}
+        run: |
+          if [ -z "$(git status --porcelain leads/critic/)" ]; then
+            echo "No warmup promotions to persist."
+            exit 0
+          fi
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add leads/critic/
+          git commit -m "critic: warmup promotions $(date +%Y-%m-%d)"
+          for i in 1 2 3 4 5; do
+            if git push; then break; fi
+            echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+            git pull --rebase origin main
+            sleep $((i * 2))
+          done

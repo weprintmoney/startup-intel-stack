@@ -1,0 +1,12 @@
+{
+  "TOY_FIXTURE": true,
+  "note": "FAIL example — teaches the E1 (banned opener) hard-block. Opens with 'I hope this email finds you well' and stacks 'In today's AI landscape' — both are on the banned-openers list in every real copy-evaluator rubric this pattern has been used with. The evaluator must FAIL this draft even though the body is otherwise fine.",
+  "draft_id": "vantage-touch1-fail-e1",
+  "lead_id": "sam-rivera-vantage",
+  "lead_email": "sam.rivera@vantage-insights.example",
+  "touch_number": 1,
+  "sender_voice": "founder",
+  "subject": "Reaching out about your AI journey",
+  "body": "Hi Sam,\n\nI hope this email finds you well. In today's AI landscape, retrieval-layer decisions are more important than ever, and I saw your recent Series B announcement.\n\n<YOUR_COMPANY> works with companies like yours on their retrieval stack. Would love to jump on a quick call to explore how we can help you unlock more value.\n\nBest regards,\n<FOUNDER_NAME>",
+  "citations": []
+}

@@ -1,0 +1,70 @@
+name: Stack Profile (architecture inference)
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_leads:
+        description: "Max leads to profile in this run"
+        type: string
+        default: "15"
+  workflow_call:
+    inputs:
+      skip_downstream:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  stack-profile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Install Python dependencies
+        run: pip install exa-py==2.14.0
+
+      - name: Run stack-profile agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+          MAX_LEADS: ${{ inputs.max_leads || '15' }}
+        run: |
+          claude -p "$(cat agents/stack-profile/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,WebSearch" \
+            --max-turns 80
+
+      - name: Commit stack profiles
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add leads/stack-profiles/
+          if git diff --staged --quiet; then
+            echo "nothing to commit"
+          else
+            git commit -m "stack-profile: architecture inference $(date +%Y-%m-%d)"
+            for i in 1 2 3 4 5; do
+              if git push; then break; fi
+              echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+              git pull --rebase origin main
+              sleep $((i * 2))
+            done
+          fi
+
+      - name: Trigger dedup-review
+        if: ${{ !inputs.skip_downstream }}
+        run: |
+          gh workflow run dedup-review.yml \
+            --repo ${{ github.repository }} \
+            --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

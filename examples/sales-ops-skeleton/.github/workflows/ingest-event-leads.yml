@@ -1,0 +1,121 @@
+name: Ingest Event Leads
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_file:
+        description: "Path to attendee file relative to repo root (e.g. leads/sources/raise-summit-2026.csv)"
+        required: true
+        type: string
+      event_slug:
+        description: "Kebab-case event label used in output filename (e.g. raise-summit-2026)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run event-ingest agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVENT_FILE: ${{ inputs.event_file }}
+          EVENT_SLUG: ${{ inputs.event_slug }}
+        run: |
+          claude -p "$(cat agents/event-ingest/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,WebSearch" \
+            --max-turns 60
+
+      - name: Run name-based Attio dedup
+        env:
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, sys
+          from pathlib import Path
+          from datetime import date
+
+          sys.path.insert(0, "lib")
+          import attio
+
+          raw_dir = Path("leads/raw")
+          deduped_dir = Path("leads/deduped")
+          deduped_dir.mkdir(parents=True, exist_ok=True)
+
+          for raw_path in sorted(raw_dir.glob("*.json")):
+              suffix = raw_path.name
+              out_path = deduped_dir / suffix
+              if out_path.exists():
+                  print(f"Already deduped: {suffix}")
+                  continue
+
+              try:
+                  leads = json.loads(raw_path.read_text())
+              except Exception as e:
+                  print(f"Skipping {raw_path}: {e}")
+                  continue
+              if not isinstance(leads, list):
+                  leads = [leads]
+
+              survivors, skipped = [], 0
+              for lead in leads:
+                  name = lead.get("contact_name", "")
+                  company = lead.get("company_name", "")
+                  if not name:
+                      lead["prior_contact"] = False
+                      survivors.append(lead)
+                      continue
+                  matches = attio.search_by_name(name)
+                  if matches:
+                      skipped += 1
+                      print(f"Skipping {name} at {company}: already in Attio ({len(matches)} record(s))")
+                  else:
+                      lead["prior_contact"] = False
+                      survivors.append(lead)
+
+              out_path.write_text(json.dumps(survivors, indent=2))
+              print(f"\nDedup: {suffix} — {len(leads)} in, {skipped} skipped, {len(survivors)} out")
+          PYEOF
+
+      - name: Run pre-filter agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat agents/pre-filter/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 30
+
+      - name: Commit results
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add leads/raw/ leads/deduped/ leads/pre-filtered/
+          git diff --staged --quiet || git commit -m "event-ingest: ${{ inputs.event_slug }} $(date +%Y-%m-%d)"
+          git push
+
+      - name: Trigger enrichment
+        run: |
+          gh workflow run enrich-leads.yml \
+            --repo ${{ github.repository }} \
+            --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

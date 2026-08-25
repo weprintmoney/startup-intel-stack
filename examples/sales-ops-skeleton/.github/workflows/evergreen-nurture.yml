@@ -1,0 +1,49 @@
+name: Evergreen Nurture
+
+on:
+  schedule:
+    # Friday 9 AM ET (14:00 UTC)
+    - cron: "0 14 * * 5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  nurture:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout nurture template
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_PAT }}
+          path: internal-docs
+          sparse-checkout: |
+            03-commercial-revenue/sequences/nurture-21d.mdx
+
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run nurture agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          SUPPRESSION_LIST_PATH: suppression/list.jsonl
+        run: |
+          claude -p "$(cat agents/evergreen-nurture/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 30
+
+      - name: Commit nurture queue entries
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add sends/queue/
+          git diff --staged --quiet || git commit -m "nurture: evergreen queue $(date +%Y-%m-%d)"
+          git push

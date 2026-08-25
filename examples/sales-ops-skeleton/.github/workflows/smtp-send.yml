@@ -1,0 +1,204 @@
+name: SMTP Send
+
+on:
+  schedule:
+    # Hourly 8 AM–6 PM ET Mon–Fri (13:00–23:00 UTC)
+    - cron: "0 13-23 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check SEQUENCES_PAUSED
+        id: check-paused
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PAUSED=$(gh api repos/${{ github.repository }}/actions/variables/SEQUENCES_PAUSED \
+            --jq '.value' 2>/dev/null || echo "false")
+          echo "paused=${PAUSED}" >> $GITHUB_OUTPUT
+          echo "SEQUENCES_PAUSED=${PAUSED}"
+
+      - name: Set up Python
+        if: steps.check-paused.outputs.paused != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.check-paused.outputs.paused != 'true'
+        run: pip install requests
+
+      - name: Process send queue
+        if: steps.check-paused.outputs.paused != 'true'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ secrets.RESEND_FROM }}
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          ATTIO_BCC_ADDRESS: ${{ secrets.ATTIO_BCC_ADDRESS }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_SALES_REVIEW_CHANNEL: ${{ secrets.SLACK_SALES_REVIEW_CHANNEL }}
+          SUPPRESSION_LIST_PATH: suppression/list.jsonl
+        run: |
+          python - <<'PYEOF'
+          import json, os, sys, time
+          from pathlib import Path
+          from datetime import date
+
+          sys.path.insert(0, "lib")
+          import smtp_send
+          import suppression
+          import attio
+
+          queue_dir = Path("sends/queue")
+          log_dir = Path("sends/log")
+          log_dir.mkdir(parents=True, exist_ok=True)
+
+          queued = sorted(queue_dir.glob("*.json"))
+          if not queued:
+              print("No messages in queue.")
+              sys.exit(0)
+
+          results = []
+          for item_path in queued:
+              try:
+                  item = json.loads(item_path.read_text())
+              except Exception as e:
+                  print(f"Skipping {item_path}: {e}")
+                  continue
+
+              to_email = item.get("to")
+              subject = item.get("subject")
+              body = item.get("body")
+
+              if not all([to_email, subject, body]):
+                  print(f"Skipping malformed queue item: {item_path.name}")
+                  continue
+
+              # Safety: LinkedIn touches never go through email send
+              if item.get("channel") == "linkedin":
+                  print(f"LinkedIn item in email queue, skipping: {item_path.name}")
+                  continue
+
+              # Not due yet — leave in queue for a future run
+              scheduled = item.get("scheduled_date", "")
+              if scheduled and scheduled > date.today().isoformat():
+                  continue
+
+              # Suppression check
+              if suppression.check(to_email):
+                  print(f"Suppressed, skipping: {to_email}")
+                  item_path.unlink()
+                  continue
+
+              # Pause-on-reply: if the sequence is paused/rejected in Attio,
+              # cancel this contact's remaining queued touches
+              try:
+                  contact = attio.get_contact(to_email)
+              except Exception as e:
+                  print(f"Attio lookup failed for {to_email}, skipping this run: {e}")
+                  continue
+              seq_status = ""
+              if contact:
+                  seq_status = (
+                      contact.get("values", {})
+                      .get("sequence_status", [{}])[0]
+                      .get("status", "")
+                  )
+              if seq_status in ("paused", "rejected", "completed"):
+                  print(f"Sequence {seq_status} for {to_email} — cancelling {item_path.name}")
+                  item_path.unlink()
+                  continue
+
+              attio_bcc = os.environ.get("ATTIO_BCC_ADDRESS") or None
+              try:
+                  result = smtp_send.send_email(
+                      to=to_email,
+                      subject=subject,
+                      body=body,
+                      from_name=item.get("from_name", "<FOUNDER_NAME>"),
+                      body_html=item.get("body_html"),
+                      recipient_tz=item.get("recipient_tz", "America/Chicago"),
+                      bcc=attio_bcc,
+                  )
+              except smtp_send.DailyCap as e:
+                  print(f"Daily cap reached: {e}")
+                  break
+
+              result["to"] = to_email
+              result["item"] = item_path.name
+              results.append(result)
+
+              if result["success"]:
+                  print(f"Sent: {to_email}")
+                  contact_id = item.get("contact_id")
+                  touch_n = item.get("touch_number", 1)
+                  if contact_id:
+                      try:
+                          attio.set_field(contact_id, "last_touch_date", date.today().isoformat())
+                          attio.set_field(contact_id, "last_touch_number", touch_n)
+                          if touch_n == 1:
+                              attio.set_field(contact_id, "sequence_status", "enrolled")
+                              attio.set_field(contact_id, "sequence_enrolled_date", date.today().isoformat())
+                          attio.log_interaction(
+                              contact_id,
+                              f"Touch {touch_n} sent on {date.today().isoformat()}. Subject: {subject}. From: {item.get('from_name', '<FOUNDER_NAME>')}.",
+                          )
+                      except Exception as e:
+                          print(f"Attio update warning: {e}")
+                  item_path.unlink()
+              elif result.get("hard_bounce"):
+                  print(f"Hard bounce: {to_email}. Adding to suppression.")
+                  suppression.add(to_email, "bounced_hard", "smtp-send-workflow")
+                  item_path.unlink()
+              else:
+                  print(f"Soft bounce / error for {to_email}: {result.get('error')}")
+                  # Slack alert for soft bounce
+                  slack_token = os.environ.get("SLACK_BOT_TOKEN")
+                  channel = os.environ.get("SLACK_SALES_REVIEW_CHANNEL")
+                  if slack_token and channel:
+                      import urllib.request
+                      payload = json.dumps({
+                          "channel": channel,
+                          "text": f":warning: Soft bounce on send to `{to_email}`: {result.get('error')}",
+                      }).encode()
+                      req = urllib.request.Request(
+                          "https://slack.com/api/chat.postMessage",
+                          data=payload,
+                          headers={"Authorization": f"Bearer {slack_token}", "Content-Type": "application/json"},
+                      )
+                      try:
+                          urllib.request.urlopen(req, timeout=10)
+                      except Exception:
+                          pass
+
+              time.sleep(smtp_send.SEND_INTERVAL_SECONDS)
+
+          log_path = log_dir / f"{date.today().isoformat()}-sends.jsonl"
+          with open(log_path, "a") as f:
+              for r in results:
+                  f.write(json.dumps(r) + "\n")
+          print(f"Batch complete. {len(results)} processed.")
+          PYEOF
+
+      - name: Commit logs and updated queue
+        if: steps.check-paused.outputs.paused != 'true'
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add sends/log/ sends/queue/ suppression/ sends/daily-count.json
+          git diff --staged --quiet || git commit -m "smtp-send: batch $(date +%Y-%m-%dT%H:%M)"
+          git push
+
+      - name: Log skipped (paused)
+        if: steps.check-paused.outputs.paused == 'true'
+        run: echo "SEQUENCES_PAUSED=true — skipping entire send batch."

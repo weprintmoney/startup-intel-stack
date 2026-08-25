@@ -1,0 +1,15 @@
+{
+  "TOY_FIXTURE": true,
+  "note": "PASS example. Real golden-draft entries mirror a full sequence-enrollment output: subject, body, tokens ready for send. Replace with 10-20 historical drafts that survived the copy-evaluator + human approval — plus a handful of FAILs the evaluator caught. Fail examples are more instructive than passes.",
+  "draft_id": "vantage-touch1-pass",
+  "lead_id": "sam-rivera-vantage",
+  "lead_email": "sam.rivera@vantage-insights.example",
+  "touch_number": 1,
+  "sender_voice": "founder",
+  "subject": "Your retrieval-replacement note",
+  "body": "Sam,\n\nSaw your blog note about evaluating retrieval-layer replacements to clear enterprise procurement — congrats on the Series B, by the way.\n\nWorth 20 minutes on how <YOUR_COMPANY> handles that exact procurement stall for other analytics platforms? Two customers cleared their security reviews in weeks, not quarters.\n\nOpen next Tue or Wed?\n\n<FOUNDER_NAME>\n\n---\nIf this isn't the right time, reply STOP and I'll remove you from the sequence.",
+  "citations": [
+    {"claim": "evaluating retrieval-layer replacements", "source": "https://blog.vantage-insights.example/eng/retrieval"},
+    {"claim": "Series B", "source": "https://techcrunch.example/vantage-insights-series-b"}
+  ]
+}

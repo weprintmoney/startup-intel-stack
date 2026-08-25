@@ -1,0 +1,39 @@
+name: Deploy Cloudflare Worker
+
+on:
+  push:
+    paths:
+      - "slack-webhook/**"
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@latest
+
+      - name: Deploy worker
+        working-directory: slack-webhook
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          wrangler secret put SLACK_SIGNING_SECRET <<< "${{ secrets.SLACK_SIGNING_SECRET }}"
+          wrangler secret put GITHUB_TOKEN <<< "${{ secrets.GITHUB_TOKEN }}"
+          wrangler deploy

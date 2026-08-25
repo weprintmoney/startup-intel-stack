@@ -1,0 +1,96 @@
+name: Judge Golden-Set Evals
+
+# Regression-tests the two LLM judges (qualifier-critic, copy-evaluator)
+# against known-good fixtures in evals/. A verdict flip = the judge drifted
+# (prompt edit, rubric edit in internal-docs, or model change).
+#
+# Runs on: PRs touching judge prompts or fixtures, weekly schedule (catches
+# rubric edits in internal-docs and model-version drift), and dispatch.
+
+on:
+  pull_request:
+    paths:
+      - "agents/qualifier-critic/**"
+      - "agents/copy-evaluator/**"
+      - "evals/**"
+      - ".github/workflows/judge-evals.yml"
+  schedule:
+    # Mondays 6 AM ET (11:00 UTC)
+    - cron: "0 11 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        judge: [qualifier-critic, copy-evaluator]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout rubrics + grounding docs
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_PAT }}
+          path: internal-docs
+          sparse-checkout: |
+            03-commercial-revenue/rubrics/
+            03-commercial-revenue/sequences/
+            01-market-intelligence/ideal-customer-profile.mdx
+            01-market-intelligence/buyer-personas.mdx
+            01-market-intelligence/positioning-architecture.mdx
+            02-brand/brand-voice-tone.mdx
+            04-marketing/content-ops/reference/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Build sandbox
+        run: python evals/run_eval.py setup --judge ${{ matrix.judge }} --sandbox /tmp/eval-${{ matrix.judge }}
+
+      - name: Run ${{ matrix.judge }} on golden set
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd /tmp/eval-${{ matrix.judge }}
+          claude -p "$(cat "$GITHUB_WORKSPACE/agents/${{ matrix.judge }}/CLAUDE.md")" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 40
+
+      - name: Compare verdicts against golden set
+        run: python evals/run_eval.py compare --judge ${{ matrix.judge }} --sandbox /tmp/eval-${{ matrix.judge }}
+
+      - name: Alert on scheduled-run failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, urllib.request
+          token = os.environ.get("SLACK_BOT_TOKEN", "")
+          if not token:
+              raise SystemExit(0)
+          run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          text = (":rotating_light: *Judge eval regression* — the `${{ matrix.judge }}` golden-set eval failed on its "
+                  f"weekly run. A verdict flipped without any prompt change in this repo, which usually means a rubric "
+                  f"edit in internal-docs or a model-version drift. Review before the next pipeline run: {run_url}")
+          req = urllib.request.Request(
+              "https://slack.com/api/chat.postMessage",
+              data=json.dumps({"channel": "${{ secrets.SLACK_OPS_CHANNEL_ID }}", "text": text}).encode(),
+              headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+          )
+          urllib.request.urlopen(req, timeout=10)
+          PYEOF

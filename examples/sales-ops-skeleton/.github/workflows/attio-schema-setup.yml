@@ -1,0 +1,36 @@
+name: Attio Schema Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        type: boolean
+        default: true
+        description: "Preview which attributes would be created; no writes if true."
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install requests
+        run: pip install requests
+
+      - name: Run Attio schema setup
+        env:
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python scripts/attio_schema_setup.py --dry-run
+          else
+            python scripts/attio_schema_setup.py
+          fi

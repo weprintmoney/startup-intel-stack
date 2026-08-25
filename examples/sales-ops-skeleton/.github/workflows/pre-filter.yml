@@ -1,0 +1,60 @@
+name: Pre-Filter (ICP Gate)
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      skip_downstream:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  pre-filter:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout internal docs for ICP criteria
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_PAT }}
+          path: internal-docs
+          sparse-checkout: |
+            03-commercial-revenue/icp-filter-criteria.yaml
+
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run pre-filter agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat agents/pre-filter/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 20
+
+      - name: Commit pre-filtered leads
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add leads/pre-filtered/
+          git diff --staged --quiet || git commit -m "pre-filter: ICP gate $(date +%Y-%m-%d)"
+          git push
+
+      - name: Trigger enrichment
+        if: ${{ !inputs.skip_downstream }}
+        run: |
+          gh workflow run enrichment.yml \
+            --repo ${{ github.repository }} \
+            --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

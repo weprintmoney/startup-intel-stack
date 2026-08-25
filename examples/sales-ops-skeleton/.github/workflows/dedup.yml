@@ -1,0 +1,102 @@
+name: Dedup (Prior-Contact Gate)
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      skip_downstream:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  dedup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run name-based Attio dedup
+        env:
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, sys
+          from pathlib import Path
+          from datetime import date
+
+          sys.path.insert(0, "lib")
+          import attio
+
+          raw_dir = Path("leads/raw")
+          deduped_dir = Path("leads/deduped")
+          deduped_dir.mkdir(parents=True, exist_ok=True)
+
+          for raw_path in sorted(raw_dir.glob("*.json")):
+              suffix = raw_path.name  # e.g. 2026-07-09-us-batch.json
+              out_path = deduped_dir / suffix
+              if out_path.exists():
+                  print(f"Already deduped: {suffix}")
+                  continue
+
+              try:
+                  leads = json.loads(raw_path.read_text())
+              except Exception as e:
+                  print(f"Skipping {raw_path}: {e}")
+                  continue
+              if not isinstance(leads, list):
+                  leads = [leads]
+
+              survivors, skipped = [], 0
+              for lead in leads:
+                  name = lead.get("contact_name", "")
+                  company = lead.get("company_name", "")
+                  if not name:
+                      lead["prior_contact"] = False
+                      survivors.append(lead)
+                      continue
+                  matches = attio.search_by_name(name)
+                  if matches:
+                      skipped += 1
+                      print(f"Skipping {name} at {company}: already in Attio ({len(matches)} record(s))")
+                  else:
+                      lead["prior_contact"] = False
+                      survivors.append(lead)
+
+              out_path.write_text(json.dumps(survivors, indent=2))
+              print(f"\nDedup summary {suffix}")
+              print(f"  Input:   {len(leads)} leads")
+              print(f"  Skipped: {skipped} (already in Attio)")
+              print(f"  Output:  {len(survivors)} leads -> {out_path}")
+          PYEOF
+
+      - name: Commit deduped leads
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add leads/deduped/
+          git diff --staged --quiet || git commit -m "dedup: deduped leads $(date +%Y-%m-%d)"
+          git push
+
+      - name: Trigger pre-filter
+        if: ${{ !inputs.skip_downstream }}
+        run: |
+          gh workflow run pre-filter.yml \
+            --repo ${{ github.repository }} \
+            --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

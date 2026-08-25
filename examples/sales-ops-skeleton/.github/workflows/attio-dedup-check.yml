@@ -1,0 +1,70 @@
+name: Attio Dedup Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      raw_file:
+        description: "Path to raw leads file relative to repo root (e.g. leads/raw/2026-07-09-us-batch.json)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Check leads against Attio
+        env:
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          RAW_FILE: ${{ inputs.raw_file }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys
+          sys.path.insert(0, "lib")
+          import attio
+
+          raw_file = os.environ["RAW_FILE"]
+          leads = json.load(open(raw_file))
+
+          already_in_attio = []
+          not_found = []
+
+          for lead in leads:
+              name = lead.get("contact_name", "")
+              company = lead.get("company_name", "")
+              matches = attio.search_by_name(name)
+              if matches:
+                  already_in_attio.append({"name": name, "company": company, "attio_records": len(matches)})
+              else:
+                  not_found.append({"name": name, "company": company})
+
+          print(f"\n{'='*60}")
+          print(f"Attio dedup check: {raw_file}")
+          print(f"{'='*60}")
+          print(f"Total leads: {len(leads)}")
+          print(f"Already in Attio: {len(already_in_attio)}")
+          print(f"Not in Attio (safe to enrich): {len(not_found)}")
+
+          if already_in_attio:
+              print(f"\n--- Already in Attio (skip enrichment) ---")
+              for l in already_in_attio:
+                  print(f"  {l['name']} / {l['company']}  ({l['attio_records']} record(s))")
+
+          print(f"\n--- Not in Attio (proceed to enrichment) ---")
+          for l in not_found:
+              print(f"  {l['name']} / {l['company']}")
+          PYEOF

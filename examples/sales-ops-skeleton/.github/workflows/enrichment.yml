@@ -1,0 +1,151 @@
+name: Lead Enrichment
+
+on:
+  workflow_dispatch:
+    inputs:
+      retry_not_found:
+        description: "Retry Hunter lookup for leads marked email_status: not_found in existing enriched files (no Apollo re-spend)"
+        type: boolean
+        default: false
+      signal_refresh:
+        description: "Add signal research (web search only, no API spend) to existing enriched leads missing signal fields"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      skip_downstream:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Install Python dependencies
+        run: pip install exa-py==2.14.0
+
+      - name: Run enrichment agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HUNTER_API_KEY: ${{ secrets.HUNTERIO_API_KEY }}
+          APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+          RETRY_NOT_FOUND: ${{ inputs.retry_not_found }}
+          SIGNAL_REFRESH: ${{ inputs.signal_refresh }}
+        run: |
+          claude -p "$(cat agents/enrichment/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,WebSearch" \
+            --max-turns 200
+
+      - name: Commit enriched leads
+        id: commit
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add leads/enriched/
+          if git diff --staged --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "enrich: enriched leads $(date +%Y-%m-%d)"
+            # Push race: concurrent workflows push to main. Retry with rebase.
+            for i in 1 2 3 4 5; do
+              if git push; then break; fi
+              echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+              git pull --rebase origin main
+              sleep $((i * 2))
+            done
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The agent processes at most 40 leads per run. If it made progress and
+      # work remains, re-dispatch with the same inputs to continue the batch.
+      # No progress + work remaining means something is wrong — don't loop.
+      - name: Re-dispatch if work remains
+        id: redispatch
+        if: ${{ steps.commit.outputs.committed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNAL_REFRESH: ${{ inputs.signal_refresh }}
+          RETRY_NOT_FOUND: ${{ inputs.retry_not_found }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, subprocess, sys
+          from pathlib import Path
+
+          signal_refresh = os.environ.get("SIGNAL_REFRESH") == "true"
+          remaining = 0
+
+          def suppressed_sets():
+              emails, domains = set(), set()
+              p = Path("suppression/list.jsonl")
+              if p.exists():
+                  for line in p.read_text().splitlines():
+                      if line.strip():
+                          r = json.loads(line)
+                          if r.get("email"):
+                              emails.add(r["email"].lower())
+                          if r.get("domain"):
+                              domains.add(r["domain"].lower())
+              return emails, domains
+
+          if signal_refresh:
+              SIGNALS = ("pain_points", "event_date", "funding_date",
+                         "hiring_signal", "product_launch_date", "rfp_status")
+              sup_emails, sup_domains = suppressed_sets()
+              seen = set()
+              for f in Path("leads/enriched").glob("*.json"):
+                  for lead in json.loads(f.read_text()):
+                      email = (lead.get("email") or "").lower()
+                      if not email or lead.get("email_status") != "deliverable":
+                          continue
+                      if email in seen or email in sup_emails:
+                          continue
+                      if email.split("@")[-1] in sup_domains:
+                          continue
+                      seen.add(email)
+                      if not any(k in lead for k in SIGNALS) and "signals_checked" not in lead:
+                          remaining += 1
+          else:
+              enriched = {p.stem for p in Path("leads/enriched").glob("*.json")}
+              remaining = sum(
+                  1 for p in Path("leads/pre-filtered").glob("*.json")
+                  if p.stem not in enriched
+              )
+
+          print(f"remaining work items: {remaining}")
+          gh_out = os.environ.get("GITHUB_OUTPUT")
+          if gh_out:
+              with open(gh_out, "a") as f:
+                  f.write(f"remaining={remaining}\n")
+          if remaining > 0:
+              args = ["gh", "workflow", "run", "enrichment.yml",
+                      "--repo", os.environ["GITHUB_REPOSITORY"], "--ref", "main"]
+              if signal_refresh:
+                  args += ["-f", "signal_refresh=true"]
+              if os.environ.get("RETRY_NOT_FOUND") == "true":
+                  args += ["-f", "retry_not_found=true"]
+              subprocess.run(args, check=True)
+              print("re-dispatched enrichment to continue")
+          PYEOF
+
+      - name: Trigger stack-profile
+        if: ${{ !inputs.skip_downstream && steps.commit.outputs.committed == 'true' && steps.redispatch.outputs.remaining == '0' }}
+        run: |
+          gh workflow run stack-profile.yml \
+            --repo ${{ github.repository }} \
+            --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

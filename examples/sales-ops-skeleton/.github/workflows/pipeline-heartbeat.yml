@@ -1,0 +1,177 @@
+name: Pipeline Heartbeat
+
+# Absence-alerting for the pipeline's scheduled workflows. GitHub alerts when
+# a workflow RUN fails, but says nothing when a schedule silently stops firing
+# or a workflow "succeeds" while producing nothing. This check alerts on:
+#   1. staleness — no successful run of a scheduled workflow within its window
+#   2. latest completed run of a monitored workflow failed
+#   3. CRITICAL — emails were sent recently but reply-monitor is stale, which
+#      means Hard Rule 5 (pause on reply) is not being enforced
+#   4. weekly-crawl succeeded but leads/raw/ has no fresh output (zero-output)
+#
+# Silence = healthy. Alerts go to the failure-alerts Slack channel.
+# To mute a check pre-launch (e.g. reply-monitor before DNS is live), set the
+# repo variable HEARTBEAT_SKIP to a comma-separated list of workflow filenames.
+
+on:
+  schedule:
+    # 7:30 AM ET Tue-Sat (12:30 UTC) — reviews the previous weekday
+    - cron: "30 12 * * 2-6"
+    # Noon ET Mon-Fri (17:00 UTC) — mid-business-window check, incl. the
+    # sends-without-reply-monitor critical check
+    - cron: "0 17 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check pipeline heartbeat
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          HEARTBEAT_SKIP: ${{ vars.HEARTBEAT_SKIP }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, re, urllib.request
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          ALERT_CHANNEL = "${{ secrets.SLACK_OPS_CHANNEL_ID }}"
+          REPO = os.environ["REPO"]
+          GH_TOKEN = os.environ["GH_TOKEN"]
+          SKIP = {s.strip() for s in os.environ.get("HEARTBEAT_SKIP", "").split(",") if s.strip()}
+          NOW = datetime.now(timezone.utc)
+          ET_NOW = NOW.astimezone(ZoneInfo("America/New_York"))
+          IN_BUSINESS_WINDOW = ET_NOW.weekday() < 5 and 9 <= ET_NOW.hour < 18
+
+          # workflow file -> max hours since last successful run.
+          # Windows are sized so the Tue-Sat 7:30 AM ET check tolerates the
+          # weekend gap of weekday-only schedules.
+          MONITORED = {
+              "weekly-crawl.yml": 204,            # Mon 8am ET weekly
+              "deliverability-monitor.yml": 36,   # daily 7am ET
+              "smtp-send.yml": 28,                # hourly 8am-6pm ET M-F
+              "reply-monitor.yml": 28,            # hourly 8am-6pm ET M-F
+              "judge-evals.yml": 204,             # Mon 6am ET weekly
+              "evergreen-nurture.yml": 204,       # Fri 9am ET weekly
+          }
+
+          def gh(path):
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{REPO}{path}",
+                  headers={"Authorization": f"Bearer {GH_TOKEN}", "Accept": "application/vnd.github+json"},
+              )
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  return json.load(r)
+
+          def runs(workflow_file):
+              try:
+                  return gh(f"/actions/workflows/{workflow_file}/runs?status=completed&per_page=20")["workflow_runs"]
+              except Exception as e:
+                  return {"error": str(e)}
+
+          problems, warnings = [], []
+
+          reply_monitor_age_h = None
+          for wf, max_age in MONITORED.items():
+              if wf in SKIP:
+                  continue
+              rs = runs(wf)
+              if isinstance(rs, dict):
+                  warnings.append(f"`{wf}`: could not read run history ({rs['error']})")
+                  continue
+              if not rs:
+                  problems.append(f"`{wf}`: no completed runs found at all")
+                  continue
+              latest = rs[0]
+              if latest["conclusion"] not in ("success", "skipped"):
+                  problems.append(f"`{wf}`: latest run concluded *{latest['conclusion']}* — {latest['html_url']}")
+              success = next((r for r in rs if r["conclusion"] == "success"), None)
+              if success is None:
+                  problems.append(f"`{wf}`: no successful run in the last {len(rs)} completed runs")
+                  continue
+              age_h = (NOW - datetime.fromisoformat(success["created_at"].replace("Z", "+00:00"))).total_seconds() / 3600
+              if wf == "reply-monitor.yml":
+                  reply_monitor_age_h = age_h
+              if age_h > max_age:
+                  problems.append(f"`{wf}`: last successful run was {age_h:.0f}h ago (window: {max_age}h) — schedule may have silently stopped")
+
+          # CRITICAL: sends happened recently but reply-monitor is stale.
+          # Reply detection is what enforces Hard Rule 5 (pause on reply).
+          try:
+              dc = json.loads(Path("sends/daily-count.json").read_text())
+              sent_recently = dc.get("count", 0) > 0 and dc.get("date", "") >= (NOW - timedelta(days=2)).date().isoformat()
+          except Exception:
+              sent_recently = False
+          if (
+              sent_recently
+              and "reply-monitor.yml" not in SKIP
+              and IN_BUSINESS_WINDOW
+              and (reply_monitor_age_h is None or reply_monitor_age_h > 3)
+          ):
+              age = "unknown" if reply_monitor_age_h is None else f"{reply_monitor_age_h:.0f}h"
+              problems.insert(0, (
+                  f":rotating_light: *CRITICAL*: emails were sent recently (daily count {dc.get('count')} on {dc.get('date')}) "
+                  f"but reply-monitor's last success was {age} ago. Replies are NOT being detected — Hard Rule 5 "
+                  f"(pause on reply) is not enforced. Consider setting SEQUENCES_PAUSED=true until it recovers."
+              ))
+
+          # Zero-output check: weekly-crawl healthy but no fresh raw leads file.
+          if "weekly-crawl.yml" not in SKIP:
+              dates = []
+              for f in Path("leads/raw").glob("*.json"):
+                  m = re.match(r"(\d{4}-\d{2}-\d{2})", f.name)
+                  if m:
+                      dates.append(m.group(1))
+              if dates and max(dates) < (NOW - timedelta(days=9)).date().isoformat():
+                  if not any("weekly-crawl.yml" in p for p in problems):
+                      warnings.append(
+                          f"`weekly-crawl.yml`: runs are green but the newest `leads/raw/` file is dated {max(dates)} "
+                          f"(>9 days). The crawl may be succeeding while producing nothing."
+                      )
+
+          if not problems and not warnings:
+              print("Heartbeat healthy — all monitored workflows within their windows.")
+              raise SystemExit(0)
+
+          lines = [f"*Pipeline heartbeat — {REPO}*"]
+          if problems:
+              lines += ["", "*Problems:*"] + [f"• {p}" for p in problems]
+          if warnings:
+              lines += ["", "*Warnings:*"] + [f"• {w}" for w in warnings]
+          if SKIP:
+              lines += ["", f"_Muted checks (HEARTBEAT_SKIP): {', '.join(sorted(SKIP))}_"]
+          text = "\n".join(lines)
+          print(text)
+
+          token = os.environ.get("SLACK_BOT_TOKEN", "")
+          if token:
+              req = urllib.request.Request(
+                  "https://slack.com/api/chat.postMessage",
+                  data=json.dumps({"channel": ALERT_CHANNEL, "text": text}).encode(),
+                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+              )
+              try:
+                  urllib.request.urlopen(req, timeout=10)
+              except Exception as e:
+                  print(f"Slack error: {e}")
+
+          raise SystemExit(1 if problems else 0)
+          PYEOF
