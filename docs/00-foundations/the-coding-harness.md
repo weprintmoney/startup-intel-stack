@@ -11,6 +11,8 @@ last_reviewed: 2026-08-25
 
 *A three-level build order for a self-improving engineering pipeline.*
 
+**By [Charlcye Mitchell](https://linkedin.com/in/camitchell)** — Director of Engineering Operations, agentic systems architect, field notes writer.
+
 > **THE WHOLE PAPER IN FOUR LINES**
 >
 > 1. This is the three-level build from *Context, Loops, Graphs* end-to-end: a single source of truth (Level 1), at least one production loop (Level 2), and a self-improving coding harness on top of them (Level 3). Each level pays for itself alone; every phase inside a level produces value alone.
@@ -755,3 +757,13 @@ If you've read this far as a human: the ask is smaller than it looks. L1 and L2 
 The system you'll end up with isn't an autonomous engineering team. It's your engineering team's judgment, running continuously, with your senior engineers finally free to spend their hours on the code paths that actually require them.
 
 The humans aren't in the loop as a courtesy. They're in the loop as the design.
+
+---
+
+## About the author
+
+Charlcye Mitchell is a Director of Engineering Operations, management consultant, software engineering strategist, and agentic systems architect. This pattern is what she does when founders say "add AI."
+
+Connect: [LinkedIn](https://linkedin.com/in/camitchell) · [charlcye.ai](https://charlcye.ai)
+
+*Papers, template, and skeletons: [github.com/weprintmoney/startup-intel-stack](https://github.com/weprintmoney/startup-intel-stack)*

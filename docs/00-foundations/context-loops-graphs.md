@@ -11,6 +11,8 @@ last_reviewed: 2026-08-25
 
 *How a ten-person startup built its AI operating system from zero.*
 
+**By [Charlcye Mitchell](https://linkedin.com/in/camitchell)** — Director of Engineering Operations, agentic systems architect, field notes writer.
+
 > **THE WHOLE PAPER IN FOUR LINES**
 >
 > 1. The project isn't "adopt AI." It's externalization — getting what your experts know out of their heads and into artifacts a machine can read and enforce.
@@ -274,3 +276,13 @@ If you've read this far as a human: the ask is smaller than it looks. Levels 1 a
 > Stop at each readiness gate and get explicit human confirmation before proceeding. A companion implementation paper provides the full phase-by-phase sequence and a customization worksheet designed for exactly this use.
 
 The system you'll end up with isn't an AI that replaced your team. It's your team's judgment, running continuously, with your experts finally free to spend their hours on the problems that actually require them.
+
+---
+
+## About the author
+
+Charlcye Mitchell is a Director of Engineering Operations, management consultant, software engineering strategist, and agentic systems architect. This pattern is what she does when founders say "add AI."
+
+Connect: [LinkedIn](https://linkedin.com/in/camitchell) · [charlcye.ai](https://charlcye.ai)
+
+*Papers, template, and skeletons: [github.com/weprintmoney/startup-intel-stack](https://github.com/weprintmoney/startup-intel-stack)*
