@@ -1,0 +1,37 @@
+name: Enrich Leads
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run enrichment agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }}
+          HUNTER_API_KEY: ${{ secrets.HUNTERIO_API_KEY }}
+        run: |
+          claude -p "$(cat agents/enrichment/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 30
+
+      - name: Commit enriched leads
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add leads/enriched/
+          git diff --staged --quiet || git commit -m "enrich: enriched leads $(date +%Y-%m-%d)"
+          git push

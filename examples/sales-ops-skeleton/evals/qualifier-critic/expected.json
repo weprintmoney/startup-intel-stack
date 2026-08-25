@@ -1,0 +1,8 @@
+[
+  {
+    "TOY_FIXTURE": true,
+    "lead_email": "sam.rivera@vantage-insights.example",
+    "expected_decision": "PASS",
+    "note": "Toy fixture: cited pain quote inside 30d, cited funding + hiring signal, VP Eng title (primary), deliverable email. Rubric should clear the pass threshold with margin. Your real golden set should include one PASS, one FAIL per hard-block, and one ESCALATE to guard the fail-closed path."
+  }
+]

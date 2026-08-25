@@ -1,0 +1,59 @@
+name: Monthly Feedback Loop
+
+# Incident-to-eval synthesis for the outreach pipeline: mines merged approval
+# PRs (human edits = corrections), judge verdicts, rejected drafts, and send
+# outcomes for recurring patterns, then (a) commits a monthly report to
+# feedback/reports/ and (b) opens a rubric/template proposal PR in
+# internal-docs when a pattern clears the 3x evidence bar.
+#
+# NOTE: the internal-docs PR step requires INTERNAL_DOCS_PAT to have write +
+# pull-request scope on <YOUR_ORG>/internal-docs (it is read-only
+# today). Until upgraded, the run still produces the sales-ops report; the
+# proposal PR step will fail visibly.
+
+on:
+  schedule:
+    # 1st of the month, 8 AM ET (13:00 UTC)
+    - cron: "0 13 1 * *"
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Days of history to analyze"
+        default: "35"
+
+permissions:
+  contents: read
+
+jobs:
+  feedback-loop:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout internal-docs (rubrics + sequences)
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_PAT }}
+          path: internal-docs
+
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run feedback-loop agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INTERNAL_DOCS_PAT: ${{ secrets.INTERNAL_DOCS_PAT }}
+          REPO: ${{ github.repository }}
+          LOOKBACK_DAYS: ${{ inputs.lookback_days || '35' }}
+        run: |
+          claude -p "$(cat agents/feedback-loop/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
+            --max-turns 100

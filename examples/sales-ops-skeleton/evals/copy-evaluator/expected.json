@@ -1,0 +1,17 @@
+[
+  {
+    "TOY_FIXTURE": true,
+    "lead_email": "sam.rivera@vantage-insights.example",
+    "expected_by_draft": {
+      "vantage-pass-touch1.json": {
+        "expected_decision": "PASS",
+        "note": "Well-formed touch-1: opener cites the funding round, body ties the retrieval-replacement quote to the product's positioning without hallucinating, single CTA, opt-out line intact. Should clear the copy-evaluator threshold."
+      },
+      "vantage-fail-banned-opener-touch1.json": {
+        "expected_decision": "FAIL",
+        "expected_codes_any": ["E1"],
+        "note": "Fails hard on a banned opener ('I hope this email finds you well') + a generic 'In today's AI landscape' — the exact class of failure the copy-evaluator's E1 hard block exists to catch."
+      }
+    }
+  }
+]

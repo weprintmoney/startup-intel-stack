@@ -1,0 +1,67 @@
+name: Weekly Lead Crawl
+
+on:
+  schedule:
+    # Monday + Thursday 8 AM ET (13:00 UTC)
+    - cron: "0 13 * * 1,4"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      skip_downstream:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write  # needed to trigger downstream workflows
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout internal docs for ICP criteria
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_PAT }}
+          path: internal-docs
+          sparse-checkout: |
+            03-commercial-revenue/icp-filter-criteria.yaml
+
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run crawler agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }}
+          RUN_DATE: ${{ github.run_id }}
+        run: |
+          claude -p "$(cat agents/crawler/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write" \
+            --max-turns 60
+
+      - name: Commit raw leads
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add leads/raw/
+          git diff --staged --quiet || git commit -m "crawl: raw leads $(date +%Y-%m-%d)"
+          git push
+
+      - name: Trigger dedup
+        if: ${{ !inputs.skip_downstream }}
+        run: |
+          gh workflow run dedup.yml \
+            --repo ${{ github.repository }} \
+            --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,139 @@
+name: Email Warmup
+
+# Decision 2026-07-15: warm-up happens through low-volume real sends
+# (sequence-enrollment with max_leads 10-15), not seed addresses.
+# This workflow is manual-trigger only, kept as a fallback.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to commit warmup logs + set repo variable
+
+jobs:
+  warmup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Determine warmup day and run
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ secrets.RESEND_FROM }}
+          WARMUP_SEED_ADDRESSES: ${{ secrets.WARMUP_SEED_ADDRESSES }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, sys, subprocess
+          from datetime import date, datetime, timezone
+          from pathlib import Path
+
+          log_dir = Path("warmup/log")
+          existing_logs = sorted(log_dir.glob("*.json"))
+          day_number = len(existing_logs) + 1
+          today = date.today().isoformat()
+
+          print(f"Warmup day {day_number}")
+
+          # Self-terminate after day 28
+          if day_number > 28:
+              print("Warmup complete (day 28 passed). Setting WARMUP_COMPLETE=true.")
+              subprocess.run([
+                  "gh", "api",
+                  f"repos/{os.environ['REPO']}/actions/variables/WARMUP_COMPLETE",
+                  "-X", "PATCH", "-f", "name=WARMUP_COMPLETE", "-f", "value=true"
+              ], check=True)
+              sys.exit(0)
+
+          # Daily cap by phase
+          if day_number <= 7:
+              daily_cap = 20
+          elif day_number <= 14:
+              daily_cap = 40
+          else:
+              daily_cap = 50
+
+          seed_addresses = [
+              a.strip()
+              for a in os.environ.get("WARMUP_SEED_ADDRESSES", "").split(",")
+              if a.strip()
+          ]
+          if not seed_addresses:
+              print("No seed addresses configured. Skipping.")
+              sys.exit(0)
+
+          import requests
+
+          api_key = os.environ["RESEND_API_KEY"]
+          from_address = os.environ.get("RESEND_FROM", "outreach@mail.example.com")
+
+          results = []
+          sent = 0
+          for addr in seed_addresses[:daily_cap]:
+              payload = {
+                  "from": f"<YOUR_COMPANY> Outreach <{from_address}>",
+                  "to": [addr],
+                  "subject": f"<YOUR_COMPANY> warmup — day {day_number}",
+                  "text": (
+                      f"This is a warmup email from <YOUR_COMPANY> outreach (day {day_number}). "
+                      "Please do not reply."
+                  ),
+              }
+              try:
+                  resp = requests.post(
+                      "https://api.resend.com/emails",
+                      headers={
+                          "Authorization": f"Bearer {api_key}",
+                          "Content-Type": "application/json",
+                      },
+                      json=payload,
+                      timeout=30,
+                  )
+                  ok = resp.status_code == 200
+                  results.append({
+                      "to": addr,
+                      "success": ok,
+                      "error": None if ok else resp.text,
+                  })
+                  if ok:
+                      sent += 1
+              except Exception as e:
+                  results.append({"to": addr, "success": False, "error": str(e)})
+
+          log_path = log_dir / f"{today}.json"
+          log_path.write_text(json.dumps({
+              "date": today,
+              "day_number": day_number,
+              "daily_cap": daily_cap,
+              "sent": sent,
+              "results": results,
+          }, indent=2))
+          print(f"Sent {sent}/{daily_cap} warmup emails. Log: {log_path}")
+
+          if day_number == 28:
+              print("Day 28 complete. Setting WARMUP_COMPLETE=true.")
+              subprocess.run([
+                  "gh", "api",
+                  f"repos/{os.environ['REPO']}/actions/variables/WARMUP_COMPLETE",
+                  "-X", "PATCH", "-f", "name=WARMUP_COMPLETE", "-f", "value=true"
+              ], check=False)
+          PYEOF
+
+      - name: Commit warmup log
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add warmup/log/
+          git diff --staged --quiet || git commit -m "warmup: log $(date +%Y-%m-%d)"
+          git push

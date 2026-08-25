@@ -1,0 +1,9 @@
+# Default: <PM_NAME> owns everything in this repo
+* @<pm-github-handle>
+
+# Engineering backstop on shared library code and agent runbooks
+/lib/ @<pm-github-handle> @<founder-github-handle>
+/agents/ @<pm-github-handle> @<founder-github-handle>
+
+# Workflow changes route to <PM_NAME>
+/.github/ @<pm-github-handle>

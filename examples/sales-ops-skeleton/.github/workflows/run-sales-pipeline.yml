@@ -1,0 +1,43 @@
+name: Run Sales Pipeline (crawl → enrich → stack-profile → dedup)
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_crawl:
+        type: boolean
+        default: false
+        description: "Skip the Apollo crawl (leads/raw/ already populated)"
+      skip_dedup:
+        type: boolean
+        default: false
+        description: "Stop after enrichment (skip dedup + Slack review queue)"
+
+jobs:
+  crawl:
+    if: ${{ !inputs.skip_crawl }}
+    uses: ./.github/workflows/weekly-crawl.yml
+    secrets: inherit
+    with:
+      skip_downstream: true
+
+  enrich:
+    needs: crawl
+    if: ${{ !cancelled() && (needs.crawl.result == 'success' || needs.crawl.result == 'skipped') }}
+    uses: ./.github/workflows/enrichment.yml
+    secrets: inherit
+    with:
+      skip_downstream: true
+
+  stack-profile:
+    needs: enrich
+    if: ${{ !cancelled() && needs.enrich.result == 'success' }}
+    uses: ./.github/workflows/stack-profile.yml
+    secrets: inherit
+    with:
+      skip_downstream: true
+
+  dedup:
+    needs: stack-profile
+    if: ${{ !cancelled() && needs.stack-profile.result == 'success' && !inputs.skip_dedup }}
+    uses: ./.github/workflows/dedup-review.yml
+    secrets: inherit

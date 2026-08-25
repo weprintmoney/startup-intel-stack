@@ -1,0 +1,169 @@
+name: Reply Monitor
+
+on:
+  schedule:
+    # Hourly 8 AM–6 PM ET Mon–Fri
+    - cron: "0 13-23 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Poll for replies
+        env:
+          IMAP_HOST: ${{ secrets.IMAP_HOST }}
+          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_SALES_REVIEW_CHANNEL: ${{ secrets.SLACK_SALES_REVIEW_CHANNEL }}
+          SLACK_PM_UID: ${{ secrets.SLACK_PM_UID }}
+          SLACK_FOUNDER_UID: ${{ secrets.SLACK_FOUNDER_UID }}
+          SUPPRESSION_LIST_PATH: suppression/list.jsonl
+        run: |
+          python - <<'PYEOF'
+          import json, os, sys, urllib.request
+          from pathlib import Path
+
+          sys.path.insert(0, "lib")
+          import imap_poll
+          import attio
+          import suppression
+
+          UNSUBSCRIBE_KEYWORDS = ["unsubscribe", "opt out", "opt-out", "remove me", "take me off"]
+
+          def is_unsubscribe(reply: dict) -> bool:
+              haystack = (
+                  reply.get("subject", "") + " " + reply.get("body_snippet", "")
+              ).lower()
+              return any(kw in haystack for kw in UNSUBSCRIBE_KEYWORDS)
+
+          # <PM_NAME> and <FOUNDER_NAME> Slack user IDs (from repo secrets)
+          PM_UID = os.environ.get("SLACK_PM_UID", "")
+          FOUNDER_UID = os.environ.get("SLACK_FOUNDER_UID", "")
+
+          slack_token = os.environ.get("SLACK_BOT_TOKEN", "")
+          channel = os.environ.get("SLACK_SALES_REVIEW_CHANNEL", "")
+
+          def slack_post(text: str) -> None:
+              if not slack_token:
+                  return
+              payload = json.dumps({"channel": channel, "text": text}).encode()
+              req = urllib.request.Request(
+                  "https://slack.com/api/chat.postMessage",
+                  data=payload,
+                  headers={
+                      "Authorization": f"Bearer {slack_token}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  urllib.request.urlopen(req, timeout=10)
+              except Exception as e:
+                  print(f"Slack post failed: {e}")
+
+          def slack_dm(user_id: str, text: str) -> None:
+              if not slack_token:
+                  return
+              payload = json.dumps({"channel": user_id, "text": text}).encode()
+              req = urllib.request.Request(
+                  "https://slack.com/api/chat.postMessage",
+                  data=payload,
+                  headers={
+                      "Authorization": f"Bearer {slack_token}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  urllib.request.urlopen(req, timeout=10)
+              except Exception as e:
+                  print(f"Slack DM failed: {e}")
+
+          replies = imap_poll.check_replies(since_hours=2)
+          if not replies:
+              print("No new replies detected.")
+              sys.exit(0)
+
+          for reply in replies:
+              from_addr = reply.get("from", "")
+              subject = reply.get("subject", "")
+              date_str = reply.get("date", "")
+              print(f"Reply detected: {from_addr} — {subject}")
+
+              email = from_addr.split("<")[-1].rstrip(">").strip() if "<" in from_addr else from_addr
+              contact = attio.get_contact(email)
+              record_id = contact.get("id", {}).get("record_id") if contact else None
+
+              if is_unsubscribe(reply):
+                  # Auto-suppress and close out cleanly
+                  try:
+                      suppression.add(email, "unsubscribed", "reply-monitor")
+                      print(f"Suppressed (unsubscribe): {email}")
+                  except Exception as e:
+                      print(f"Suppression error: {e}")
+                  if record_id:
+                      try:
+                          attio.set_field(record_id, "suppressed", True)
+                          attio.set_field(record_id, "sequence_status", "paused")
+                          attio.log_interaction(
+                              record_id,
+                              f"Unsubscribe request received on {date_str}. Contact suppressed. Sequence stopped."
+                          )
+                      except Exception as e:
+                          print(f"Attio update error: {e}")
+                  msg = (
+                      f":no_entry: *Unsubscribe request — contact suppressed*\n"
+                      f"  From: `{from_addr}`\n"
+                      f"  Date: {date_str}\n"
+                      f"  Added to suppression list. No further sends."
+                  )
+                  slack_dm(PM_UID, msg)
+              else:
+                  # Normal reply — pause sequence, notify both
+                  if record_id:
+                      try:
+                          attio.set_field(record_id, "sequence_status", "paused")
+                          attio.set_field(record_id, "reply_received", True)
+                          attio.log_interaction(
+                              record_id,
+                              f"Reply received on {date_str}. Subject: {subject}. Sequence paused."
+                          )
+                          print(f"Attio: sequence paused for {email}")
+                      except Exception as e:
+                          print(f"Attio update error: {e}")
+                  msg = (
+                      f":email: *Reply received — sequence paused*\n"
+                      f"  From: `{from_addr}`\n"
+                      f"  Subject: _{subject}_\n"
+                      f"  Date: {date_str}\n"
+                      f"  Sequence for this contact is now *paused*. Review and respond manually."
+                  )
+                  slack_dm(PM_UID, msg)
+                  slack_dm(FOUNDER_UID, msg)
+                  if channel:
+                      slack_post(msg)
+          PYEOF
+
+      - name: Commit suppression list updates
+        run: |
+          git config user.name "sales-ops-bot"
+          git config user.email "sales-ops-bot@example.com"
+          git add suppression/list.jsonl
+          git diff --staged --quiet || git commit -m "reply-monitor: suppression update $(date +%Y-%m-%dT%H:%M)"
+          git push

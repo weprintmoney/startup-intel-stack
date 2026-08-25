@@ -1,0 +1,12 @@
+# Inbox Agent — <FOUNDER_NAME> controls what queries are allowed
+# Edit this file and push to inbox-agent/ to change allowed query types.
+# The deploy workflow (inbox-agent-deploy.yml) redeploys on every push.
+
+allowed_queries:
+  - prior_contact_check
+
+max_lookback_days: 180
+
+# prior_contact_check: returns {contacted: bool, last_date: str|null}
+# Only checks if a given email address appears in <FOUNDER_NAME>'s sent mail.
+# Never returns email content, subjects, or recipient lists.
