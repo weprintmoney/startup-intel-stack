@@ -1,0 +1,100 @@
+name: Ledger Update
+
+# Phase 5 graduation ladder: recompute state/autonomy-ledger.json daily from
+# closed agent PRs on product repos (guards/*.paths stems) and postmortems in
+# internal-docs (frontmatter caused_by_class). Deterministic — no model calls.
+# Slack only on level transitions. Promotion caps at L3 until L4
+# self-selection machinery ships. Unfreezing a class or clearing global_freeze
+# is a human edit committed via scripts/commit-state.sh.
+
+on:
+  schedule:
+    # 6:30 AM ET daily (10:30 UTC)
+    - cron: "30 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # state/ commit
+
+concurrency:
+  group: ledger-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ledger selftest (deterministic replay cases)
+        run: python scripts/update-ledger.py --selftest evals/ledger-cases
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.PRODUCT_REPOS_PAT }}
+          B: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+        run: |
+          MISSING=""
+          [ -z "$A" ] && MISSING="$MISSING PRODUCT_REPOS_PAT"
+          [ -z "$B" ] && MISSING="$MISSING INTERNAL_DOCS_RO_PAT"
+          if [ -n "$MISSING" ]; then
+            echo "Missing secrets (issue #1):$MISSING — ledger update is a no-op (selftest still ran)."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout internal-docs (postmortem scan)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          path: internal-docs
+
+      - name: Update ledger
+        if: steps.gate.outputs.go == 'true'
+        id: update
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AUTO_MERGE_FROZEN: ${{ vars.AUTO_MERGE_FROZEN }}
+        run: |
+          BEFORE=$(git show HEAD:state/autonomy-ledger.json | shasum -a 256 | cut -d' ' -f1)
+          FLAGS=""
+          [ "$AUTO_MERGE_FROZEN" = "true" ] && FLAGS="--auto-merge-frozen"
+          python scripts/update-ledger.py --internal-docs internal-docs $FLAGS | tee /tmp/ledger-out.txt
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          bash scripts/commit-state.sh state/autonomy-ledger.json "$BEFORE" "state: autonomy ledger daily update"
+          if grep -q '^TRANSITION:' /tmp/ledger-out.txt; then
+            echo "transitions=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "transitions=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Slack on transitions
+        if: steps.gate.outputs.go == 'true' && steps.update.outputs.transitions == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          LINES=$(grep '^TRANSITION:' /tmp/ledger-out.txt | sed 's/^TRANSITION: /• /')
+          bash scripts/slack-alert.sh ":vertical_traffic_light: Autonomy ledger transitions:
+          $LINES
+          Demotions freeze the class until a human clears it. $RUN_URL"
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/slack-alert.sh ":x: ledger-update failed — autonomy ledger may be stale (no promotions/demotions applied). Not retrying. $RUN_URL"

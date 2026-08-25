@@ -1,0 +1,67 @@
+name: Expertise Path Guard
+
+# Deterministic expertise firewall (never self-policed): agent PRs touching
+# crypto, key-handling, indexing-core, or query-path files fail this check —
+# those tickets are mode:requires-expertise, not mode:claude-led
+# (internal-docs/08-team-culture/coding-agents.md).
+#
+# Product repos call this via workflow_call as a required check on agent/*
+# branches; guards/<repo>.paths in this repo is the single pattern source.
+# Missing path list = fail closed. Fetching from this private repo needs
+# either the org Actions-access setting or AGENT_OPS_READ_TOKEN (issue #1).
+# The pull_request trigger self-tests the guard on agent-ops' own PRs.
+
+on:
+  workflow_call:
+    secrets:
+      AGENT_OPS_READ_TOKEN:
+        required: false
+  pull_request:
+    paths:
+      - "scripts/expertise-path-guard*.sh"
+      - "guards/**"
+      - ".github/workflows/expertise-path-guard.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    if: github.event.pull_request.base.repo.full_name != '<YOUR_ORG>/agent-ops'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch guard script and path list
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_OPS_READ_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p scripts guards
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          gh api repos/<YOUR_ORG>/agent-ops/contents/scripts/expertise-path-guard.sh \
+            -H "Accept: application/vnd.github.raw" > scripts/expertise-path-guard.sh
+          if ! gh api "repos/<YOUR_ORG>/agent-ops/contents/guards/${REPO_NAME}.paths" \
+            -H "Accept: application/vnd.github.raw" > "guards/${REPO_NAME}.paths"; then
+            echo "::error::No guards/${REPO_NAME}.paths in agent-ops." \
+                 "The guard fails closed — add a path list (empty lists are valid) before agent PRs here."
+            exit 1
+          fi
+          chmod +x scripts/expertise-path-guard.sh
+
+      - name: Guard PR range
+        run: |
+          git fetch origin "${{ github.base_ref }}" --quiet
+          bash scripts/expertise-path-guard.sh \
+            "guards/${GITHUB_REPOSITORY##*/}.paths" "origin/${{ github.base_ref }}" HEAD
+
+  self-test:
+    if: github.event.pull_request.base.repo.full_name == '<YOUR_ORG>/agent-ops'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run guard self-test
+        run: bash scripts/expertise-path-guard-test.sh

@@ -1,0 +1,66 @@
+name: Ticket Intake
+
+# Stage 1 of the coding loop — deterministic policy, no LLM (D4: humans
+# select tickets by labeling them agent:queued; the agent never self-selects
+# until L4). Every 2h: refuse non-claude-led tickets, claim eligible ones up
+# to the WIP cap into state/queue.json (race-safe via commit-state.sh), and
+# dispatch spec-draft per claim.
+# Degrades gracefully pre-setup: no PRODUCT_REPOS_PAT -> no-op with a notice.
+# Exempt from nothing: AGENT_OPS_PAUSED stops intake first.
+
+on:
+  schedule:
+    - cron: "23 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ticket-intake
+  cancel-in-progress: false
+
+jobs:
+  intake:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # state/queue.json commits
+      actions: write    # dispatch spec-draft.yml
+    env:
+      PRODUCT_REPO: <YOUR_ORG>/example-app-core
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on product-repo token
+        id: gate
+        env:
+          PAT: ${{ secrets.PRODUCT_REPOS_PAT }}
+        run: |
+          if [ -z "$PAT" ]; then
+            echo "PRODUCT_REPOS_PAT not configured (issue #1) — intake is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Claim eligible tickets
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          bash scripts/ticket-intake.sh | tee /tmp/intake.log
+
+      - name: Dispatch spec-draft per claim
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          grep '^CLAIM ' /tmp/intake.log | while read -r _ issue branch; do
+            gh workflow run spec-draft.yml -f issue="$issue" -f branch="$branch" ||
+              echo "::warning::spec-draft dispatch failed for #$issue"
+          done

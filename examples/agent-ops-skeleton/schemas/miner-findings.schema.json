@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/<YOUR_ORG>/agent-ops/schemas/miner-findings.schema.json",
+  "title": "Miner findings",
+  "description": "Output of one mining subagent (dream-loop miners and Phase-1 graph-seeding miners). The orchestrator synthesizes findings and applies the 3x evidence bar before proposing changes.",
+  "type": "object",
+  "required": ["miner", "run_url", "lookback_days", "created_at", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "miner": {
+      "enum": [
+        "transcript-failure-miner",
+        "review-delta-miner",
+        "doc-drift-miner",
+        "adr-miner",
+        "terminus-miner",
+        "postmortem-miner",
+        "positioning-miner"
+      ]
+    },
+    "run_url": { "type": "string", "format": "uri" },
+    "lookback_days": { "type": "integer", "minimum": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "summary", "evidence", "proposed_change"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "description": "Stable slug within the run, e.g. f-01-stale-storage-adr" },
+          "kind": {
+            "enum": [
+              "missing-context",
+              "wrong-assumption",
+              "dead-end",
+              "human-correction",
+              "doc-drift",
+              "staleness",
+              "judge-disagreement",
+              "new-node",
+              "new-edge",
+              "confidence-change"
+            ]
+          },
+          "summary": { "type": "string", "maxLength": 500 },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["url"],
+              "additionalProperties": false,
+              "properties": {
+                "url": { "type": "string", "format": "uri" },
+                "note": { "type": "string" }
+              }
+            }
+          },
+          "prevalence": {
+            "type": "object",
+            "required": ["occurrences", "distinct_sources"],
+            "additionalProperties": false,
+            "properties": {
+              "occurrences": { "type": "integer", "minimum": 1 },
+              "distinct_sources": { "type": "integer", "minimum": 1 }
+            }
+          },
+          "proposed_change": {
+            "type": "object",
+            "required": ["change_type", "target_path", "detail"],
+            "additionalProperties": false,
+            "properties": {
+              "change_type": {
+                "enum": [
+                  "frontmatter-edit",
+                  "team-memory-entry",
+                  "rule-edit",
+                  "skill-edit",
+                  "prompt-edit",
+                  "rubric-edit",
+                  "golden-fixture",
+                  "node-stub"
+                ]
+              },
+              "target_path": { "type": "string", "description": "Path in internal-docs (or evals/ for golden-fixture)" },
+              "detail": { "type": "string" },
+              "risk_if_wrong": { "type": "string", "description": "One line: consequence if this memory change is wrong" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

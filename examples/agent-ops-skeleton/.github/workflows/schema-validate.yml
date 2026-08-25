@@ -1,0 +1,111 @@
+name: Schema Validate
+
+# D9: every inter-stage artifact has a JSON Schema. This check keeps the
+# schemas themselves valid, the fixtures conforming, and the live state/
+# files conforming — so a malformed state write fails CI instead of
+# silently corrupting the pipeline.
+
+on:
+  push:
+    branches: [main]
+    paths: ["schemas/**", "state/**", "scripts/update-ledger.py", "evals/ledger-cases/**"]
+  pull_request:
+    paths: ["schemas/**", "state/**", "scripts/update-ledger.py", "evals/ledger-cases/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install jsonschema
+        run: pip install --quiet "jsonschema[format]"
+
+      - name: Validate schemas, fixtures, and state
+        run: |
+          python - <<'PYEOF'
+          import json, sys
+          from pathlib import Path
+          from jsonschema import Draft202012Validator, FormatChecker
+
+          failures = []
+
+          def load(p):
+              try:
+                  return json.loads(Path(p).read_text())
+              except Exception as e:
+                  failures.append(f"{p}: unparseable JSON — {e}")
+                  return None
+
+          schemas = {}
+          for sf in sorted(Path("schemas").glob("*.schema.json")):
+              s = load(sf)
+              if s is None:
+                  continue
+              try:
+                  Draft202012Validator.check_schema(s)
+              except Exception as e:
+                  failures.append(f"{sf}: invalid schema — {e}")
+                  continue
+              schemas[sf.stem.replace(".schema", "")] = Draft202012Validator(s, format_checker=FormatChecker())
+
+          def validate(name, instance, path):
+              v = schemas.get(name)
+              if v is None:
+                  failures.append(f"{path}: no schema named {name}")
+                  return
+              errs = sorted(v.iter_errors(instance), key=lambda e: e.json_path)
+              for e in errs:
+                  failures.append(f"{path}: {e.json_path}: {e.message}")
+
+          # Fixtures: schemas/fixtures/<schema-name>.example.json
+          for fx in sorted(Path("schemas/fixtures").glob("*.example.json")):
+              inst = load(fx)
+              if inst is not None:
+                  validate(fx.name.replace(".example.json", ""), inst, fx)
+
+          # Live state: each claim in queue.json must be a valid queue-claim
+          q = load("state/queue.json")
+          if q is not None:
+              if not isinstance(q.get("wip_cap"), int) or not isinstance(q.get("claims"), list):
+                  failures.append("state/queue.json: must have integer wip_cap and array claims")
+              else:
+                  if len([c for c in q["claims"] if c.get("status") not in ("merged", "abandoned")]) > q["wip_cap"]:
+                      failures.append("state/queue.json: active claims exceed wip_cap")
+                  for i, claim in enumerate(q["claims"]):
+                      validate("queue-claim", claim, f"state/queue.json claims[{i}]")
+
+          # Live ledger must conform to its schema; provenance is parse-checked.
+          led = load("state/autonomy-ledger.json")
+          if led is not None:
+              validate("autonomy-ledger", led, "state/autonomy-ledger.json")
+          load("state/provenance.json")
+
+          # Release-intelligence findings: every processed release conforms.
+          for ff in sorted(Path("state").glob("releases/*/findings.json")):
+              inst = load(ff)
+              if inst is not None:
+                  validate("release-findings", inst, ff)
+          for pf in sorted(Path("state").glob("releases/*/proposed-tickets.json")):
+              load(pf)
+
+          if failures:
+              print("SCHEMA VALIDATION FAILED:")
+              for f in failures:
+                  print(f"  - {f}")
+              sys.exit(1)
+          print(f"All schemas, fixtures, and state files valid ({len(schemas)} schemas).")
+          PYEOF
+
+      - name: Ledger selftest (deterministic replay cases)
+        run: python scripts/update-ledger.py --selftest evals/ledger-cases

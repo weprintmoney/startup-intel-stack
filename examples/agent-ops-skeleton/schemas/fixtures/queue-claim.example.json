@@ -1,0 +1,12 @@
+{
+  "issue": 412,
+  "repo": "<YOUR_ORG>/example-app-service",
+  "title": "Return actionable error when index name collides",
+  "mode": "claude-led",
+  "ticket_class": "service-feature",
+  "claimed_at": "2026-08-21T14:00:00Z",
+  "run_url": "https://github.com/<YOUR_ORG>/agent-ops/actions/runs/1",
+  "branch": "agent/412-index-name-collision-error",
+  "status": "spec-pending",
+  "spec_fast_path": false
+}

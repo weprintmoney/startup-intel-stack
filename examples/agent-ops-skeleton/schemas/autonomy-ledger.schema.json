@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/<YOUR_ORG>/agent-ops/schemas/autonomy-ledger.schema.json",
+  "title": "Autonomy ledger",
+  "description": "Per ticket-class autonomy levels (L0-L4) and rolling metrics. Autonomy is earned per class, never globally; a regression demotes the class, not the harness. mode:requires-expertise work is pinned at L0 forever and never appears here. Written only by scripts/update-ledger.py via scripts/commit-state.sh (hash-checked). Unfreezing a class or clearing global_freeze is a human edit via PR/commit-state.",
+  "type": "object",
+  "required": ["global_freeze", "classes", "updated_at"],
+  "additionalProperties": false,
+  "properties": {
+    "global_freeze": {
+      "type": "boolean",
+      "description": "Manual global auto-merge kill switch inside the ledger. Independent of the AUTO_MERGE_FROZEN repo variable (set by judge-evals on a verdict flip); the auto-merge gate requires BOTH to be off."
+    },
+    "updated_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Last time update-ledger.py wrote this file. null only in the initial stub."
+    },
+    "classes": {
+      "type": "object",
+      "description": "Keyed by ticket class = the class:* label value on the sprint issue ('unclassified' when absent).",
+      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*$" },
+      "additionalProperties": { "$ref": "#/$defs/class" }
+    }
+  },
+  "$defs": {
+    "class": {
+      "type": "object",
+      "required": [
+        "level",
+        "consecutive_clean_merges",
+        "change_requested_streak",
+        "judge_first_pass",
+        "coverage_trips",
+        "guardrail_overrides",
+        "frozen",
+        "history"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "L0 human-authored, L1 agent PR + human reviews spec+code, L2 spec fast-path auto-approved, L3 auto-merge on all-green + 24h revert window, L4 auto-merge + self-selected tickets (promotion capped at L3 until L4 machinery ships)."
+        },
+        "consecutive_clean_merges": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Merged agent PRs since the last level transition with zero change-requests, zero human commits on the branch, and no detected post-merge human edits. Reset by any transition or any non-clean closed PR."
+        },
+        "change_requested_streak": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Consecutive closed agent PRs that received a human CHANGES_REQUESTED review. 2 triggers demotion."
+        },
+        "judge_first_pass": {
+          "type": "object",
+          "required": ["pass", "total"],
+          "additionalProperties": false,
+          "properties": {
+            "pass": { "type": "integer", "minimum": 0 },
+            "total": { "type": "integer", "minimum": 0 }
+          },
+          "description": "PRs whose earliest agent-ops/code-judge commit status was success, over closed agent PRs since the last level transition."
+        },
+        "coverage_trips": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Times the coverage-delta check failed on this class since the last level transition. Any trip blocks promotion."
+        },
+        "guardrail_overrides": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Times a human overrode a guardrail (admin-merged past a failing required agent check) since the last level transition. Any override blocks promotion."
+        },
+        "frozen": {
+          "type": "boolean",
+          "description": "Class-level auto-merge freeze (set by a postmortem demotion). Cleared only by a human."
+        },
+        "frozen_reason": { "type": ["string", "null"] },
+        "last_promoted_at": { "type": ["string", "null"], "format": "date-time" },
+        "last_demoted_at": { "type": ["string", "null"], "format": "date-time" },
+        "history": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/transition" },
+          "description": "Append-only transition log. evidence_url also dedupes postmortem demotions: a postmortem already cited here is never applied twice."
+        }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "required": ["at", "from", "to", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "at": { "type": "string", "format": "date-time" },
+        "from": { "type": "integer", "minimum": 0, "maximum": 4 },
+        "to": { "type": "integer", "minimum": 0, "maximum": 4 },
+        "reason": {
+          "type": "string",
+          "description": "e.g. 'promotion: 10 clean merges, judge first-pass 10/10', 'demotion: postmortem caused_by_class', 'demotion: 2 consecutive change-requested PRs'"
+        },
+        "evidence_url": { "type": "string", "format": "uri" }
+      }
+    }
+  }
+}

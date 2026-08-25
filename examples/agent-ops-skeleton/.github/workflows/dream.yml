@@ -1,0 +1,193 @@
+name: Dream Loop
+
+# Phase 4: the outer self-improvement loop. Weekly, mines the pipeline's own
+# exhaust (session transcripts, human corrections on agent PRs, judge-vs-
+# human disagreements, doc drift vs the staleness digest) via 3 parallel
+# Task-tool miners, synthesizes with the 3x evidence bar, and proposes:
+#   - ONE memory PR to internal-docs (team-memory/, graph frontmatter,
+#     rules/) — human approval required indefinitely; this gate is the
+#     memory-poisoning firewall
+#   - optionally one small fixture PR to evals/pr-cases/ here (judge
+#     disagreements -> golden-set candidates)
+# NOT cost-exempt: first to shed at the cost ceiling (AGENT_OPS_PAUSED
+# stops it like everything else). Per-run cost is extracted from the
+# transcript and posted to Slack — the dream budget line.
+# Degrades gracefully pre-setup: missing secrets -> no-op with a notice.
+
+on:
+  schedule:
+    # Sundays 3 AM ET (08:00 UTC)
+    - cron: "0 8 * * 0"
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Days of history to mine"
+        required: false
+        default: "9"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dream
+  cancel-in-progress: false
+
+jobs:
+  dream:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write        # sessions/ transcript + dream/fixtures-* branch
+      pull-requests: write   # fixture proposal PR on this repo
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+          B: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
+          C: ${{ secrets.PRODUCT_REPOS_PAT }}
+        run: |
+          MISSING=""
+          [ -z "$A" ] && MISSING="$MISSING ANTHROPIC_API_KEY"
+          [ -z "$B" ] && MISSING="$MISSING INTERNAL_DOCS_PR_PAT"
+          [ -z "$C" ] && MISSING="$MISSING PRODUCT_REPOS_PAT"
+          if [ -n "$MISSING" ]; then
+            echo "Missing secrets (issue #1):$MISSING — dream loop is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout internal-docs
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
+          path: internal-docs
+          fetch-depth: 0
+
+      - name: Set up Python
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install jsonschema
+        if: steps.gate.outputs.go == 'true'
+        run: pip install "jsonschema[format]"
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run dream orchestrator
+        if: steps.gate.outputs.go == 'true'
+        id: dream
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRODUCT_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          INTERNAL_DOCS_TOKEN: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
+          LOOKBACK_DAYS: ${{ inputs.lookback_days || '9' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git -C internal-docs config user.name "example-app-eng-bot"
+          git -C internal-docs config user.email "example-app-eng-bot@users.noreply.github.com"
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          claude -p "$(cat agents/dream-orchestrator/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep,Task" \
+            --model claude-sonnet-4-6 \
+            --max-turns 150 \
+            --output-format stream-json --verbose > /tmp/dream.stream.jsonl
+          FINAL=$(jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/dream.stream.jsonl)
+          echo "$FINAL"
+          COST=$(jq -rs '[.[] | select(.type == "result")] | last | .total_cost_usd // 0' /tmp/dream.stream.jsonl)
+          echo "result=$(grep -o '^RESULT: [A-Z_]*' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+          echo "dream_pr=$(grep '^DREAM_PR: ' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+          echo "fixtures_pr=$(grep '^FIXTURES_PR: ' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+          echo "improvement_pr=$(grep '^IMPROVEMENT_PR: ' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+          echo "cost=$COST" >> "$GITHUB_OUTPUT"
+
+      - name: Validate miner findings
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          FAIL=0
+          for m in transcript-failure-miner review-delta-miner doc-drift-miner; do
+            f="/tmp/dream/findings/$m.json"
+            if [ ! -f "$f" ]; then
+              echo "::warning::$m produced no findings file"
+              continue
+            fi
+            python - "$f" <<'PYEOF' || FAIL=1
+          import json, sys
+          from jsonschema import Draft202012Validator
+          schema = json.load(open("schemas/miner-findings.schema.json"))
+          data = json.load(open(sys.argv[1]))
+          errors = list(Draft202012Validator(schema).iter_errors(data))
+          for e in errors:
+              print(f"::error::{sys.argv[1]}: {e.json_path}: {e.message}")
+          sys.exit(1 if errors else 0)
+          PYEOF
+          done
+          if [ "$FAIL" = 1 ]; then
+            echo "::error::schema-invalid miner findings — review the dream PR with extra care"
+            exit 1
+          fi
+
+      - name: Save transcript and findings to sessions/
+        if: always() && steps.gate.outputs.go == 'true'
+        run: |
+          WEEK=$(date -u +%G-W%V)
+          mkdir -p "sessions/$WEEK"
+          sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+            /tmp/dream.stream.jsonl > "sessions/$WEEK/dream.stream.jsonl" || true
+          for f in /tmp/dream/findings/*.json; do
+            [ -f "$f" ] && sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+              "$f" > "sessions/$WEEK/dream-$(basename "$f")" || true
+          done
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          git add "sessions/$WEEK" && git commit -m "sessions: dream loop $WEEK" || exit 0
+          for i in 1 2 3; do git push && break || git pull --rebase origin main; done
+
+      - name: Notify Slack
+        if: steps.gate.outputs.go == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          RESULT: ${{ steps.dream.outputs.result }}
+          DREAM_PR: ${{ steps.dream.outputs.dream_pr }}
+          FIXTURES_PR: ${{ steps.dream.outputs.fixtures_pr }}
+          IMPROVEMENT_PR: ${{ steps.dream.outputs.improvement_pr }}
+          COST: ${{ steps.dream.outputs.cost }}
+        run: |
+          case "$RESULT" in
+            PROPOSED)
+              MSG=":crystal_ball: *Dream loop* proposed memory updates — review required (this gate is the poisoning firewall): $DREAM_PR"
+              [ -n "$FIXTURES_PR" ] && [ "$FIXTURES_PR" != "none" ] && MSG="$MSG
+          Golden-fixture proposals: $FIXTURES_PR"
+              [ -n "$IMPROVEMENT_PR" ] && [ "$IMPROVEMENT_PR" != "none" ] && MSG="$MSG
+          Prompt/rubric self-improvement proposals (green eval required before merge): $IMPROVEMENT_PR"
+              ;;
+            NO_SIGNAL)
+              MSG=":crystal_ball: Dream loop ran — no pattern cleared the 3x evidence bar this week. No PR."
+              ;;
+            *)
+              MSG=":warning: Dream loop finished without a RESULT line — inspect the run."
+              ;;
+          esac
+          bash scripts/slack-alert.sh "$MSG
+          Run cost: \$${COST} (dream budget line)"
+
+      - name: Alert on failure
+        if: failure() && steps.gate.outputs.go == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/slack-alert.sh ":x: Dream loop run failed — no memory PR this week. Not retrying (re-dispatch manually if wanted). $RUN_URL"

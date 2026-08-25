@@ -1,0 +1,416 @@
+name: Implement
+
+# Stages 3–5 of the coding loop, one job per stage so failures localize in
+# the Actions DAG and every reviewer is a genuinely fresh context:
+#   implement      -> code on agent/<issue>-<slug> (branch = checkpoint)
+#   review-generic -> fresh claude -p, sees only diff + spec + ticket
+#   review-founder-voice     -> fresh Opus invocation, the founder-voice review, same inputs
+#   open-pr        -> implementer addresses/rebuts findings, then the PR
+#                     opens with both reviews + responses attached verbatim
+#   record         -> scrubbed transcripts to sessions/YYYY-WW/
+#   on failure     -> claim abandoned + issue comment + Slack alert
+# Dispatching this workflow is the human approval act for a pending spec.
+# Degrades gracefully pre-setup: missing secrets -> no-op with a notice.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Product-repo issue number (must have an active claim)"
+        required: true
+      branch:
+        description: "Implementation branch (agent/<issue>-<slug>)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: implement-${{ inputs.issue }}
+  cancel-in-progress: false
+
+env:
+  PRODUCT_REPO: <YOUR_ORG>/example-app-core
+
+jobs:
+  implement:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write   # queue transition
+    outputs:
+      go: ${{ steps.gate.outputs.go }}
+      result: ${{ steps.run.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+          B: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          C: ${{ secrets.PRODUCT_REPOS_PAT }}
+        run: |
+          MISSING=""
+          [ -z "$A" ] && MISSING="$MISSING ANTHROPIC_API_KEY"
+          [ -z "$B" ] && MISSING="$MISSING INTERNAL_DOCS_RO_PAT"
+          [ -z "$C" ] && MISSING="$MISSING PRODUCT_REPOS_PAT"
+          if [ -n "$MISSING" ]; then
+            echo "Missing secrets (issue #1):$MISSING — implement is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mark claim implementing
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          bash scripts/update-claim.sh "${{ inputs.issue }}" implementing
+
+      - name: Checkout product repo
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/example-app-core
+          token: ${{ secrets.PRODUCT_REPOS_PAT }}
+          path: product
+          fetch-depth: 0
+
+      - name: Checkout internal-docs (read-only)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          path: internal-docs
+
+      - name: Resume or create branch
+        if: steps.gate.outputs.go == 'true'
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          cd product
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          if git fetch origin "$BRANCH" 2>/dev/null; then
+            git checkout "$BRANCH"
+            echo "Resuming from existing branch $BRANCH"
+          else
+            git checkout -b "$BRANCH"
+          fi
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run implementer
+        if: steps.gate.outputs.go == 'true'
+        id: run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          ISSUE_NUMBER: ${{ inputs.issue }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          SPEC_PATH=$(jq -r --argjson n "${{ inputs.issue }}" \
+            '.claims[] | select(.issue == $n) | .spec_path // ""' state/queue.json)
+          export SPEC_PATH
+          claude -p "$(cat agents/implementer/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
+            --model claude-sonnet-4-6 \
+            --max-turns 150 \
+            --output-format stream-json --verbose > /tmp/implement.stream.jsonl
+          FINAL=$(jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/implement.stream.jsonl)
+          echo "$FINAL"
+          RESULT=$(grep -o '^RESULT: [A-Z_]*' <<<"$FINAL" | tail -1 | awk '{print $2}')
+          echo "result=$RESULT" >> "$GITHUB_OUTPUT"
+          [ "$RESULT" = "IMPLEMENTED" ] || { echo "::error::implementer result: ${RESULT:-none}"; exit 1; }
+
+      - name: Package review inputs
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+        run: |
+          mkdir -p /tmp/review-input
+          cd product
+          DEFAULT=$(git remote show origin | awk '/HEAD branch/ {print $NF}')
+          git diff "origin/$DEFAULT...HEAD" > /tmp/review-input/diff.patch
+          [ -s /tmp/review-input/diff.patch ] || { echo "::error::empty diff — nothing to review"; exit 1; }
+          cd ..
+          SPEC_PATH=$(jq -r --argjson n "${{ inputs.issue }}" \
+            '.claims[] | select(.issue == $n) | .spec_path // ""' state/queue.json)
+          if [ -n "$SPEC_PATH" ]; then
+            cp "internal-docs/$SPEC_PATH" /tmp/review-input/spec.md
+          else
+            gh issue view "${{ inputs.issue }}" -R "$PRODUCT_REPO" --json comments \
+              --jq '[.comments[].body] | join("\n\n---\n\n")' > /tmp/review-input/intent-note.md
+          fi
+          gh issue view "${{ inputs.issue }}" -R "$PRODUCT_REPO" \
+            --json title,body,labels > /tmp/review-input/ticket.json
+
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.go == 'true'
+        with:
+          name: review-input
+          path: /tmp/review-input/
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.gate.outputs.go == 'true'
+        with:
+          name: transcript-implement
+          path: /tmp/implement.stream.jsonl
+          if-no-files-found: ignore
+
+  review-generic:
+    needs: implement
+    if: needs.implement.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          path: internal-docs
+      - uses: actions/download-artifact@v4
+        with:
+          name: review-input
+          path: /tmp/review-input
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+      - name: Fresh-context review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          mkdir -p /tmp/review-output
+          claude -p "$(cat agents/pr-reviewer/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,Glob,Grep" \
+            --model claude-sonnet-4-6 \
+            --max-turns 40 \
+            --output-format stream-json --verbose > /tmp/review-generic.stream.jsonl
+          [ -s /tmp/review-output/review.md ] || { echo "::error::reviewer wrote no review"; exit 1; }
+          cp /tmp/review-output/review.md /tmp/review-generic.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-generic
+          path: /tmp/review-generic.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transcript-review-generic
+          path: /tmp/review-generic.stream.jsonl
+          if-no-files-found: ignore
+
+  review-founder-voice:
+    needs: implement
+    if: needs.implement.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          path: internal-docs
+      - uses: actions/download-artifact@v4
+        with:
+          name: review-input
+          path: /tmp/review-input
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+      - name: the founder-voice review (Opus)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          mkdir -p /tmp/review-output
+          claude -p "$(cat agents/founder-voice-pr-reviewer/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,Glob,Grep" \
+            --model claude-opus-4-7 \
+            --max-turns 40 \
+            --output-format stream-json --verbose > /tmp/review-founder-voice.stream.jsonl
+          [ -s /tmp/review-output/review.md ] || { echo "::error::reviewer wrote no review"; exit 1; }
+          cp /tmp/review-output/review.md /tmp/review-founder-voice.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-founder-voice
+          path: /tmp/review-founder-voice.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transcript-review-founder-voice
+          path: /tmp/review-founder-voice.stream.jsonl
+          if-no-files-found: ignore
+
+  open-pr:
+    needs: [implement, review-generic, review-founder-voice]
+    if: needs.implement.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write   # queue transition
+      actions: write    # dispatch code-judge.yml on the new PR
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/example-app-core
+          token: ${{ secrets.PRODUCT_REPOS_PAT }}
+          path: product
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: review-input
+          path: /tmp/review-input
+      - uses: actions/download-artifact@v4
+        with:
+          name: review-generic
+          path: /tmp/reviews
+      - uses: actions/download-artifact@v4
+        with:
+          name: review-founder-voice
+          path: /tmp/reviews
+      - name: Set up Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+      - name: Address or rebut findings
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          ISSUE_NUMBER: ${{ inputs.issue }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          git -C product config user.name "example-app-eng-bot"
+          git -C product config user.email "example-app-eng-bot@users.noreply.github.com"
+          mkdir -p /tmp/review-output
+          claude -p "$(cat agents/implementer/respond.md)" \
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
+            --model claude-sonnet-4-6 \
+            --max-turns 80 \
+            --output-format stream-json --verbose > /tmp/respond.stream.jsonl
+          FINAL=$(jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/respond.stream.jsonl)
+          echo "$FINAL"
+          grep -q '^RESULT: RESPONDED' <<<"$FINAL" || { echo "::error::respond pass did not complete"; exit 1; }
+
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          ISSUE: ${{ inputs.issue }}
+          BRANCH: ${{ inputs.branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE=$(jq -r '.title' /tmp/review-input/ticket.json)
+          SPEC_PATH=$(jq -r --argjson n "$ISSUE" \
+            '.claims[] | select(.issue == $n) | .spec_path // ""' state/queue.json)
+          {
+            echo "Closes #$ISSUE."
+            echo ""
+            if [ -n "$SPEC_PATH" ]; then
+              echo "**Spec:** \`internal-docs/$SPEC_PATH\` (human-approved)"
+            else
+              echo "**Spec:** fast path — intent note on #$ISSUE"
+            fi
+            echo ""
+            echo "## Fresh-context reviews (pre-PR)"
+            echo ""
+            echo "<details><summary>Reviewer 1 (generic)</summary>"
+            echo ""; cat /tmp/reviews/review-generic.md; echo ""
+            echo "</details>"
+            echo "<details><summary>Reviewer 2 (the founder-voice, Opus)</summary>"
+            echo ""; cat /tmp/reviews/review-founder-voice.md; echo ""
+            echo "</details>"
+            echo ""
+            echo "## Responses to findings"
+            echo ""
+            cat /tmp/review-output/responses.md
+            echo ""
+            echo "---"
+            echo "Agent-ops [run]($RUN_URL). Human review required (Phase 2: everything is reviewed)."
+          } > /tmp/pr-body.md
+          cd product
+          PR_URL=$(gh pr create -R "$PRODUCT_REPO" --head "$BRANCH" \
+            --title "$TITLE (#$ISSUE)" --body-file /tmp/pr-body.md)
+          echo "PR_URL=$PR_URL" >> "$GITHUB_ENV"
+
+      - name: Mark claim pr-open and notify
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          git pull --rebase origin main || true
+          bash scripts/update-claim.sh "${{ inputs.issue }}" pr-open \
+            "$(jq -n --arg u "$PR_URL" '{pr_url: $u}')"
+          bash scripts/slack-alert.sh ":package: Agent PR ready for human review: $PR_URL ($PRODUCT_REPO#${{ inputs.issue }})"
+
+      - name: Dispatch code-judge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${PR_URL##*/}"
+          gh workflow run code-judge.yml -f pr="$PR_NUMBER" -f issue="${{ inputs.issue }}" \
+            || echo "::warning::code-judge dispatch failed — run manually: gh workflow run code-judge.yml -f pr=$PR_NUMBER"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transcript-respond
+          path: /tmp/respond.stream.jsonl
+          if-no-files-found: ignore
+
+  record:
+    needs: [implement, review-generic, review-founder-voice, open-pr]
+    if: always() && needs.implement.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: transcript-*
+          path: /tmp/transcripts
+          merge-multiple: true
+      - name: Commit scrubbed transcripts
+        run: |
+          WEEK=$(date -u +%G-W%V)
+          DEST="sessions/$WEEK/implement-${{ inputs.issue }}"
+          mkdir -p "$DEST"
+          for f in /tmp/transcripts/*.jsonl; do
+            [ -e "$f" ] || continue
+            sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+              "$f" > "$DEST/$(basename "$f")"
+          done
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          git add sessions/ && git commit -m "sessions: implement #${{ inputs.issue }}" || exit 0
+          for i in 1 2 3; do git push && break || git pull --rebase origin main; done
+
+  alert-on-failure:
+    needs: [implement, review-generic, review-founder-voice, open-pr]
+    if: failure() && needs.implement.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Abandon claim, comment, alert
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          ISSUE: ${{ inputs.issue }}
+          BRANCH: ${{ inputs.branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          bash scripts/update-claim.sh "$ISSUE" abandoned '{"abandoned_reason": "implement pipeline failed"}' || true
+          gh api -X POST "repos/$PRODUCT_REPO/issues/$ISSUE/comments" \
+            -f body="Implementation pipeline failed ([run]($RUN_URL)). Claim abandoned; branch \`$BRANCH\` kept as checkpoint — re-dispatch implement.yml to resume, or re-queue the ticket." || true
+          bash scripts/slack-alert.sh ":x: implement pipeline failed for $PRODUCT_REPO#$ISSUE — claim abandoned, branch $BRANCH kept. $RUN_URL"

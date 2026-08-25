@@ -1,0 +1,8 @@
+# expertise-path-guard input for example-app-core
+# Any agent PR touching these paths is auto-blocked and routed to a human reviewer.
+# See Context, Loops, Graphs — L3-0 "expertise-path guard".
+src/billing/**
+src/auth/**
+src/session/**
+src/payments/**
+migrations/**

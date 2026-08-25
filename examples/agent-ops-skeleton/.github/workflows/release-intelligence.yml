@@ -1,0 +1,343 @@
+name: Release Intelligence
+
+# R1+R2 of the release-intelligence plan: score every merged PR in a
+# example-app-core release against the target-ICP rubric (internal-docs
+# 07-engineering-docs/release-intelligence/rubric.md), persist findings to
+# state/releases/<tag>/, and open agent:proposed backlog tickets for the
+# market-worthy ones. The system proposes; humans promote (swap the label to
+# agent:queued + mode:claude-led) — that gate is permanent.
+#
+# Trigger note: GitHub `release` events only fire workflows in the repo that
+# published the release, so agent-ops cannot subscribe to example-app-core
+# directly. Two paths in: repository_dispatch from a thin caller workflow in
+# the product repo (instant, optional), and a 6h cron poll that needs no
+# product-repo change and doubles as the "release never processed" watchdog.
+# rc/pre-releases and drafts are skipped.
+#
+# Confidentiality: ticket text is scanned against the prospect-name list
+# fetched at run time from <YOUR_ORG>/sales-ops (never committed here, never
+# echoed to logs). Guard is fail-closed: no list, no tickets.
+# Degrades gracefully pre-setup (issue #1): missing secrets -> no-op notice.
+
+on:
+  repository_dispatch:
+    types: [release-published]
+  schedule:
+    - cron: "45 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to (re)process; default = latest unprocessed non-prerelease"
+        required: false
+        default: ""
+      lookback_days:
+        description: "Override PR window start: N days before the release instead of the previous release"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-intelligence
+  cancel-in-progress: false
+
+jobs:
+  release-intelligence:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write   # state/releases/<tag>/ commits
+    env:
+      PRODUCT_REPO: <YOUR_ORG>/example-app-core
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on secrets
+        id: gate
+        env:
+          PAT: ${{ secrets.PRODUCT_REPOS_PAT }}
+          DOCS: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$PAT" ] || [ -z "$DOCS" ] || [ -z "$KEY" ]; then
+            echo "Secrets not configured (issue #1) — release-intelligence is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect unprocessed release
+        id: detect
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          TAG_INPUT: ${{ inputs.tag || github.event.client_payload.tag || '' }}
+          LOOKBACK: ${{ inputs.lookback_days || '' }}
+        run: |
+          RELS=$(gh api "repos/$PRODUCT_REPO/releases?per_page=100" \
+            --jq '[.[] | select(.prerelease == false and .draft == false)
+                   | {tag: .tag_name, at: .published_at}]')
+          if [ -n "$TAG_INPUT" ]; then
+            TAG="$TAG_INPUT"
+          else
+            TAG=$(echo "$RELS" | jq -r '.[0].tag // empty')
+          fi
+          if [ -z "$TAG" ]; then
+            echo "No stable releases found — nothing to do."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! echo "$RELS" | jq -e --arg t "$TAG" 'map(.tag) | index($t) != null' >/dev/null; then
+            echo "::error::$TAG is not a published, non-prerelease release of $PRODUCT_REPO"
+            exit 1
+          fi
+          if [ -f "state/releases/$TAG/findings.json" ] && [ -z "$TAG_INPUT" ]; then
+            echo "$TAG already processed — nothing to do."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          WINDOW_END=$(echo "$RELS" | jq -r --arg t "$TAG" \
+            '(map(.tag) | index($t)) as $i | .[$i].at')
+          if [ -n "$LOOKBACK" ]; then
+            WINDOW_START=$(date -u -d "$WINDOW_END - $LOOKBACK days" +%Y-%m-%dT%H:%M:%SZ)
+          else
+            WINDOW_START=$(echo "$RELS" | jq -r --arg t "$TAG" \
+              '(map(.tag) | index($t)) as $i | .[$i + 1].at // "1970-01-01T00:00:00Z"')
+          fi
+          {
+            echo "go=true"
+            echo "tag=$TAG"
+            echo "window_start=$WINDOW_START"
+            echo "window_end=$WINDOW_END"
+          } >> "$GITHUB_OUTPUT"
+          echo "Processing $TAG (PR window $WINDOW_START .. $WINDOW_END)"
+
+      - name: Checkout internal-docs (read-only)
+        if: steps.detect.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          path: internal-docs
+
+      - name: Prepare miner input
+        id: prep
+        if: steps.detect.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          TAG: ${{ steps.detect.outputs.tag }}
+          WINDOW_START: ${{ steps.detect.outputs.window_start }}
+          WINDOW_END: ${{ steps.detect.outputs.window_end }}
+        run: |
+          mkdir -p /tmp/mine-input /tmp/mine-output
+          RUBRIC=internal-docs/07-engineering-docs/release-intelligence/rubric.md
+          [ -f "$RUBRIC" ] || { echo "::error::rubric doc missing in internal-docs"; exit 1; }
+          cp "$RUBRIC" /tmp/mine-input/rubric.md
+          MW_MIN=$(sed -n 's/^market_worthy_min:[[:space:]]*//p' "$RUBRIC" | head -1)
+          [ -n "$MW_MIN" ] || { echo "::error::market_worthy_min missing from rubric frontmatter"; exit 1; }
+          echo "mw_min=$MW_MIN" >> "$GITHUB_OUTPUT"
+
+          ICP=internal-docs/01-market-intelligence/ideal-customer-profile.mdx
+          [ -f "$ICP" ] || { echo "::error::ICP doc missing in internal-docs"; exit 1; }
+          cp "$ICP" /tmp/mine-input/icp.mdx
+
+          jq '[(.nodes // .)[] | select(.graph_type == "positioning-claim")]' \
+            internal-docs/.claude/indexes/graph.json > /tmp/mine-input/positioning-claims.json
+          [ "$(jq length /tmp/mine-input/positioning-claims.json)" -gt 0 ] ||
+            echo "::warning::no positioning-claim nodes found in graph.json"
+
+          SIG_DIR=internal-docs/01-market-intelligence/analyst-signals
+          for f in $(ls "$SIG_DIR"/2*.md 2>/dev/null | sort | tail -2); do
+            { echo "## $(basename "$f")"; echo; cat "$f"; echo; } >> /tmp/mine-input/market-signals.md
+          done
+          [ -s /tmp/mine-input/market-signals.md ] ||
+            echo "(no analyst-signals files found)" > /tmp/mine-input/market-signals.md
+
+          RUBRIC_VERSION=$(git -C internal-docs log -1 --format=%H -- \
+            07-engineering-docs/release-intelligence/rubric.md)
+          jq -n --arg tag "$TAG" --arg repo "$PRODUCT_REPO" --arg url "$RUN_URL" \
+                --arg rv "$RUBRIC_VERSION" --argjson mw "$MW_MIN" \
+                '{release_tag: $tag, repo: $repo, run_url: $url,
+                  rubric_version: $rv, market_worthy_min: $mw}' \
+                > /tmp/mine-input/run-meta.json
+
+          gh pr list -R "$PRODUCT_REPO" --state merged --base main \
+            --search "merged:${WINDOW_START}..${WINDOW_END}" \
+            --json number,title,url,body --limit 200 > /tmp/mine-input/prs.json
+          N_PRS=$(jq length /tmp/mine-input/prs.json)
+          echo "Found $N_PRS merged PRs in window."
+          if [ "$N_PRS" -eq 0 ]; then
+            jq --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '. + {generated_at: $now, findings: []}' \
+              /tmp/mine-input/run-meta.json > /tmp/mine-output/release-findings.json
+            echo "mine=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "mine=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Claude Code
+        if: steps.prep.outputs.mine == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run release-intelligence-miner
+        if: steps.prep.outputs.mine == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+        run: |
+          claude -p "$(cat agents/release-intelligence-miner/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,Glob,Grep" \
+            --model claude-sonnet-4-6 \
+            --max-turns 40 \
+            --output-format stream-json --verbose > /tmp/mine.stream.jsonl
+          jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/mine.stream.jsonl | tail -3
+
+      - name: Validate findings (schema + arithmetic, deterministic)
+        id: validate
+        if: steps.detect.outputs.go == 'true'
+        env:
+          TAG: ${{ steps.detect.outputs.tag }}
+          MW_MIN: ${{ steps.prep.outputs.mw_min }}
+        run: |
+          F=/tmp/mine-output/release-findings.json
+          [ -f "$F" ] || { echo "::error::miner produced no release-findings.json"; exit 1; }
+          jq -e --arg tag "$TAG" '.release_tag == $tag' "$F" >/dev/null ||
+            { echo "::error::findings release_tag does not match $TAG"; exit 1; }
+          jq -e --argjson mw "$MW_MIN" '.market_worthy_min == $mw' "$F" >/dev/null ||
+            { echo "::error::findings market_worthy_min does not match rubric ($MW_MIN)"; exit 1; }
+          pip install --quiet "jsonschema[format]"
+          python scripts/validate-release-findings.py "$F"
+          {
+            echo "total=$(jq '.findings | length' "$F")"
+            echo "worthy=$(jq '[.findings[] | select(.verdict == "market-worthy")] | length' "$F")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit findings to state
+        if: steps.detect.outputs.go == 'true'
+        env:
+          TAG: ${{ steps.detect.outputs.tag }}
+        run: |
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          mkdir -p "state/releases/$TAG"
+          cp /tmp/mine-output/release-findings.json "state/releases/$TAG/findings.json"
+          bash scripts/commit-state.sh "state/releases/$TAG/findings.json" - \
+            "release-intelligence: $TAG findings"
+
+      - name: Notify when nothing is market-worthy
+        if: steps.detect.outputs.go == 'true' && steps.validate.outputs.worthy == '0'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          TAG: ${{ steps.detect.outputs.tag }}
+          TOTAL: ${{ steps.validate.outputs.total }}
+        run: |
+          bash scripts/slack-alert.sh ":mag: Release intelligence: $TAG scored — 0 of $TOTAL merged PRs market-worthy. No tickets proposed. $RUN_URL"
+
+      - name: Gate on prospect-name guard (fail closed)
+        id: ticketgate
+        if: steps.detect.outputs.go == 'true' && steps.validate.outputs.worthy != '0'
+        env:
+          SALES_PAT: ${{ secrets.SALES_OPS_RO_PAT }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          TAG: ${{ steps.detect.outputs.tag }}
+          WORTHY: ${{ steps.validate.outputs.worthy }}
+        run: |
+          if [ -z "$SALES_PAT" ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            bash scripts/slack-alert.sh ":lock: Release intelligence: $TAG has $WORTHY market-worthy finding(s), but SALES_OPS_RO_PAT is not configured (issue #1) so the prospect-name guard cannot run. Ticket drafting held — fail closed. Findings are in state/releases/$TAG/. $RUN_URL"
+            exit 0
+          fi
+          if GH_TOKEN="$SALES_PAT" gh api \
+            repos/<YOUR_ORG>/sales-ops/contents/guards/prospect-names.txt \
+            --jq .content | base64 -d > /tmp/prospect-names.txt; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            bash scripts/slack-alert.sh ":lock: Release intelligence: $TAG has $WORTHY market-worthy finding(s), but fetching guards/prospect-names.txt from sales-ops failed. Ticket drafting held — fail closed. $RUN_URL"
+          fi
+
+      - name: Set up Claude Code (drafter)
+        if: steps.ticketgate.outputs.go == 'true' && steps.prep.outputs.mine != 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run ticket-drafter
+        if: steps.ticketgate.outputs.go == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TAG: ${{ steps.detect.outputs.tag }}
+        run: |
+          mkdir -p /tmp/draft-input /tmp/draft-output
+          jq '{release_tag, findings: [.findings[] | select(.verdict == "market-worthy")]}' \
+            "state/releases/$TAG/findings.json" > /tmp/draft-input/findings.json
+          cp /tmp/mine-input/run-meta.json /tmp/draft-input/run-meta.json
+          claude -p "$(cat agents/ticket-drafter/CLAUDE.md)" \
+            --allowedTools "Read,Write,Glob" \
+            --model claude-sonnet-4-6 \
+            --max-turns 20 \
+            --output-format stream-json --verbose > /tmp/draft.stream.jsonl
+          jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/draft.stream.jsonl | tail -3
+
+      - name: Scan and open proposed tickets
+        if: steps.ticketgate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          TAG: ${{ steps.detect.outputs.tag }}
+        run: |
+          gh label create -R "$PRODUCT_REPO" "agent:proposed" --color BFD4F2 \
+            --description "Proposed by release-intelligence; a human promotes to agent:queued" \
+            2>/dev/null || true
+          gh label create -R "$PRODUCT_REPO" "release-intelligence" --color 5319E7 \
+            --description "Originated from a release-intelligence run" \
+            2>/dev/null || true
+
+          shopt -s nullglob
+          URLS=()
+          BLOCKED=0
+          for f in /tmp/draft-output/ticket-*.md; do
+            head -1 "$f" | sed 's/^TITLE:[[:space:]]*//' > /tmp/title.txt
+            tail -n +2 "$f" | sed '/./,$!d' > /tmp/body.md
+            if ! bash scripts/prospect-name-scan.sh /tmp/prospect-names.txt /tmp/title.txt /tmp/body.md; then
+              BLOCKED=$((BLOCKED + 1))
+              echo "::warning::$(basename "$f") blocked by prospect-name guard — not opened"
+              continue
+            fi
+            URL=$(gh issue create -R "$PRODUCT_REPO" --title "$(cat /tmp/title.txt)" \
+              --body-file /tmp/body.md \
+              --label "agent:proposed" --label "release-intelligence") ||
+              { echo "::warning::issue create failed for $(basename "$f")"; continue; }
+            gh project item-add 4 --owner <YOUR_ORG> --url "$URL" ||
+              echo "::warning::Project #4 add failed for $URL (PRODUCT_REPOS_PAT needs project scope — issue #1)"
+            URLS+=("$URL")
+          done
+
+          printf '%s\n' "${URLS[@]:-}" | jq -R 'select(length > 0)' | jq -s \
+            --arg tag "$TAG" --arg url "$RUN_URL" --argjson blocked "$BLOCKED" \
+            '{release_tag: $tag, run_url: $url, blocked_by_name_guard: $blocked, issues: .}' \
+            > "/tmp/proposed-tickets.json"
+          mkdir -p "state/releases/$TAG"
+          cp /tmp/proposed-tickets.json "state/releases/$TAG/proposed-tickets.json"
+          bash scripts/commit-state.sh "state/releases/$TAG/proposed-tickets.json" - \
+            "release-intelligence: $TAG proposed tickets"
+
+          MSG=":package: Release intelligence: $TAG — ${#URLS[@]} template-update proposal(s) opened with agent:proposed (awaiting human promotion to agent:queued)."
+          if [ "$BLOCKED" -gt 0 ]; then
+            MSG="$MSG $BLOCKED draft(s) blocked by the prospect-name guard."
+          fi
+          for u in "${URLS[@]:-}"; do
+            if [ -n "$u" ]; then
+              MSG="$MSG"$'\n'"$u"
+            fi
+          done
+          bash scripts/slack-alert.sh "$MSG"
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          TAG: ${{ steps.detect.outputs.tag }}
+        run: |
+          bash scripts/slack-alert.sh ":x: release-intelligence failed for ${TAG:-unknown release}. Abandoned — not retrying. $RUN_URL"

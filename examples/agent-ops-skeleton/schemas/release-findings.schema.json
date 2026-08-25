@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/<YOUR_ORG>/agent-ops/schemas/release-findings.schema.json",
+  "title": "Release findings",
+  "description": "Output of the release-intelligence-miner: one scored entry per merged PR in a release window. Scores are 0-2 per rubric dimension (rubric.md in internal-docs/07-engineering-docs/release-intelligence/). CI additionally verifies total == sum(scores) and that verdict matches the rubric threshold deterministically — the model's arithmetic is never trusted.",
+  "type": "object",
+  "required": ["release_tag", "repo", "run_url", "generated_at", "rubric_version", "market_worthy_min", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "release_tag": { "type": "string", "minLength": 1 },
+    "repo": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "run_url": { "type": "string", "format": "uri" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "rubric_version": { "type": "string", "description": "internal-docs commit hash of the rubric doc used for scoring" },
+    "market_worthy_min": { "type": "integer", "minimum": 0, "maximum": 10, "description": "Threshold read from rubric frontmatter at run time; recorded so verdicts are reproducible after threshold tuning" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pr_number", "pr_title", "pr_url", "summary", "scores", "total", "verdict", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "pr_number": { "type": "integer", "minimum": 1 },
+          "pr_title": { "type": "string" },
+          "pr_url": { "type": "string", "format": "uri" },
+          "summary": { "type": "string", "maxLength": 600, "description": "<=3 sentences, what shipped and why it matters to the target ICP" },
+          "scores": {
+            "type": "object",
+            "required": ["icp_problem_match", "messaging_alignment", "market_resonance", "differentiation_delta", "template_impact"],
+            "additionalProperties": false,
+            "properties": {
+              "icp_problem_match": { "type": "integer", "minimum": 0, "maximum": 2 },
+              "messaging_alignment": { "type": "integer", "minimum": 0, "maximum": 2 },
+              "market_resonance": { "type": "integer", "minimum": 0, "maximum": 2 },
+              "differentiation_delta": { "type": "integer", "minimum": 0, "maximum": 2 },
+              "template_impact": { "type": "integer", "minimum": 0, "maximum": 2 }
+            }
+          },
+          "total": { "type": "integer", "minimum": 0, "maximum": 10 },
+          "verdict": { "enum": ["market-worthy", "not-market-worthy"] },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["source"],
+              "additionalProperties": false,
+              "properties": {
+                "source": { "type": "string", "description": "URL or internal-docs path the score leans on" },
+                "note": { "type": "string" }
+              }
+            }
+          }
+        },
+        "if": { "properties": { "verdict": { "const": "market-worthy" } } },
+        "then": { "properties": { "evidence": { "minItems": 1 } } }
+      }
+    }
+  }
+}

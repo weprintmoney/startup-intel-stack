@@ -1,0 +1,206 @@
+name: Code Judge
+
+# Phase 3 quality gate: score an agent PR against the code-judge rubric
+# (internal-docs 07-engineering-docs/code-judge-rubric.md). Posts a commit
+# status `agent-ops/code-judge` on the product-repo PR head (make it a
+# required check via repo admin — tracked in issue #1 follow-ups) plus a
+# findings comment. Dispatched by implement.yml after opening the PR;
+# re-dispatch manually to re-judge after new commits.
+# Degrades gracefully pre-setup: missing secrets -> no-op with a notice.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number on the product repo"
+        required: true
+      issue:
+        description: "Source issue number (optional, for linkage)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-judge-${{ inputs.pr }}
+  cancel-in-progress: false
+
+env:
+  PRODUCT_REPO: <YOUR_ORG>/example-app-core
+
+jobs:
+  judge:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write   # sessions/ transcript
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+          B: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          C: ${{ secrets.PRODUCT_REPOS_PAT }}
+        run: |
+          MISSING=""
+          [ -z "$A" ] && MISSING="$MISSING ANTHROPIC_API_KEY"
+          [ -z "$B" ] && MISSING="$MISSING INTERNAL_DOCS_RO_PAT"
+          [ -z "$C" ] && MISSING="$MISSING PRODUCT_REPOS_PAT"
+          if [ -n "$MISSING" ]; then
+            echo "Missing secrets (issue #1):$MISSING — code-judge is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout internal-docs (rubric)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          path: internal-docs
+          fetch-depth: 0
+          sparse-checkout: |
+            07-engineering-docs
+
+      - name: Assemble judge inputs
+        if: steps.gate.outputs.go == 'true'
+        id: inputs
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          PR: ${{ inputs.pr }}
+          ISSUE: ${{ inputs.issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          RUBRIC=internal-docs/07-engineering-docs/code-judge-rubric.md
+          [ -f "$RUBRIC" ] || { echo "::error::rubric doc missing in internal-docs"; exit 1; }
+          mkdir -p /tmp/review-input /tmp/review-output
+          gh pr diff "$PR" -R "$PRODUCT_REPO" > /tmp/review-input/diff.patch
+          [ -s /tmp/review-input/diff.patch ] || { echo "::error::empty diff for PR #$PR"; exit 1; }
+          gh pr view "$PR" -R "$PRODUCT_REPO" --json title,body,headRefOid \
+            --jq '"# PR: " + .title + "\n\n" + (.body // "")' > /tmp/review-input/context.md
+          HEAD_SHA=$(gh pr view "$PR" -R "$PRODUCT_REPO" --json headRefOid --jq .headRefOid)
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          if [ -n "$ISSUE" ]; then
+            gh api "repos/$PRODUCT_REPO/issues/$ISSUE" \
+              --jq '{title, body, labels: [.labels[].name]}' > /tmp/review-input/ticket.json
+          fi
+          cp "$RUBRIC" /tmp/review-input/rubric.md
+          RUBRIC_VERSION=$(git -C internal-docs log -1 --format=%H -- 07-engineering-docs/code-judge-rubric.md)
+          jq -n --arg repo "$PRODUCT_REPO" --argjson pr "$PR" \
+                --arg rv "$RUBRIC_VERSION" --arg url "$RUN_URL" \
+                '{repo: $repo, pr: $pr, rubric_version: $rv, run_url: $url}' \
+                > /tmp/review-input/run-meta.json
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run code-judge
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat agents/code-judge/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,Glob,Grep" \
+            --model claude-opus-4-7 \
+            --max-turns 50 \
+            --output-format stream-json --verbose > /tmp/judge.stream.jsonl
+          jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/judge.stream.jsonl | tail -5
+
+      - name: Validate verdict against schema
+        if: steps.gate.outputs.go == 'true'
+        id: verdict
+        run: |
+          [ -f /tmp/review-output/verdict.json ] || { echo "::error::judge produced no verdict.json"; exit 1; }
+          pip install --quiet "jsonschema[format]"
+          python - <<'PYEOF'
+          import json
+          from jsonschema import Draft202012Validator, FormatChecker
+          schema = json.load(open("schemas/judge-verdict.schema.json"))
+          verdict = json.load(open("/tmp/review-output/verdict.json"))
+          errors = list(Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(verdict))
+          for e in errors:
+              print(f"::error::verdict.json: {'/'.join(map(str, e.path)) or '<root>'}: {e.message}")
+          raise SystemExit(1 if errors else 0)
+          PYEOF
+          echo "verdict=$(jq -r .verdict /tmp/review-output/verdict.json)" >> "$GITHUB_OUTPUT"
+          echo "score=$(jq -r .score /tmp/review-output/verdict.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Post commit status + findings comment
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          PR: ${{ inputs.pr }}
+          HEAD_SHA: ${{ steps.inputs.outputs.head_sha }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          SCORE: ${{ steps.verdict.outputs.score }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          STATE=failure; [ "$VERDICT" = "pass" ] && STATE=success
+          gh api -X POST "repos/$PRODUCT_REPO/statuses/$HEAD_SHA" \
+            -f state="$STATE" \
+            -f context="agent-ops/code-judge" \
+            -f description="score $SCORE/100 (threshold 80)" \
+            -f target_url="$RUN_URL" \
+            || echo "::warning::could not post commit status (PAT may lack statuses permission)"
+          {
+            cat /tmp/review-output/findings.md
+            echo ""
+            echo "<sub>rubric $(jq -r .rubric_version /tmp/review-output/verdict.json | cut -c1-12) · [run]($RUN_URL) · re-judge after new commits: \`gh workflow run code-judge.yml -f pr=$PR\`</sub>"
+          } > /tmp/comment.md
+          gh api -X POST "repos/$PRODUCT_REPO/issues/$PR/comments" -F body=@/tmp/comment.md
+
+      # Phase 5 graduation ladder: at L3+ a passing verdict arms GitHub
+      # auto-merge (merges only when ALL required checks are green). Gated on
+      # the ticket class's ledger level, class freeze, ledger global_freeze,
+      # and the AUTO_MERGE_FROZEN repo variable (set by judge-evals on a
+      # verdict flip). 24h revert window announced on Slack. No issue linkage
+      # -> class unknown -> never auto-merge.
+      - name: Auto-merge at L3+ (24h revert window)
+        if: steps.gate.outputs.go == 'true' && steps.verdict.outputs.verdict == 'pass' && vars.AUTO_MERGE_FROZEN != 'true' && inputs.issue != ''
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          PR: ${{ inputs.pr }}
+          ISSUE: ${{ inputs.issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          LABELS=$(gh api "repos/$PRODUCT_REPO/issues/$ISSUE" --jq '.labels[].name')
+          CLASS=$( (grep -m1 '^class:' <<<"$LABELS" || true) | sed 's/^class://')
+          [ -n "$CLASS" ] || CLASS=unclassified
+          LEVEL=$(jq -r --arg c "$CLASS" '.classes[$c].level // 0' state/autonomy-ledger.json)
+          FROZEN=$(jq -r --arg c "$CLASS" '.classes[$c].frozen // false' state/autonomy-ledger.json)
+          GLOBAL=$(jq -r '.global_freeze' state/autonomy-ledger.json)
+          if [ "$LEVEL" -ge 3 ] && [ "$FROZEN" != "true" ] && [ "$GLOBAL" != "true" ]; then
+            gh pr merge "$PR" -R "$PRODUCT_REPO" --auto --squash \
+              || { echo "::warning::could not arm auto-merge (repo setting or PAT scope)"; exit 0; }
+            bash scripts/slack-alert.sh ":rocket: L$LEVEL auto-merge armed: $PRODUCT_REPO PR #$PR (class: $CLASS). Merges when required checks pass. 24h revert window starts at merge. $RUN_URL"
+          else
+            echo "No auto-merge: class=$CLASS level=$LEVEL frozen=$FROZEN ledger_global_freeze=$GLOBAL"
+          fi
+
+      - name: Save transcript to sessions/
+        if: always() && steps.gate.outputs.go == 'true'
+        run: |
+          WEEK=$(date -u +%G-W%V)
+          mkdir -p "sessions/$WEEK"
+          sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+            /tmp/judge.stream.jsonl > "sessions/$WEEK/judge-pr${{ inputs.pr }}.stream.jsonl" || true
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          git add "sessions/$WEEK" && git commit -m "sessions: code-judge PR #${{ inputs.pr }}" || exit 0
+          for i in 1 2 3; do git push && break || git pull --rebase origin main; done
+
+      - name: Alert on failure
+        if: failure() && steps.gate.outputs.go == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/slack-alert.sh ":x: code-judge run failed for $PRODUCT_REPO PR #${{ inputs.pr }} (the PR is NOT blocked — no status posted). $RUN_URL"
