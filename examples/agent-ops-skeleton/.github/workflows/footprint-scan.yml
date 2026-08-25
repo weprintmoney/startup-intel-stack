@@ -1,0 +1,38 @@
+name: Footprint Scan
+
+# Reusable check: fails when a PR carries any Claude/AI footprint (identity,
+# trailers, config files, attribution strings). Public product repos call
+# this as a required check on agent/* branches; the pull_request trigger
+# here self-tests the scanner on this repo's own PRs.
+
+on:
+  workflow_call:
+  pull_request:
+    paths: ["scripts/footprint-scan.sh", ".github/workflows/footprint-scan.yml", ".github/actions/strip-attribution/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch scanner
+        if: github.event.pull_request.base.repo.full_name != '<YOUR_ORG>/agent-ops'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p scripts
+          gh api repos/<YOUR_ORG>/agent-ops/contents/scripts/footprint-scan.sh \
+            -H "Accept: application/vnd.github.raw" > scripts/footprint-scan.sh
+          chmod +x scripts/footprint-scan.sh
+
+      - name: Scan PR range
+        run: |
+          git fetch origin "${{ github.base_ref }}" --quiet
+          bash scripts/footprint-scan.sh "origin/${{ github.base_ref }}" HEAD

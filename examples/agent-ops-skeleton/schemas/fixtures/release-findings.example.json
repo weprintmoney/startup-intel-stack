@@ -1,0 +1,51 @@
+{
+  "release_tag": "v0.17.0",
+  "repo": "<YOUR_ORG>/example-app-core",
+  "run_url": "https://github.com/<YOUR_ORG>/agent-ops/actions/runs/1",
+  "generated_at": "2026-08-21T12:00:00Z",
+  "rubric_version": "0000000000000000000000000000000000000000",
+  "market_worthy_min": 6,
+  "findings": [
+    {
+      "pr_number": 512,
+      "pr_title": "Add S3 backing store for encrypted indexes",
+      "pr_url": "https://github.com/<YOUR_ORG>/example-app-core/pull/512",
+      "summary": "Encrypted indexes can now persist to S3 instead of local disk. Removes the single-node storage ceiling that multi-tenant SaaS deployments hit first.",
+      "scores": {
+        "icp_problem_match": 2,
+        "messaging_alignment": 2,
+        "market_resonance": 1,
+        "differentiation_delta": 2,
+        "template_impact": 2
+      },
+      "total": 9,
+      "verdict": "market-worthy",
+      "evidence": [
+        {
+          "source": "01-market-intelligence/ideal-customer-profile.mdx",
+          "note": "ICP names multi-tenant storage isolation as a top-3 problem"
+        },
+        {
+          "source": "https://github.com/<YOUR_ORG>/example-app-core/pull/512",
+          "note": "PR body cites the multi-tenant deployment limitation directly"
+        }
+      ]
+    },
+    {
+      "pr_number": 519,
+      "pr_title": "Fix flaky test in index compaction suite",
+      "pr_url": "https://github.com/<YOUR_ORG>/example-app-core/pull/519",
+      "summary": "Deflakes a CI test. No behavior change.",
+      "scores": {
+        "icp_problem_match": 0,
+        "messaging_alignment": 0,
+        "market_resonance": 0,
+        "differentiation_delta": 0,
+        "template_impact": 0
+      },
+      "total": 0,
+      "verdict": "not-market-worthy",
+      "evidence": []
+    }
+  ]
+}

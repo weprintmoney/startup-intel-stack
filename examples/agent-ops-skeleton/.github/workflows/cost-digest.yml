@@ -1,0 +1,147 @@
+name: Cost Digest
+
+# Guardrail 1 (terminus/operational-guardrails.md): weekly spend digest with
+# a real ceiling. Reads the last 7 days of org spend from the Anthropic Admin
+# cost-report API, compares to repo variable WEEKLY_COST_CEILING_USD:
+#   >= 70%  -> warning in the digest
+#   >= 100% -> sets repo variable AGENT_OPS_PAUSED=true (global hard-stop all
+#              non-exempt workflows check before running) + alert
+# Degrades gracefully pre-setup: missing key/ceiling posts a "not configured"
+# warning instead of failing.
+
+on:
+  schedule:
+    # Monday 8 AM ET (13:00 UTC)
+    - cron: "0 13 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cost-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write   # to set AGENT_OPS_PAUSED at hard-stop
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compute spend and enforce ceiling
+        env:
+          ANTHROPIC_ADMIN_KEY: ${{ secrets.ANTHROPIC_ADMIN_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          CEILING: ${{ vars.WEEKLY_COST_CEILING_USD }}
+          PAUSED: ${{ vars.AGENT_OPS_PAUSED }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, urllib.request
+          from datetime import datetime, timedelta, timezone
+
+          ALERT_CHANNEL = "${SLACK_OPS_CHANNEL_ID}"
+          REPO = os.environ["REPO"]
+          admin_key = os.environ.get("ANTHROPIC_ADMIN_KEY", "")
+          ceiling_raw = os.environ.get("CEILING", "")
+          now = datetime.now(timezone.utc)
+
+          def slack(text):
+              print(text)
+              token = os.environ.get("SLACK_BOT_TOKEN", "")
+              if not token:
+                  print("(SLACK_BOT_TOKEN not set — printed to log only)")
+                  return
+              req = urllib.request.Request(
+                  "https://slack.com/api/chat.postMessage",
+                  data=json.dumps({"channel": ALERT_CHANNEL, "text": text}).encode(),
+                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+              )
+              try:
+                  urllib.request.urlopen(req, timeout=10)
+              except Exception as e:
+                  print(f"Slack error: {e}")
+
+          if not admin_key:
+              slack(f"*Cost digest — {REPO}*\n:warning: `ANTHROPIC_ADMIN_KEY` secret not set; cannot read spend. See SETUP.md §3. Guardrail 1 is NOT enforced until this is configured.")
+              raise SystemExit(0)
+
+          start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+          url = ("https://api.anthropic.com/v1/organizations/cost_report"
+                 f"?starting_at={start.strftime('%Y-%m-%dT%H:%M:%SZ')}&bucket_width=1d&limit=31")
+          req = urllib.request.Request(url, headers={
+              "x-api-key": admin_key,
+              "anthropic-version": "2023-06-01",
+          })
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  payload = json.load(r)
+          except Exception as e:
+              slack(f"*Cost digest — {REPO}*\n:warning: cost-report API call failed: `{e}`. Spend unknown; treat as ceiling-unknown and check the Console.")
+              raise SystemExit(1)
+
+          # Defensive parse: sum every numeric "amount" found in bucket results.
+          def amounts(node):
+              if isinstance(node, dict):
+                  for k, v in node.items():
+                      if k == "amount":
+                          if isinstance(v, (int, float)):
+                              yield float(v)
+                          elif isinstance(v, str):
+                              try:
+                                  yield float(v)
+                              except ValueError:
+                                  pass
+                          elif isinstance(v, dict) and "value" in v:
+                              try:
+                                  yield float(v["value"])
+                              except (TypeError, ValueError):
+                                  pass
+                      else:
+                          yield from amounts(v)
+              elif isinstance(node, list):
+                  for item in node:
+                      yield from amounts(item)
+
+          spend = sum(amounts(payload.get("data", [])))
+          print(f"Raw payload head: {json.dumps(payload)[:500]}")
+
+          lines = [f"*Cost digest — {REPO}*",
+                   f"Org spend last 7 days: *${spend:,.2f}*"]
+
+          if not ceiling_raw:
+              lines.append(":warning: `WEEKLY_COST_CEILING_USD` repo variable not set — Guardrail 1 ceiling is still `$TBD` in operational-guardrails.md. Decide it (SETUP.md §4).")
+              slack("\n".join(lines))
+              raise SystemExit(0)
+
+          ceiling = float(ceiling_raw)
+          pct = (spend / ceiling * 100) if ceiling > 0 else 0
+          lines.append(f"Ceiling: ${ceiling:,.2f} — *{pct:.0f}%* used")
+
+          if pct >= 100:
+              try:
+                  req = urllib.request.Request(
+                      f"https://api.github.com/repos/{REPO}/actions/variables/AGENT_OPS_PAUSED",
+                      data=json.dumps({"name": "AGENT_OPS_PAUSED", "value": "true"}).encode(),
+                      headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                               "Accept": "application/vnd.github+json"},
+                      method="PATCH",
+                  )
+                  urllib.request.urlopen(req, timeout=15)
+                  lines.append(":rotating_light: *HARD STOP* — ceiling reached. `AGENT_OPS_PAUSED` set to `true`; all non-exempt workflows will refuse to run. Reset the variable to `false` after review.")
+              except Exception as e:
+                  lines.append(f":rotating_light: *HARD STOP required but setting AGENT_OPS_PAUSED failed*: `{e}` — set it manually NOW.")
+          elif pct >= 70:
+              lines.append(f":warning: {pct:.0f}% of weekly ceiling used — dream loop sheds first if this trend continues.")
+
+          if os.environ.get("PAUSED", "") == "true":
+              lines.append("_Note: `AGENT_OPS_PAUSED` is currently `true` — pipeline is stopped._")
+
+          slack("\n".join(lines))
+          raise SystemExit(1 if pct >= 100 else 0)
+          PYEOF

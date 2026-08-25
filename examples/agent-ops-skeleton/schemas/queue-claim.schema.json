@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/<YOUR_ORG>/agent-ops/schemas/queue-claim.schema.json",
+  "title": "Queue claim",
+  "description": "One claimed ticket in state/queue.json. Written by ticket-intake, updated by each downstream stage.",
+  "type": "object",
+  "required": ["issue", "repo", "mode", "ticket_class", "claimed_at", "run_url", "branch", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "issue": { "type": "integer", "minimum": 1 },
+    "repo": { "type": "string", "pattern": "^[A-Za-z0-9._<>-]+/[A-Za-z0-9._-]+$" },
+    "title": { "type": "string" },
+    "mode": { "const": "claude-led" },
+    "ticket_class": {
+      "type": "string",
+      "description": "Autonomy-ladder class, e.g. sdk-regen, docs, test-scaffolding, service-feature"
+    },
+    "claimed_at": { "type": "string", "format": "date-time" },
+    "run_url": { "type": "string", "format": "uri" },
+    "branch": { "type": "string", "pattern": "^agent/[0-9]+-[a-z0-9-]+$" },
+    "status": {
+      "enum": ["claimed", "spec-pending", "spec-approved", "implementing", "in-review", "pr-open", "merged", "abandoned"]
+    },
+    "spec_fast_path": {
+      "type": "boolean",
+      "description": "True when the spec gate was skipped per the template's does-not-apply list"
+    },
+    "spec_path": { "type": "string" },
+    "pr_url": { "type": "string", "format": "uri" },
+    "abandoned_reason": { "type": "string" }
+  }
+}

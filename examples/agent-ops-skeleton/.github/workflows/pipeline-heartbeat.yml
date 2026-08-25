@@ -1,0 +1,126 @@
+name: Pipeline Heartbeat
+
+# Absence-alerting, cloned from sales-ops. GitHub alerts when a workflow RUN
+# fails, but says nothing when a schedule silently stops firing. This check
+# alerts on:
+#   1. staleness — no successful run of a monitored workflow within its window
+#   2. latest completed run of a monitored workflow failed
+# Silence = healthy. Alerts go to the failure-alerts Slack channel.
+# Mute a check pre-launch via repo variable HEARTBEAT_SKIP (comma-separated
+# workflow filenames). Add workflows to MONITORED as phases come live.
+
+on:
+  schedule:
+    # 7:30 AM ET daily (12:30 UTC)
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check pipeline heartbeat
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          HEARTBEAT_SKIP: ${{ vars.HEARTBEAT_SKIP }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, urllib.request
+          from datetime import datetime, timezone
+
+          ALERT_CHANNEL = "${SLACK_OPS_CHANNEL_ID}"
+          REPO = os.environ["REPO"]
+          GH_TOKEN = os.environ["GH_TOKEN"]
+          SKIP = {s.strip() for s in os.environ.get("HEARTBEAT_SKIP", "").split(",") if s.strip()}
+          NOW = datetime.now(timezone.utc)
+
+          # workflow file -> max hours since last successful run.
+          MONITORED = {
+              "cost-digest.yml": 204,     # Mon 8am ET weekly
+              "ticket-intake.yml": 5,     # cron every 2h (+ slack for runner delay)
+              "judge-evals.yml": 204,     # Mon 7am ET weekly (drift canary)
+              "dream.yml": 204,           # Sun 3am ET weekly (memory loop)
+              "ledger-update.yml": 28,    # daily 6:30am ET (graduation ladder)
+              "metrics-digest.yml": 204,  # Mon 8:30am ET weekly
+              "release-intelligence.yml": 10,  # cron every 6h (poll + release watchdog)
+          }
+
+          def gh(path):
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{REPO}{path}",
+                  headers={"Authorization": f"Bearer {GH_TOKEN}", "Accept": "application/vnd.github+json"},
+              )
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  return json.load(r)
+
+          problems, warnings = [], []
+
+          for wf, max_age in MONITORED.items():
+              if wf in SKIP:
+                  continue
+              try:
+                  rs = gh(f"/actions/workflows/{wf}/runs?status=completed&per_page=20")["workflow_runs"]
+              except Exception as e:
+                  warnings.append(f"`{wf}`: could not read run history ({e})")
+                  continue
+              if not rs:
+                  problems.append(f"`{wf}`: no completed runs found at all")
+                  continue
+              latest = rs[0]
+              if latest["conclusion"] not in ("success", "skipped"):
+                  problems.append(f"`{wf}`: latest run concluded *{latest['conclusion']}* — {latest['html_url']}")
+              success = next((r for r in rs if r["conclusion"] == "success"), None)
+              if success is None:
+                  problems.append(f"`{wf}`: no successful run in the last {len(rs)} completed runs")
+                  continue
+              age_h = (NOW - datetime.fromisoformat(success["created_at"].replace("Z", "+00:00"))).total_seconds() / 3600
+              if age_h > max_age:
+                  problems.append(f"`{wf}`: last successful run was {age_h:.0f}h ago (window: {max_age}h) — schedule may have silently stopped")
+
+          if not problems and not warnings:
+              print("Heartbeat healthy — all monitored workflows within their windows.")
+              raise SystemExit(0)
+
+          lines = [f"*Pipeline heartbeat — {REPO}*"]
+          if problems:
+              lines += ["", "*Problems:*"] + [f"• {p}" for p in problems]
+          if warnings:
+              lines += ["", "*Warnings:*"] + [f"• {w}" for w in warnings]
+          if SKIP:
+              lines += ["", f"_Muted checks (HEARTBEAT_SKIP): {', '.join(sorted(SKIP))}_"]
+          text = "\n".join(lines)
+          print(text)
+
+          token = os.environ.get("SLACK_BOT_TOKEN", "")
+          if token:
+              req = urllib.request.Request(
+                  "https://slack.com/api/chat.postMessage",
+                  data=json.dumps({"channel": ALERT_CHANNEL, "text": text}).encode(),
+                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+              )
+              try:
+                  urllib.request.urlopen(req, timeout=10)
+              except Exception as e:
+                  print(f"Slack error: {e}")
+          else:
+              print("SLACK_BOT_TOKEN not set — alert printed to log only (pre-setup).")
+
+          raise SystemExit(1 if problems else 0)
+          PYEOF

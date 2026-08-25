@@ -1,0 +1,48 @@
+diff --git a/src/api/public/workspaces.py b/src/api/public/workspaces.py
+index 1a2b3c4..5d6e7f8 100644
+--- a/src/api/public/workspaces.py
++++ b/src/api/public/workspaces.py
+@@ -12,10 +12,17 @@ from example_app.errors import WorkspaceNotFound
+ def resolve_workspace_slug(request):
+     """Resolve the workspace slug for the current request.
+
+-    Returns the slug string, or raises WorkspaceNotFound if the user has
+-    no default workspace configured.
++    Returns:
++        - The slug string for an authenticated user with a default workspace.
++        - ``None`` for an unauthenticated request (``request.user is None``);
++          the caller is expected to let the framework's 401 handler run.
++
++    Raises:
++        WorkspaceNotFound: if the user is authenticated but has no default
++        workspace configured.
+     """
+-    user = request.user
++    if getattr(request, "user", None) is None:
++        return None
++    user = request.user
+     if user.default_workspace_id is None:
+         raise WorkspaceNotFound(user_id=user.id)
+     return user.default_workspace.slug
+diff --git a/tests/api/public/test_workspaces.py b/tests/api/public/test_workspaces.py
+index abcdef0..fedcba9 100644
+--- a/tests/api/public/test_workspaces.py
++++ b/tests/api/public/test_workspaces.py
+@@ -1,6 +1,7 @@
+ import pytest
+
+ from example_app.api.public.workspaces import resolve_workspace_slug
++from example_app.testing import make_request
+
+
+ def test_resolve_workspace_slug_returns_default(authenticated_request):
+@@ -14,3 +15,9 @@ def test_resolve_workspace_slug_raises_without_default(
+ ):
+     with pytest.raises(WorkspaceNotFound):
+         resolve_workspace_slug(authenticated_request_no_default)
++
++
++def test_resolve_workspace_slug_unauthenticated():
++    """Unauthenticated request must resolve to None, not raise."""
++    request = make_request(user=None)
++    assert resolve_workspace_slug(request) is None

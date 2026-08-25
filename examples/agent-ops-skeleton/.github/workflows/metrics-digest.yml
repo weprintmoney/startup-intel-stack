@@ -1,0 +1,102 @@
+name: Metrics Digest
+
+# Phase 5 weekly digest to Slack: autonomy levels + transitions, merged agent
+# PRs, judge first-pass rate, dream-loop acceptance, staleness backlog, cost
+# pointer. Deterministic — no model calls. Sections degrade to "n/a" when
+# their token is missing (issue #1). Digest-not-per-event-pings is the
+# reviewer-fatigue mitigation from the build plan.
+
+on:
+  schedule:
+    # Mon 8:30 AM ET (13:30 UTC), after cost-digest (8am) and judge-evals (7am)
+    - cron: "30 13 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build digest
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          DOCS_TOKEN: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+        run: |
+          SINCE=$(date -u -d '7 days ago' +%Y-%m-%d)
+
+          # --- autonomy ladder (local state, always available)
+          LADDER=$(jq -r '.classes | to_entries[] |
+            "  • \(.key): L\(.value.level)\(if .value.frozen then " FROZEN" else "" end) — clean streak \(.value.consecutive_clean_merges), judge \(.value.judge_first_pass.pass)/\(.value.judge_first_pass.total)"' \
+            state/autonomy-ledger.json)
+          [ -n "$LADDER" ] || LADDER="  • no classes tracked yet"
+          TRANSITIONS=$(jq -r --arg since "${SINCE}T00:00:00Z" '.classes | to_entries[] |
+            .key as $c | .value.history[] | select(.at >= $since) |
+            "  • \($c): L\(.from)->L\(.to) (\(.reason))"' state/autonomy-ledger.json)
+          [ -n "$TRANSITIONS" ] || TRANSITIONS="  • none"
+
+          # --- merged agent PRs this week (product repos from guards/)
+          if [ -n "$GH_TOKEN" ]; then
+            MERGED=0
+            for p in guards/*.paths; do
+              repo="<YOUR_ORG>/$(basename "$p" .paths)"
+              n=$(gh pr list -R "$repo" --state merged --limit 100 \
+                    --json headRefName,mergedAt \
+                    --jq "[.[] | select(.headRefName | startswith(\"agent/\")) | select(.mergedAt >= \"$SINCE\")] | length" \
+                    2>/dev/null || echo 0)
+              MERGED=$((MERGED + n))
+            done
+            PRS_LINE="$MERGED merged agent PR(s) this week"
+          else
+            PRS_LINE="n/a (PRODUCT_REPOS_PAT missing, issue #1)"
+          fi
+
+          # --- dream acceptance (trailing 28d, internal-docs PRs head dream/*)
+          if [ -n "$DOCS_TOKEN" ]; then
+            SINCE28=$(date -u -d '28 days ago' +%Y-%m-%d)
+            DREAM_JSON=$(GH_TOKEN="$DOCS_TOKEN" gh pr list -R <YOUR_ORG>/internal-docs \
+              --state all --limit 50 --search "head:dream/" --json state,createdAt \
+              --jq "[.[] | select(.createdAt >= \"$SINCE28\")]" 2>/dev/null || echo '[]')
+            D_TOTAL=$(jq 'length' <<<"$DREAM_JSON")
+            D_MERGED=$(jq '[.[] | select(.state == "MERGED")] | length' <<<"$DREAM_JSON")
+            DREAM_LINE="$D_MERGED/$D_TOTAL dream PRs merged (28d)"
+            # --- staleness backlog (pinned digest issue #422)
+            OPEN_FLAGS=$(GH_TOKEN="$DOCS_TOKEN" gh api repos/<YOUR_ORG>/internal-docs/issues/422 \
+              --jq '.body' 2>/dev/null | grep -c '^- \[ \]' || true)
+            STALE_LINE="$OPEN_FLAGS open staleness flag(s) — internal-docs #422"
+          else
+            DREAM_LINE="n/a (INTERNAL_DOCS_RO_PAT missing, issue #1)"
+            STALE_LINE="n/a (INTERNAL_DOCS_RO_PAT missing, issue #1)"
+          fi
+
+          {
+            echo ":bar_chart: *agent-ops weekly metrics* (week ending $(date -u +%Y-%m-%d))"
+            echo "*Autonomy ladder:*"
+            echo "$LADDER"
+            echo "*Transitions (7d):*"
+            echo "$TRANSITIONS"
+            echo "*Throughput:* $PRS_LINE"
+            echo "*Dream loop:* $DREAM_LINE"
+            echo "*Staleness:* $STALE_LINE"
+            echo "*Cost:* see Monday cost-digest thread"
+          } > /tmp/digest.txt
+          cat /tmp/digest.txt
+
+      - name: Post digest
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: bash scripts/slack-alert.sh "$(cat /tmp/digest.txt)"
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/slack-alert.sh ":x: metrics-digest failed. Not retrying. $RUN_URL"

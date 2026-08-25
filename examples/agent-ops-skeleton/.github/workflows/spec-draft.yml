@@ -1,0 +1,152 @@
+name: Spec Draft
+
+# Stage 2 of the coding loop: draft a 7-section spec for a claimed ticket as
+# a PR to internal-docs, or take the fast path (intent note on the issue) for
+# the template's closed does-not-apply list. Dispatched by ticket-intake per
+# claim; humans approve every spec PR (Phase 2 = human-reviews-everything).
+# Degrades gracefully pre-setup: missing secrets -> no-op with a notice.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Product-repo issue number (must have an active claim)"
+        required: true
+      branch:
+        description: "Reserved implementation branch (agent/<issue>-<slug>)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spec-draft-${{ inputs.issue }}
+  cancel-in-progress: false
+
+env:
+  PRODUCT_REPO: <YOUR_ORG>/example-app-core
+
+jobs:
+  spec:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write   # queue transitions + sessions/ transcript
+      actions: write    # dispatch implement.yml on the fast path
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+          B: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
+          C: ${{ secrets.PRODUCT_REPOS_PAT }}
+        run: |
+          MISSING=""
+          [ -z "$A" ] && MISSING="$MISSING ANTHROPIC_API_KEY"
+          [ -z "$B" ] && MISSING="$MISSING INTERNAL_DOCS_PR_PAT"
+          [ -z "$C" ] && MISSING="$MISSING PRODUCT_REPOS_PAT"
+          if [ -n "$MISSING" ]; then
+            echo "Missing secrets (issue #1):$MISSING — spec-draft is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout internal-docs
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
+          path: internal-docs
+          fetch-depth: 0
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Draft spec
+        if: steps.gate.outputs.go == 'true'
+        id: draft
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          INTERNAL_DOCS_TOKEN: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
+          ISSUE_NUMBER: ${{ inputs.issue }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          git -C internal-docs config user.name "example-app-eng-bot"
+          git -C internal-docs config user.email "example-app-eng-bot@users.noreply.github.com"
+          claude -p "$(cat agents/spec-drafter/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
+            --model claude-sonnet-4-6 \
+            --max-turns 80 \
+            --output-format stream-json --verbose > /tmp/spec.stream.jsonl
+          FINAL=$(jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/spec.stream.jsonl)
+          echo "$FINAL"
+          echo "result=$(grep -o '^RESULT: [A-Z_]*' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+          echo "spec_pr=$(grep '^RESULT: SPEC_PR ' <<<"$FINAL" | tail -1 | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+          echo "spec_path=$(grep '^SPEC_PATH: ' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Record claim transition
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRODUCT_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          ISSUE: ${{ inputs.issue }}
+          BRANCH: ${{ inputs.branch }}
+          RESULT: ${{ steps.draft.outputs.result }}
+          SPEC_PATH: ${{ steps.draft.outputs.spec_path }}
+        run: |
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          case "$RESULT" in
+            FAST_PATH)
+              bash scripts/update-claim.sh "$ISSUE" spec-approved '{"spec_fast_path": true}'
+              gh workflow run implement.yml -f issue="$ISSUE" -f branch="$BRANCH"
+              ;;
+            SPEC_PR)
+              bash scripts/update-claim.sh "$ISSUE" spec-pending \
+                "$(jq -n --arg p "$SPEC_PATH" '{spec_path: $p}')"
+              ;;
+            UNFIT)
+              bash scripts/update-claim.sh "$ISSUE" abandoned '{"abandoned_reason": "spec-drafter: unfit for claude-led work"}'
+              bash scripts/slack-alert.sh ":no_entry: spec-draft marked $PRODUCT_REPO#$ISSUE unfit for claude-led work — needs mode re-triage."
+              ;;
+            *)
+              echo "::error::No RESULT line from spec-drafter"
+              exit 1
+              ;;
+          esac
+
+      - name: Save transcript to sessions/
+        if: always() && steps.gate.outputs.go == 'true'
+        run: |
+          WEEK=$(date -u +%G-W%V)
+          mkdir -p "sessions/$WEEK"
+          sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+            /tmp/spec.stream.jsonl > "sessions/$WEEK/spec-${{ inputs.issue }}.stream.jsonl" || true
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          git add "sessions/$WEEK" && git commit -m "sessions: spec-draft #${{ inputs.issue }}" || exit 0
+          for i in 1 2 3; do git push && break || git pull --rebase origin main; done
+
+      - name: Abandon claim on failure
+        if: failure() && steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          ISSUE: ${{ inputs.issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git config user.name "example-app-eng-bot"
+          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          git pull --rebase origin main || true
+          bash scripts/update-claim.sh "$ISSUE" abandoned '{"abandoned_reason": "spec-draft run failed"}' || true
+          gh api -X POST "repos/$PRODUCT_REPO/issues/$ISSUE/comments" \
+            -f body="Spec draft failed ([run]($RUN_URL)). Claim abandoned — re-add \`agent:queued\` to retry." || true
+          bash scripts/slack-alert.sh ":x: spec-draft failed for $PRODUCT_REPO#$ISSUE — claim abandoned. $RUN_URL"

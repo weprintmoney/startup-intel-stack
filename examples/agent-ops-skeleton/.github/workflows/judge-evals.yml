@@ -1,0 +1,149 @@
+name: Judge Golden-Set Evals
+
+# Regression-tests the two PR judges (code-judge, founder-voice-pr-reviewer) against
+# 27 historical PRs with known human verdicts in evals/pr-cases/. A verdict
+# flip = the judge drifted (prompt edit, rubric edit in internal-docs, or
+# model-version drift).
+#
+# Runs on: PRs touching judge prompts or fixtures, weekly schedule (catches
+# rubric edits in internal-docs and model drift), and dispatch. A flip on a
+# non-PR run (schedule/dispatch = drift on main, not a proposed change)
+# sets repo variable AUTO_MERGE_FROZEN=true — the Phase 5 graduation ladder
+# refuses auto-merge while it is set. Clear it manually after the eval is
+# green again.
+#
+# Cost note: full run = 27 cases x 2 judges on Opus, sequential per judge.
+# Use the `cases` dispatch input for cheap subset runs while iterating.
+
+on:
+  pull_request:
+    paths:
+      - "agents/code-judge/**"
+      - "agents/founder-voice-pr-reviewer/**"
+      - "evals/**"
+      - "schemas/judge-verdict.schema.json"
+      - ".github/workflows/judge-evals.yml"
+  schedule:
+    # Mondays 7 AM ET (11:00 UTC)
+    - cron: "0 11 * * 1"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "Comma-separated case subset (default: all)"
+        required: false
+        default: ""
+      rubric_ref:
+        description: "internal-docs ref for the rubric — eval a PROPOSED rubric branch pre-merge (a flip then blocks that proposal instead of freezing auto-merge)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - judge: code-judge
+            model: claude-opus-4-7
+          - judge: founder-voice-pr-reviewer
+            model: claude-opus-4-7
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+          B: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+        run: |
+          if [ -z "$A" ] || [ -z "$B" ]; then
+            echo "Missing ANTHROPIC_API_KEY and/or INTERNAL_DOCS_RO_PAT (issue #1) — judge-evals is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout internal-docs (rubric)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          path: internal-docs
+          ref: ${{ inputs.rubric_ref }}
+          sparse-checkout: |
+            07-engineering-docs
+
+      - name: Set up Python
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run ${{ matrix.judge }} on golden set
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ONLY: ${{ inputs.cases }}
+        run: |
+          ONLY_FLAG=""
+          [ -n "$ONLY" ] && ONLY_FLAG="--only $ONLY"
+          for case in $(python evals/run_eval.py cases $ONLY_FLAG); do
+            echo "::group::${{ matrix.judge }} / $case"
+            python evals/run_eval.py setup --case "$case"
+            claude -p "$(cat agents/${{ matrix.judge }}/CLAUDE.md)" \
+              --allowedTools "Bash,Read,Write,Glob,Grep" \
+              --model ${{ matrix.model }} \
+              --max-turns 40 \
+              || echo "::warning::judge run errored on $case (recorded as MISSING)"
+            python evals/run_eval.py collect --judge ${{ matrix.judge }} --case "$case" --results /tmp/results
+            echo "::endgroup::"
+          done
+
+      - name: Compare verdicts against golden set
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ONLY: ${{ inputs.cases }}
+        run: |
+          ONLY_FLAG=""
+          [ -n "$ONLY" ] && ONLY_FLAG="--only $ONLY"
+          python evals/run_eval.py compare --judge ${{ matrix.judge }} --results /tmp/results $ONLY_FLAG
+
+  freeze-on-drift:
+    # A flip on schedule/dispatch means the judge drifted on main (rubric or
+    # model), not that a proposed change failed review — freeze auto-merge.
+    # Exception: a dispatch with rubric_ref evaluates a PROPOSED rubric
+    # branch; a flip there blocks that proposal, it is not drift on main.
+    needs: eval
+    if: failure() && github.event_name != 'pull_request' && inputs.rubric_ref == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set AUTO_MERGE_FROZEN and alert
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api -X PATCH "repos/${{ github.repository }}/actions/variables/AUTO_MERGE_FROZEN" \
+            -f name=AUTO_MERGE_FROZEN -f value=true \
+          || gh api -X POST "repos/${{ github.repository }}/actions/variables" \
+            -f name=AUTO_MERGE_FROZEN -f value=true \
+          || echo "::error::could not set AUTO_MERGE_FROZEN — set it manually NOW"
+          bash scripts/slack-alert.sh ":rotating_light: *Judge eval verdict flip* on a non-PR run — a judge drifted without a prompt change (rubric edit in internal-docs or model drift). \`AUTO_MERGE_FROZEN=true\` set; auto-merge stays frozen until evals are green and the variable is cleared. $RUN_URL"

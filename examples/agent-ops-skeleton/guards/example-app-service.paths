@@ -1,0 +1,5 @@
+# expertise-path-guard input for example-app-service
+src/api/public/**
+src/webhooks/**
+src/data-access/**
+config/production/**
