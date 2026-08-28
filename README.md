@@ -2,6 +2,22 @@
 
 GTM-in-a-box: an agentic go-to-market system for early-stage startups, run entirely from a GitHub repo + Claude Code + GitHub Actions.
 
+## What this is
+
+**One shared source of truth** — positioning, ICP, personas, roadmap, brand voice, sales playbook, pricing, sequences. It lives in `docs/`, and every agent reads from it.
+
+**Production loops on top of it:**
+
+- **Outbound** that finds leads, writes hyper-custom sequences, monitors deliverability, and keeps an evergreen nurture running.
+- **SEO and AEO** that watch rankings, remediate, generate content, and ship.
+- **Launch playbooks.**
+- **Intelligence that lands in Slack** — market, competitors, engineering signals, analysts, plus regulatory and CVE monitors that actually match the product line.
+- **Conference and CFP tracking** with draft responses already written.
+
+**A self-improving product coding harness.** Tickets that identify themselves. Specs, implementation, review — all autonomous. Then the harness looks at what broke, what drifted, and what should become a rule tomorrow, and implements that.
+
+## How it's built
+
 This repo is a **template**. One instance per company. All company-specific parameters live in `company-profile.yaml`; docs are the single source of truth (SSOT) that every agent reads; agents run on GitHub Actions crons and commit their output back as dated files or PRs.
 
 ## Start here
