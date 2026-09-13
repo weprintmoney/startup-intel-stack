@@ -7,7 +7,7 @@
 # and per-competitor state files; here the agent works with WebSearch/WebFetch and
 # degrades gracefully when the optional Exa key is absent.
 #
-# Tier: pre-seed (signals run at every tier).
+# Mode: docs-only (signals run in every mode).
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
 # Optional secrets: EXA_API_KEY (better arXiv/HN discovery), SLACK_WEBHOOK_URL.
 name: Weekly Engineering Signals
@@ -31,9 +31,9 @@ jobs:
       - name: Stage gate
         id: gate
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          # engineering signals run at every tier; no skip
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # engineering signals run in every mode; no skip
 
       - name: Run engineering signals agent
         env:

@@ -1,4 +1,4 @@
-# Process the approved send queue. Tier: series-a.
+# Process the approved send queue. Mode: find-and-draft.
 # Only sends files that landed on main via a merged approval PR. Every send
 # passes: SEQUENCES_PAUSED flag, suppression list, pause-on-reply (CRM
 # sequence_status), daily cap + warmup ramp + business-hours window
@@ -37,7 +37,7 @@ jobs:
           echo "paused=${PAUSED}" >> "$GITHUB_OUTPUT"
           echo "SEQUENCES_PAUSED=${PAUSED}"
 
-      - name: Preflight (stage gate + provider key + config)
+      - name: Preflight (mode gate + provider key + config)
         id: gate
         if: steps.check-paused.outputs.paused != 'true'
         env:
@@ -45,10 +45,13 @@ jobs:
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
-          if [ "$(rank "$STAGE")" -lt "$(rank series-a)" ]; then
-            echo "::notice::company.stage '$STAGE' is below 'series-a' — sending skipped (stage gate)."
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          rank() { case "$1" in docs-only|pre-seed) echo 0;; find-leads|seed) echo 1;; find-and-draft|series-a) echo 2;; *) echo -1;; esac; }
+          if [ "$(rank "$MODE")" -lt 0 ]; then
+            echo "::warning::company.mode '$MODE' is not recognized — expected docs-only, find-leads, or find-and-draft. Treating as docs-only."
+          fi
+          if [ "$(rank "$MODE")" -lt "$(rank find-and-draft)" ]; then
+            echo "::notice::company.mode '$MODE' is below 'find-and-draft' — sending skipped (mode gate)."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           PROVIDER=$(yq '.sending.provider // "resend"' company-profile.yaml)

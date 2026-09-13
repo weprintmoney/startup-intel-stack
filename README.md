@@ -43,15 +43,19 @@ Read the two field-notes papers first (framework + implementation companion). Th
 | **Foundations** | The two field-notes papers this template implements (framework + phase-by-phase implementation companion) | [`docs/00-foundations/`](docs/00-foundations/) |
 | **Onboarding** | Interactive setup: ingests your existing docs or scrapes your website/LinkedIn/X to draft the SSOT docs for your correction | `/gtm-init` |
 
-## Stage tiers
+## Modes — how much is switched on
 
-Set `stage:` in `company-profile.yaml`. Agents check the tier and skip anything above it.
+Set `mode:` in `company-profile.yaml`. Agents check the mode and skip anything above it. Each mode includes everything in the one above it.
 
-| Tier | Enabled |
-|------|---------|
-| `pre-seed` | Positioning/ICP docs, decision log, weekly market signals, brand voice |
-| `seed` | + content ops pipeline, sales sequences, lead pipeline (crawl→qualify), warmup |
-| `series-a` | + full outbound sending, nurture, deliverability monitoring, docs drift review |
+| Mode | What runs | What you need |
+|------|-----------|---------------|
+| `docs-only` | Positioning, ICP, personas, brand voice, decision log, weekly market and competitor signals, content ops | `ANTHROPIC_API_KEY` |
+| `find-leads` | + the lead pipeline: crawl → dedup → pre-filter → enrich → score against your rubric. Produces a qualified lead list, writes no outreach | + a contact source: `APOLLO_API_KEY` (paid) **or** a contact-list CSV you export yourself |
+| `find-and-draft` | + drafts outreach for qualified leads and opens an approval PR, + sends what you approve there | + an email provider key (`RESEND_API_KEY`, `SENDGRID_API_KEY`, or `MAILGUN_API_KEY`) and a `send_domain` |
+
+**Nothing is ever emailed without your explicit approval, in any mode.** Drafts are written to a branch and opened as a pull request; the sending job only ever reads what you've merged.
+
+Older instances may still use `stage:` with `pre-seed` / `seed` / `series-a`. Those are accepted as aliases for the three modes above, in order.
 
 ## Cost floor
 

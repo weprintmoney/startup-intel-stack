@@ -6,9 +6,29 @@ company:
   domain: "acme.ai"                # primary web domain (NEVER used as send domain)
   send_domain: "mail.acme.ai"      # dedicated send subdomain or alt domain
   one_liner: ""                    # <=20 words, what you do and for whom
-  stage: "pre-seed"                # pre-seed | seed | series-a  (gates which agents run)
   founded: ""                      # YYYY-MM
   hq_timezone: "America/Chicago"
+
+  # How much of the system is switched on. Each mode includes the one above it.
+  #
+  #   docs-only       Research and writing only: market and competitor signals,
+  #                   positioning, ICP, personas, brand voice, content ops.
+  #                   Touches no contact data. Safe place to start.
+  #
+  #   find-leads      + the lead pipeline: crawl, dedup, pre-filter, enrich, and
+  #                   score against your rubric. You get a qualified lead list.
+  #                   Writes no outreach. NOTE: sourcing contacts needs either an
+  #                   APOLLO_API_KEY (paid) or a contact-list CSV you export
+  #                   yourself — without one, the crawl finds nothing. See
+  #                   agents/crawler/CLAUDE.md.
+  #
+  #   find-and-draft  + drafts outreach for qualified leads and opens an approval
+  #                   PR for you, + sends what you approve there. Nothing is ever
+  #                   emailed without your explicit approval, in any mode.
+  #
+  # Older instances may still say `stage:` with pre-seed / seed / series-a —
+  # those are accepted as aliases for the three modes above, in order.
+  mode: "docs-only"
 
 people:
   # Used for sender personas, notification routing, and CODEOWNERS.
@@ -26,7 +46,7 @@ icp:
   buyer_titles: []                 # e.g. ["VP Engineering", "Head of AI", "CTO"]
   disqualifiers: []                # hard-fail conditions, e.g. ["direct competitor", "agency"]
   qualification_thresholds:
-    pre_seed_pass: 60              # rubric score /100 to pass at pre-seed
+    pre_seed_pass: 60              # relaxed bar for leads that are themselves pre-seed companies (see rubrics/pre-seed-qualifier.md)
     standard_pass: 70
     copy_pass: 80
 

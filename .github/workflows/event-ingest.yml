@@ -1,4 +1,4 @@
-# Parse an event attendee list into leads/raw/. Tier: seed. Manual trigger.
+# Parse an event attendee list into leads/raw/. Mode: find-leads. Manual trigger.
 name: Event Ingest
 
 on:
@@ -27,15 +27,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Preflight (stage gate + secrets)
+      - name: Preflight (mode gate + secrets)
         id: gate
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
-          if [ "$(rank "$STAGE")" -lt "$(rank seed)" ]; then
-            echo "::notice::company.stage '$STAGE' is below 'seed' — event ingest skipped (stage gate)."
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          rank() { case "$1" in docs-only|pre-seed) echo 0;; find-leads|seed) echo 1;; find-and-draft|series-a) echo 2;; *) echo -1;; esac; }
+          if [ "$(rank "$MODE")" -lt 0 ]; then
+            echo "::warning::company.mode '$MODE' is not recognized — expected docs-only, find-leads, or find-and-draft. Treating as docs-only."
+          fi
+          if [ "$(rank "$MODE")" -lt "$(rank find-leads)" ]; then
+            echo "::notice::company.mode '$MODE' is below 'find-leads' — event ingest skipped (mode gate)."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ -z "$ANTHROPIC_API_KEY" ]; then

@@ -4,7 +4,7 @@
 # verified changes with citations. Complements weekly-competitive-signals.yml:
 # that workflow detects weekly deltas; this one refreshes the canonical snapshot.
 #
-# Tier: seed (content ops). Exits with a notice at pre-seed.
+# Mode: find-leads (content ops). Exits with a notice in docs-only mode.
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
 # Optional secrets: SLACK_WEBHOOK_URL (failure notifications).
 name: Competitor Refresh
@@ -28,9 +28,9 @@ jobs:
       - name: Stage gate
         id: gate
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          if [ "$STAGE" = "pre-seed" ]; then
-            echo "::notice::Competitor Refresh is a seed-tier workflow; company.stage is pre-seed — skipping."
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          if [ "$MODE" = "docs-only" ] || [ "$MODE" = "pre-seed" ] || [ -z "$MODE" ]; then
+            echo "::notice::Competitor Refresh needs mode find-leads or higher; company.mode is docs-only — skipping."
             echo "run=false" >> "$GITHUB_OUTPUT"
           else
             echo "run=true" >> "$GITHUB_OUTPUT"

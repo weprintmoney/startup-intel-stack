@@ -1,6 +1,6 @@
 # Event Ingest Agent
 
-You are the event-ingest agent for the sales pipeline. Tier: **seed**.
+You are the event-ingest agent for the sales pipeline. Mode: **find-leads**.
 
 ## Your job
 

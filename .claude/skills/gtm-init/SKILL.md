@@ -27,12 +27,26 @@ Extract: what the product does, for whom, differentiators, competitors mentioned
 
 ## Phase 2 — company-profile.yaml
 
-Fill every field in `company-profile.yaml`. Interview for what scraping can't give you:
-- stage (pre-seed / seed / series-a) — this gates everything downstream
-- send domain (must NOT be the primary domain)
+Fill every field in `company-profile.yaml`. Interview for what scraping can't give you.
+
+**Mode comes first — it gates everything downstream.** Never ask "what stage are you?" and never present the words pre-seed/seed/series-a: plenty of instances are not venture-backed startups at all, and a fundraising label tells you nothing about how much of the system they want on. Ask what they want the system to *do*, and say what each answer costs:
+
+> Three ways to run this. Which sounds right to start?
+> 1. **Research and writing only** — it keeps your positioning, ICP, personas and brand voice current, and watches your market and competitors. Doesn't touch contact data. Needs nothing but an Anthropic key.
+> 2. **Find leads too** — it also finds people matching your ICP every week, enriches them, and scores them against your rubric, so you get a qualified list. It does *not* write outreach. Needs a contact source (see below).
+> 3. **Find leads and draft outreach** — it also writes the outreach for each qualified lead and opens it for your approval. Nothing sends until you approve it. Needs a contact source plus an email provider.
+
+Map the answer to `company.mode`: 1 → `docs-only`, 2 → `find-leads`, 3 → `find-and-draft`. You can always change it later.
+
+**Be honest about the contact source before they pick 2 or 3.** The crawler sources contacts from the Apollo.io API (`APOLLO_API_KEY`, a paid subscription), or failing that reads a contact-list CSV they export themselves to `leads/raw/`. With neither, the crawl runs, finds nothing, and exits clean — a silent empty pipeline. Say this plainly at the point they choose, not later. If they have neither yet, recommend starting at `docs-only` and moving up when a source is in place, or point them at `event-ingest.yml` for a one-off attendee/member list they already have.
+
+**Also flag if their targets aren't reachable this way.** Apollo indexes people by company and job title. If their ICP isn't "a role at a company" — individual investors, family offices, private buyers, consumers — say so directly: the crawler will not find those, and a list they source themselves fed through `event-ingest.yml` is the honest path. Don't let them configure a mode whose lead sourcing can't work for their targets.
+
+Then the rest:
+- send domain (must NOT be the primary domain) — only needed for `find-and-draft`
 - sender personas (who is willing to have email go out under their name)
 - disqualifiers and geographies (EU → LinkedIn-only routing)
-- CRM: none / airtable / attio
+- CRM: none / airtable / attio (`none` is a real answer — it uses a local file, zero setup)
 - daily cap and send window (defaults are safe; confirm)
 
 Show the completed YAML. Gate: founder approves before Phase 3.
@@ -51,19 +65,32 @@ Draft in this order (each grounds the next). Every doc gets frontmatter and `sta
 
 Present drafts as **"here's what I inferred — correct me"**, one doc at a time for the load-bearing three (positioning, ICP, voice); batch the rest.
 
-## Phase 4 — Enable the stage tier
+## Phase 4 — Enable the chosen mode
 
 1. Set cron schedules in workflows from `cadences:` (stagger from defaults if asked).
-2. List required GitHub secrets for the chosen tier and how to add each (`gh secret set NAME`). Minimum: `ANTHROPIC_API_KEY`. Seed+: `RESEND_API_KEY`, optional `EXA_API_KEY`, `APOLLO_API_KEY`, CRM key.
-3. Disable (comment out cron) workflows above the tier.
-4. Verify branch protection on main; approval-PR gate depends on it.
+2. List the GitHub secrets the chosen mode needs, by exact name, and tell them to add each one themselves in the repo's Settings → Secrets and variables → Actions. **Never ask anyone to paste a key into the chat** — it would land in the transcript. Offer `gh secret set NAME` (which prompts for the value without echoing it) as the alternative for anyone comfortable in a terminal.
+   - every mode: `ANTHROPIC_API_KEY`
+   - `find-leads`+: a contact source (`APOLLO_API_KEY`, paid) unless they're supplying their own CSV; optional `EXA_API_KEY`, `HUNTER_API_KEY`, CRM key
+   - `find-and-draft`: an email provider key matching `sending.provider`, plus `IMAP_*` for reply monitoring
+   Full table: `SECRETS.md`.
+3. Disable (comment out cron) workflows above the mode.
+4. Verify branch protection on main. The approval gate does not depend on it — agents write drafts to a branch and open a PR regardless — but branch protection is what stops anyone, human or agent, from pushing queue files straight to main and bypassing review.
 
 ## Phase 5 — Setup PR
 
-Open a PR containing everything from Phases 2–4. PR body: checklist of secrets to add, docs marked `draft` needing review, and first-week expectations (which crons fire when). The founder merging this PR is the go-live event.
+Open a PR containing everything from Phases 2–4. PR body: checklist of secrets to add, docs marked `draft` needing review, and what to expect in week one. The founder merging this PR is the go-live event.
+
+Spell out what "running" will actually look like in their mode, so a quiet week doesn't read as a broken system:
+- `docs-only`: signal and content files land as dated commits/PRs. No contact data, ever.
+- `find-leads`: the crawl chain runs weekly and leaves a scored list in `leads/critic/`. **It stops there — no outreach is written.** Say this explicitly; otherwise the first quiet week looks like failure.
+- `find-and-draft`: the same chain continues into drafted outreach and opens an approval PR. Nothing sends until that PR is merged. First batch is deliberately small.
+
+If they have no contact source configured, say plainly that the weekly crawl will find nothing until they add one — don't let them discover it as silence.
 
 ## Hard rules during onboarding
 
 - One question at a time; prefer drafting-for-correction over interrogation.
 - Never copy another company's claims, pricing, or named customers into this instance.
+- Never ask anyone to paste an API key, password, or token into the chat.
 - If the founder asks to skip approval gates or send caps: refuse and explain rule 5 in CLAUDE.md.
+- Don't let someone leave onboarding configured for a mode that can't work for them — no contact source in `find-leads`, no send domain in `find-and-draft`, or an ICP the crawler structurally can't reach. Say so at the point they choose.

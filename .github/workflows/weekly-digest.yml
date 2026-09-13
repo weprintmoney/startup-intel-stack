@@ -5,7 +5,7 @@
 # Simplified from a source pipeline that ran a second extraction agent and routed to
 # named executives; here one agent produces digest + action items in a single pass.
 #
-# Tier: pre-seed (digests run at every tier).
+# Mode: docs-only (digests run in every mode).
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
 # Optional secrets: SLACK_WEBHOOK_URL (digest summary + failure notifications).
 name: Weekly Intelligence Digest
@@ -29,9 +29,9 @@ jobs:
       - name: Stage gate
         id: gate
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          # digests run at every tier; no skip
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # digests run in every mode; no skip
 
       - name: Run weekly digest agent
         env:

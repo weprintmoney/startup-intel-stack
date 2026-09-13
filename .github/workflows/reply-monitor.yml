@@ -1,4 +1,4 @@
-# Poll the outreach inbox for replies. Tier: series-a.
+# Poll the outreach inbox for replies. Mode: find-and-draft.
 # Hard rule: pause-on-reply — the moment a reply is detected, the contact's
 # sequence_status is set to paused in the CRM and no further automated
 # sends happen. Unsubscribe requests are auto-suppressed. Logic lives in
@@ -24,17 +24,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Preflight (stage gate + IMAP secrets + config)
+      - name: Preflight (mode gate + IMAP secrets + config)
         id: gate
         env:
           IMAP_HOST: ${{ secrets.IMAP_HOST }}
           IMAP_USER: ${{ secrets.IMAP_USER }}
           IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
-          if [ "$(rank "$STAGE")" -lt "$(rank series-a)" ]; then
-            echo "::notice::company.stage '$STAGE' is below 'series-a' — reply monitoring skipped (stage gate)."
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          rank() { case "$1" in docs-only|pre-seed) echo 0;; find-leads|seed) echo 1;; find-and-draft|series-a) echo 2;; *) echo -1;; esac; }
+          if [ "$(rank "$MODE")" -lt 0 ]; then
+            echo "::warning::company.mode '$MODE' is not recognized — expected docs-only, find-leads, or find-and-draft. Treating as docs-only."
+          fi
+          if [ "$(rank "$MODE")" -lt "$(rank find-and-draft)" ]; then
+            echo "::notice::company.mode '$MODE' is below 'find-and-draft' — reply monitoring skipped (mode gate)."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ -z "$IMAP_HOST" ] || [ -z "$IMAP_USER" ] || [ -z "$IMAP_PASSWORD" ]; then

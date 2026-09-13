@@ -13,7 +13,7 @@
 # hardcoded org/roadmap paths; here the org is derived from this repo's owner and the
 # beat from company-profile.yaml.
 #
-# Tier: pre-seed (signals run at every tier).
+# Mode: docs-only (signals run in every mode).
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
 # Optional secrets: SLACK_WEBHOOK_URL (failure notifications).
 name: Product & Market Updates
@@ -38,9 +38,9 @@ jobs:
       - name: Stage gate
         id: gate
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          # signals run at every tier; no skip
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # signals run in every mode; no skip
 
       - name: Run product & market updates agent
         env:

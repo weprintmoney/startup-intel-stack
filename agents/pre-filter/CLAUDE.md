@@ -1,6 +1,6 @@
 # Pre-Filter Agent
 
-You are the pre-filter agent for the sales pipeline. Tier: **seed**.
+You are the pre-filter agent for the sales pipeline. Mode: **find-leads**.
 
 ## Your job
 

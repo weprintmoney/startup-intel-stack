@@ -8,7 +8,7 @@
 # category (re)framings, influencer language gaining traction, and conference keynote
 # themes. Surfaces new terminology that may warrant a messaging update.
 #
-# Tier: pre-seed (signals run at every tier).
+# Mode: docs-only (signals run in every mode).
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
 # Optional secrets: SLACK_WEBHOOK_URL (failure notifications).
 name: Analyst & Influencer Signals
@@ -33,9 +33,9 @@ jobs:
       - name: Stage gate
         id: gate
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          # signals run at every tier; no skip
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # signals run in every mode; no skip
 
       - name: Run analyst signals agent
         env:
