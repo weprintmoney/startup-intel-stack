@@ -1,0 +1,93 @@
+name: Format Test Send
+
+# One-shot workflow: sends every JSON in sends/format-test-queue/ via the
+# production send path (lib/smtp_send.py) so a human can inspect real
+# customer-facing rendering. Skips the CRM, suppression, and scheduled-date
+# gating, and does NOT unlink files. Cannot fire on cron — workflow_dispatch
+# only. Refuses to send anywhere but the configured test recipient.
+#
+# Set the TEST_SEND_RECIPIENT repo variable to the address that should
+# receive these (usually your own inbox).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (test recipient configured?)
+        id: gate
+        run: |
+          if [ -z "${{ vars.TEST_SEND_RECIPIENT }}" ]; then
+            echo "::error::TEST_SEND_RECIPIENT repo variable is not set — refusing to send anywhere."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 1
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install requests pyyaml
+
+      - name: Send format-test queue
+        if: steps.gate.outputs.run == 'true'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
+          SEND_FROM: ${{ secrets.SEND_FROM }}
+          TEST_SEND_RECIPIENT: ${{ vars.TEST_SEND_RECIPIENT }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, sys, time
+          from pathlib import Path
+
+          sys.path.insert(0, "lib")
+          import smtp_send
+
+          RECIPIENT = os.environ["TEST_SEND_RECIPIENT"]
+
+          queue_dir = Path("sends/format-test-queue")
+          items = sorted(queue_dir.glob("*.json"))
+          if not items:
+              print("No format-test items.")
+              sys.exit(0)
+
+          print(f"Format-test batch: {len(items)} messages -> {RECIPIENT}")
+
+          for item_path in items:
+              item = json.loads(item_path.read_text())
+              to_email = item["to"]
+              if to_email != RECIPIENT:
+                  print(f"REFUSING to send {item_path.name}: to != {RECIPIENT} (got {to_email})")
+                  continue
+
+              print(f"Sending {item_path.name} (original to: {item.get('original_to')})")
+              result = smtp_send.send_email(
+                  to=to_email,
+                  subject=item["subject"],
+                  body=item["body"],
+                  from_name=item.get("from_name"),  # None -> configured sender persona
+                  body_html=item.get("body_html"),
+                  recipient_tz=item.get("recipient_tz"),  # None -> company.hq_timezone
+                  bcc=None,
+                  reply_to=item.get("reply_to"),
+                  ignore_business_hours=True,  # internal test to TEST_SEND_RECIPIENT only
+              )
+              print(f"  result: success={result['success']} code={result.get('smtp_code')} error={result.get('error')}")
+              time.sleep(5)
+
+          print("Format-test batch complete.")
+          PYEOF

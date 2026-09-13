@@ -3,7 +3,8 @@
 agents. Optional: if EXA_API_KEY is not set, agents fall back to web search.
 
 Usage:
-  python3 lib/exa_search.py "<query>" [--num-results N] [--type auto|fast|deep] [--include-domains d1 d2] [--max-age-hours H]
+  python3 lib/exa_search.py "<query>" [--num-results N] [--type auto|fast|deep] \
+      [--include-domains d1 d2] [--max-age-hours H]
 
 Outputs a JSON array to stdout: [{title, url, published_date, highlights}]
 Exits 1 and prints {"error": "..."} on failure.

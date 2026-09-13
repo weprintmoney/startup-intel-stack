@@ -1,0 +1,41 @@
+name: Lint
+
+# P4 B1: the lint floor. ruff (Python style/complexity/import order) and
+# actionlint (workflow YAML, including its embedded shellcheck pass over
+# every `run:` block). No standalone shellcheck step — this repo has no
+# scripts/*.sh files; all shell lives inside workflow run: blocks, which
+# actionlint already covers. Enforcing since P4 B1's second PR — the
+# baseline findings (15 ruff, 1 actionlint) are fixed; one pre-existing
+# complexity finding (lib/imap_poll.py check_replies) is noqa'd rather
+# than refactored here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ruff
+        run: |
+          pip install --quiet ruff
+          ruff check .
+
+      - name: actionlint (includes its shellcheck-on-run-blocks pass)
+        run: |
+          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color

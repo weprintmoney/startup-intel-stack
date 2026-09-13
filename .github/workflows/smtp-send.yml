@@ -1,8 +1,10 @@
 # Process the approved send queue. Tier: series-a.
 # Only sends files that landed on main via a merged approval PR. Every send
 # passes: SEQUENCES_PAUSED flag, suppression list, pause-on-reply (CRM
-# sequence_status), daily cap + business-hours window (lib/smtp_send.py),
-# and the never-send-from-primary-domain assertion.
+# sequence_status), daily cap + warmup ramp + business-hours window
+# (lib/smtp_send.py), and the never-send-from-primary-domain assertion.
+# Queue-processing logic lives in lib/send_queue.py (tested — see
+# lib/tests/).
 name: SMTP Send
 
 on:
@@ -60,9 +62,11 @@ jobs:
             echo "::notice::No API key secret set for sending.provider '$PROVIDER' — skipping send batch."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          echo "run=true" >> "$GITHUB_OUTPUT"
-          echo "crm_secret=$(yq '.crm.api_key_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
-          echo "webhook_secret=$(yq '.channels.slack_webhook_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
+          {
+            echo "run=true"
+            echo "crm_secret=$(yq '.crm.api_key_secret // ""' company-profile.yaml)"
+            echo "webhook_secret=$(yq '.channels.slack_webhook_secret // ""' company-profile.yaml)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         if: steps.check-paused.outputs.paused != 'true' && steps.gate.outputs.run == 'true'
@@ -83,7 +87,9 @@ jobs:
           SEND_FROM: ${{ secrets.SEND_FROM }} # optional; default outreach@{send_domain}
           CRM_API_KEY: ${{ secrets[steps.gate.outputs.crm_secret || 'CRM_API_KEY'] }}
           CRM_BCC_ADDRESS: ${{ secrets.CRM_BCC_ADDRESS }} # optional CRM email-logging BCC
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }} # optional; soft-bounce alerts prefer this if set
           SLACK_WEBHOOK_URL: ${{ secrets[steps.gate.outputs.webhook_secret || 'SLACK_WEBHOOK_URL'] }}
+          SLACK_SALES_REVIEW_CHANNEL: ${{ vars.SLACK_SALES_REVIEW_CHANNEL }} # optional; soft-bounce alert target
           SUPPRESSION_LIST_PATH: suppression/list.jsonl
         run: |
           PROVIDER=$(yq '.crm.provider // "none"' company-profile.yaml)
@@ -91,146 +97,7 @@ jobs:
             echo "::warning::crm.provider is '$PROVIDER' but its API key secret is unset — using the local store for pause-on-reply checks."
             export CRM_PROVIDER=none
           fi
-          python - <<'PYEOF'
-          import json, os, sys, time
-          from pathlib import Path
-          from datetime import date
-
-          sys.path.insert(0, "lib")
-          import smtp_send
-          import suppression
-          import crm
-
-          def notify(text):
-              url = os.environ.get("SLACK_WEBHOOK_URL")
-              if not url:
-                  return
-              import urllib.request
-              req = urllib.request.Request(
-                  url,
-                  data=json.dumps({"text": text}).encode(),
-                  headers={"Content-Type": "application/json"},
-              )
-              try:
-                  urllib.request.urlopen(req, timeout=10)
-              except Exception:
-                  pass
-
-          queue_dir = Path("sends/queue")
-          log_dir = Path("sends/log")
-          log_dir.mkdir(parents=True, exist_ok=True)
-
-          queued = sorted(queue_dir.glob("*.json")) if queue_dir.exists() else []
-          if not queued:
-              print("No messages in queue.")
-              sys.exit(0)
-
-          results = []
-          for item_path in queued:
-              try:
-                  item = json.loads(item_path.read_text())
-              except Exception as e:
-                  print(f"Skipping {item_path}: {e}")
-                  continue
-
-              to_email = item.get("to")
-              subject = item.get("subject")
-              body = item.get("body")
-
-              if not all([to_email, subject, body]):
-                  print(f"Skipping malformed queue item: {item_path.name}")
-                  continue
-
-              # Safety: LinkedIn touches never go through email send
-              if item.get("channel") == "linkedin":
-                  print(f"LinkedIn item in email queue, skipping: {item_path.name}")
-                  continue
-
-              # Not due yet — leave in queue for a future run
-              scheduled = item.get("scheduled_date", "")
-              if scheduled and scheduled > date.today().isoformat():
-                  continue
-
-              # Suppression check — before every send, no exceptions
-              if suppression.check(to_email):
-                  print(f"Suppressed, skipping: {to_email}")
-                  item_path.unlink()
-                  continue
-
-              # Pause-on-reply: if the sequence is paused/rejected in the CRM,
-              # cancel this contact's remaining queued touches
-              try:
-                  contact = crm.get_contact(to_email)
-              except Exception as e:
-                  print(f"CRM lookup failed for {to_email}, skipping this run: {e}")
-                  continue
-              seq_status = (contact or {}).get("sequence_status", "")
-              if seq_status in ("paused", "rejected", "completed") and not item.get("is_nurture"):
-                  print(f"Sequence {seq_status} for {to_email} — cancelling {item_path.name}")
-                  item_path.unlink()
-                  continue
-              if seq_status in ("paused", "rejected"):
-                  # Nurture items also stop on pause/reject
-                  print(f"Sequence {seq_status} for {to_email} — cancelling {item_path.name}")
-                  item_path.unlink()
-                  continue
-
-              try:
-                  result = smtp_send.send_email(
-                      to=to_email,
-                      subject=subject,
-                      body=body,
-                      from_name=item.get("from_name"),  # None -> configured sender persona
-                      body_html=item.get("body_html"),
-                      recipient_tz=item.get("recipient_tz"),  # None -> company.hq_timezone
-                      bcc=os.environ.get("CRM_BCC_ADDRESS") or None,
-                  )
-              except smtp_send.DailyCap as e:
-                  print(f"Daily cap reached: {e}")
-                  break
-              except smtp_send.UnsafeSendDomain as e:
-                  print(f"HARD STOP — unsafe send domain: {e}")
-                  notify(f"smtp-send HARD STOP: {e}")
-                  sys.exit(1)
-
-              result["to"] = to_email
-              result["item"] = item_path.name
-              results.append(result)
-
-              if result["success"]:
-                  print(f"Sent: {to_email}")
-                  contact_id = item.get("contact_id")
-                  touch_n = item.get("touch_number", 1)
-                  if contact_id:
-                      try:
-                          crm.set_field(contact_id, "last_touch_date", date.today().isoformat())
-                          crm.set_field(contact_id, "last_touch_number", touch_n)
-                          if touch_n == 1:
-                              crm.set_field(contact_id, "sequence_status", "enrolled")
-                              crm.set_field(contact_id, "sequence_enrolled_date", date.today().isoformat())
-                          crm.log_interaction(
-                              contact_id,
-                              f"Touch {touch_n} sent on {date.today().isoformat()}. Subject: {subject}.",
-                          )
-                      except Exception as e:
-                          print(f"CRM update warning: {e}")
-                  item_path.unlink()
-              elif result.get("hard_bounce"):
-                  print(f"Hard bounce: {to_email}. Adding to suppression.")
-                  suppression.add(to_email, "bounced_hard", "smtp-send-workflow")
-                  item_path.unlink()
-              else:
-                  print(f"Soft bounce / error for {to_email}: {result.get('error')}")
-                  notify(f"Soft bounce on send to {to_email}: {result.get('error')}")
-
-              time.sleep(smtp_send.SEND_INTERVAL_SECONDS)
-
-          log_path = log_dir / f"{date.today().isoformat()}-sends.jsonl"
-          with open(log_path, "a") as f:
-              for r in results:
-                  f.write(json.dumps(r) + "\n")
-          print(f"Batch complete. {len(results)} processed.")
-          PYEOF
+          python3 lib/send_queue.py
 
       - name: Commit logs and updated queue
         if: steps.check-paused.outputs.paused != 'true' && steps.gate.outputs.run == 'true'

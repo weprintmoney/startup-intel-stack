@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/lead-raw.schema.json",
+  "title": "Raw lead",
+  "description": "One contact written to leads/raw/*.json by crawler, pre-seed-scout, or event-ingest. Downstream stages (dedup, pre-filter, enrichment) only ever add fields to this shape, never remove them.",
+  "type": "object",
+  "required": [
+    "company_name", "website", "employee_count", "industry", "contact_name",
+    "contact_title", "linkedin_url", "icp_segment", "icp_rationale", "country_code", "source"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "company_name": { "type": "string" },
+    "website": { "type": "string" },
+    "employee_count": { "type": "integer", "minimum": 0 },
+    "industry": { "type": "string" },
+    "contact_name": { "type": "string" },
+    "contact_title": { "type": "string" },
+    "linkedin_url": { "type": "string" },
+    "icp_segment": {
+      "type": "string",
+      "description": "multi-tenant | healthcare-ai | finserv-ai | legal-ai | idv-biometrics | defense-fed | pre-seed"
+    },
+    "icp_rationale": { "type": "string" },
+    "country_code": { "type": "string", "description": "ISO-3166 alpha-2, or UNKNOWN" },
+    "source": {
+      "type": "string",
+      "description": "yc | accelerator | techcrunch | linkedin | hn | event | other | an Apollo/crawler source label"
+    },
+    "icp_score": { "type": "number" },
+    "funding_stage": { "type": "string" },
+    "funding_date": { "type": "string", "format": "date" },
+    "funding_amount": { "type": "string", "description": "e.g. '$2M' — omit if not public" },
+    "announcement_link": { "type": "string" },
+    "event_slug": { "type": "string", "description": "event-ingest only" },
+    "eu_flagged": { "type": "boolean" },
+    "apollo_id": { "type": "string" }
+  }
+}

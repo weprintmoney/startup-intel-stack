@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/copy-verdict.schema.json",
+  "title": "Copy-evaluator verdict",
+  "description": "One record in sends/verdicts/YYYY-MM-DD.json, per agents/copy-evaluator/CLAUDE.md's output schema. This is a single-pass gate (v1) -- retry_count is always 0 today, kept for forward-compat with a future iterate-with-drafter loop.",
+  "type": "object",
+  "required": [
+    "draft_id", "lead_id", "lead_email", "decision", "normalized_score",
+    "category_scores", "failing_criteria", "hard_block_hits", "retry_count",
+    "feedback", "timestamp"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "draft_id": { "type": "string", "description": "the queue filename this verdict scores" },
+    "lead_id": { "type": "string" },
+    "lead_email": { "type": "string" },
+    "decision": { "enum": ["PASS", "FAIL"] },
+    "normalized_score": { "type": "number", "minimum": 0, "maximum": 100 },
+    "category_scores": { "type": "object", "description": "{\"A\": 0, \"B\": 0, \"C\": 0, \"D\": 0}" },
+    "failing_criteria": { "type": "array", "items": { "type": "string" } },
+    "hard_block_hits": { "type": "array", "items": { "type": "string" } },
+    "retry_count": { "type": "integer", "minimum": 0 },
+    "feedback": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" }
+  }
+}

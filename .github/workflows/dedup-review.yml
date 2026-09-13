@@ -64,6 +64,13 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: pip install requests pyyaml
 
+      - name: Check doc versions
+        # Fails loud before scoring if the rubric moved without a matching
+        # Calibrated-against update in the agent's CLAUDE.md — silent rubric
+        # skew is a worse failure mode than a blocked run.
+        if: steps.gate.outputs.run == 'true'
+        run: python scripts/check_doc_version.py agents/qualifier-critic/CLAUDE.md
+
       - name: Set up Claude Code
         if: steps.gate.outputs.run == 'true'
         run: npm install -g @anthropic-ai/claude-code@latest

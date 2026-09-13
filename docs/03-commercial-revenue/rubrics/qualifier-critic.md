@@ -4,6 +4,7 @@ description: "Adversarial-evaluator rubric for scoring enriched leads before the
 owner: ""
 status: template
 last_reviewed: "2026-08-06"
+doc_version: "1.0"
 ---
 
 # Qualifier-Critic Rubric
@@ -13,6 +14,8 @@ last_reviewed: "2026-08-06"
 Evaluates enriched lead JSON objects before human review. Flags probable non-fits early. Default posture: **reject unless the case is overwhelming.** Runs as a separate-context evaluator sub-agent after enrichment completes — the evaluator must not share context with the agent that produced the lead.
 
 The critic does not replace human review. It raises the floor of what reaches the human queue: the founder becomes the *final* reviewer, not the *first* filter.
+
+**Bump `doc_version` in the frontmatter on any substantive change** (new/removed criteria, changed point weights, changed scoring formula) — `agents/qualifier-critic/CLAUDE.md` declares the version it was calibrated against, and `scripts/check_doc_version.py` fails the run before scoring if this doc has moved without a matching CLAUDE.md update.
 
 ## Scoring thresholds
 

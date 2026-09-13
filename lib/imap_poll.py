@@ -19,9 +19,8 @@ import imaplib
 import os
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header
-from typing import Optional
-
 from email.utils import parsedate_to_datetime
+from typing import Optional
 
 
 def _outreach_address() -> str:
@@ -77,7 +76,7 @@ def _get_sent_message_ids(conn: imaplib.IMAP4_SSL, since_dt: datetime) -> set[st
     return sent_message_ids
 
 
-def check_replies(since_hours: int = 2) -> list[dict]:
+def check_replies(since_hours: int = 2) -> list[dict]:  # noqa: C901
     """Poll INBOX for replies to our outreach emails.
 
     Returns a list of dicts:

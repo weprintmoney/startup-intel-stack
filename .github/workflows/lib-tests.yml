@@ -1,0 +1,30 @@
+name: Lib Tests
+
+# The send path decides whether prospect email leaves the building, and its
+# failure modes are quiet: a warmup ramp that resets nightly pins the domain at
+# 5/day forever, and a leaky internal exemption lets format tests eat the
+# prospect budget. Cheap to guard, expensive to notice late.
+
+on:
+  pull_request:
+    paths:
+      - "lib/**"
+      - ".github/workflows/lib-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install jsonschema
+        run: pip install --quiet "jsonschema[format]"
+      - name: Run lib tests
+        run: python -m unittest discover -s lib/tests -p "test_*.py" -v

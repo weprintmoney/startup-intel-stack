@@ -14,6 +14,8 @@ The rubric is authoritative. Its categories cover ICP fit, pain evidence, reacha
 
 If the rubric file does not exist yet, stop and report that — do not invent criteria or score without it.
 
+Calibrated-against: 03-commercial-revenue/rubrics/qualifier-critic.md doc_version=1.0
+
 ## Step-by-step instructions
 
 1. **Select leads.** Read every lead in `leads/enriched/*.json`. Skip any lead whose `email` already appears in an existing verdict file under `leads/critic/` (already scored in a prior run).

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/send-log-line.schema.json",
+  "title": "Send log line",
+  "description": "One JSON-per-line record in sends/log/YYYY-MM-DD-sends.jsonl, appended by lib/send_queue.py::process_queue for every item it actually attempted (not for items skipped before reaching smtp_send.send_email, e.g. malformed, suppressed, or paused).",
+  "type": "object",
+  "required": ["success", "error", "smtp_code", "hard_bounce", "to", "item"],
+  "additionalProperties": false,
+  "properties": {
+    "success": { "type": "boolean" },
+    "error": { "type": ["string", "null"] },
+    "smtp_code": { "type": ["integer", "null"] },
+    "hard_bounce": { "type": "boolean" },
+    "to": { "type": "string" },
+    "item": { "type": "string", "description": "the queue filename that produced this send" }
+  }
+}

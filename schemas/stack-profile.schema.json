@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/stack-profile.schema.json",
+  "title": "Stack profile",
+  "description": "One record in leads/stack-profiles/YYYY-MM-DD.json, written by the stack-profile agent. `fields` is keyed by whatever attributes were researched (vector_db, cloud, rag_maturity, embedding_provider, security_posture, multi_tenancy, scale_bottleneck, ...) -- the key set varies per lead by design, so only the per-field {value, confidence, evidence} shape is validated, not a fixed key list.",
+  "type": "object",
+  "required": ["lead_id", "email", "company_name", "fields", "overall_confidence", "routing", "contradictions", "profile_date"],
+  "additionalProperties": false,
+  "properties": {
+    "lead_id": { "type": "string" },
+    "email": { "type": "string" },
+    "company_name": { "type": "string" },
+    "fields": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["value", "confidence", "evidence"],
+        "properties": {
+          "value": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "overall_confidence": { "type": "number", "minimum": 0, "maximum": 100 },
+    "routing": { "enum": ["ready_for_drafting", "thin_profile", "human_review"] },
+    "contradictions": {
+      "type": "array",
+      "description": "Two shapes seen in practice: structured (values + evidence arrays) and prose (a free-text detail string). Only 'field' is required.",
+      "items": {
+        "type": "object",
+        "required": ["field"],
+        "properties": {
+          "field": { "type": "string" },
+          "values": { "type": "array", "items": { "type": "string" } },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "profile_date": { "type": "string", "format": "date" }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/lead-enriched.schema.json",
+  "title": "Enriched lead",
+  "description": "leads/enriched/*.json — a lead-pre-filtered record with email-finding results and (later) opportunistic signal research from the enrichment agent. Signal fields (event_date, product_launch_date, hiring_signal, rfp_status, pain_points, company_description) are populated over time as enrichment.yml researches deliverable leads; signals_checked marks a lead as researched even when nothing was found, so it is not re-researched forever.",
+  "type": "object",
+  "required": [
+    "company_name", "website", "employee_count", "industry", "contact_name",
+    "contact_title", "linkedin_url", "icp_segment", "icp_rationale", "country_code",
+    "source", "email", "email_verified", "email_status"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "company_name": { "type": "string" },
+    "website": { "type": "string" },
+    "employee_count": { "type": "integer", "minimum": 0 },
+    "industry": { "type": "string" },
+    "contact_name": { "type": "string" },
+    "contact_title": { "type": "string" },
+    "linkedin_url": { "type": "string" },
+    "icp_segment": { "type": "string" },
+    "icp_rationale": { "type": "string" },
+    "country_code": { "type": "string" },
+    "source": { "type": "string" },
+    "email": { "type": "string" },
+    "email_verified": { "type": "boolean" },
+    "email_status": { "type": "string", "description": "e.g. deliverable | risky | undeliverable | unknown" },
+    "email_source": { "type": "string", "description": "hunter | apollo | other email-finder" },
+    "email_provider": { "type": "string" },
+    "email_confidence_score": { "type": "number" },
+    "prior_contact": { "type": "boolean" },
+    "eu_flagged": { "type": "boolean" },
+    "mql_score": { "type": "number" },
+    "pre_filter_passed": { "type": "boolean" },
+    "pre_filter_date": { "type": "string", "format": "date" },
+    "title_match": { "type": "string", "description": "the matched title category, e.g. 'CTO', 'VP of Engineering'" },
+    "employee_count_flag": { "type": "string", "description": "e.g. unknown_needs_review" },
+    "icp_score": { "type": "number" },
+    "target_product": { "type": "string" },
+    "funding_stage": { "type": "string" },
+    "funding_date": { "type": "string", "format": "date" },
+    "funding_amount": { "type": "string" },
+    "funding_round": { "type": "string" },
+    "announcement_link": { "type": "string" },
+    "event_slug": { "type": "string" },
+    "apollo_id": { "type": "string" },
+    "company_description": { "type": "string", "description": "1-2 sentences, enrichment-agent researched" },
+    "event_date": { "type": "string", "format": "date" },
+    "product_launch_date": { "type": "string", "format": "date" },
+    "product_launch_link": { "type": "string" },
+    "hiring_signal": {
+      "type": "object",
+      "required": ["role", "link", "date"],
+      "properties": {
+        "role": { "type": "string" },
+        "link": { "type": "string" },
+        "date": { "type": "string", "format": "date" }
+      }
+    },
+    "rfp_status": { "enum": ["active_rfp", "evaluating", "none"] },
+    "pain_points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["quote", "source", "date"],
+        "properties": {
+          "quote": { "type": "string" },
+          "source": { "type": "string" },
+          "date": { "type": "string", "format": "date" }
+        }
+      }
+    },
+    "signals_checked": { "type": "string", "format": "date", "description": "stamped every time the enrichment agent researches this lead, found or not" },
+    "enrichment_date": { "type": "string", "format": "date" },
+    "enrichment_note": { "type": "string" },
+    "suppressed": { "type": "boolean" }
+  }
+}

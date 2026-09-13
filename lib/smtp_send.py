@@ -3,7 +3,9 @@ Provider-agnostic outbound email sender.
 
 All company-specific parameters come from company-profile.yaml:
 - provider:      sending.provider   (resend | sendgrid | mailgun)
-- daily cap:     sending.daily_cap  (hard limit; DailyCap raised when hit)
+- daily cap:     sending.daily_cap  (steady-state ceiling once ramped up)
+- warmup ramp:   sending.warmup_ramp_days (sending-days to reach daily_cap;
+                 0 or unset disables ramping and applies daily_cap from day 1)
 - send window:   sending.send_window (business days/hours, recipient-local)
 - send domain:   company.send_domain
 
@@ -12,6 +14,12 @@ Hard constraints (never relax these):
   from-address is on the primary domain. Outbound NEVER goes out from the
   primary domain.
 - Daily cap enforced via sends/daily-count.json (committed by the workflow).
+  A cold send_domain that opens at the full daily_cap gets spam-foldered or
+  blocklisted before the first sequence finishes; sending.warmup_ramp_days
+  steps the cap up (5/10/20/40/75% of daily_cap) with the number of days the
+  domain has *actually sent on* — not calendar days, so a paused pipeline
+  doesn't quietly finish its ramp over a gap with zero sends. Sends to the
+  primary company.domain (internal test sends) don't consume ramp budget.
 - Sends only within the configured business-hours window in the recipient's
   timezone (falls back to company.hq_timezone).
 - Exposes SEND_INTERVAL_SECONDS; the caller is responsible for sleeping
@@ -27,13 +35,13 @@ Override the from-address with SEND_FROM; default is outreach@{send_domain}.
 import json
 import os
 import random
-import requests
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 import config
+import requests
 
 SEND_INTERVAL_SECONDS = random.uniform(180, 480)  # 3-8 min between sends
 
@@ -56,8 +64,10 @@ class UnsafeSendDomain(Exception):
 def _load_daily_count() -> dict:
     if DAILY_COUNT_PATH.exists():
         with open(DAILY_COUNT_PATH) as f:
-            return json.load(f)
-    return {"date": "", "count": 0}
+            record = json.load(f)
+            record.setdefault("send_days", 0)
+            return record
+    return {"date": "", "count": 0, "send_days": 0}
 
 
 def _save_daily_count(record: dict) -> None:
@@ -66,14 +76,53 @@ def _save_daily_count(record: dict) -> None:
         json.dump(record, f)
 
 
-def _check_and_increment_daily_count(daily_cap: int) -> None:
+def _warmup_ramp_steps(daily_cap: int, ramp_days: int) -> list[tuple[int, int]]:
+    """Five equal-width steps from a low floor up to `daily_cap`, spanning
+    `ramp_days` *sending* days (not calendar days — a pause builds no
+    reputation, so a gap with zero sends must not advance the ramp).
+
+    Proportions (5/10/20/40/75% of the steady-state cap) mirror a ramp that
+    shipped and held for a real cold domain; only the step width and ceiling
+    are configurable. Returns [] when ramp_days <= 0 (ramping disabled)."""
+    if ramp_days <= 0:
+        return []
+    width = max(1, ramp_days // 5)
+    fractions = [0.05, 0.10, 0.20, 0.40, 0.75]
+    return [
+        (width * (i + 1), max(1, round(daily_cap * frac)))
+        for i, frac in enumerate(fractions)
+    ]
+
+
+def current_daily_cap(daily_cap: int, ramp_days: int, send_days: Optional[int] = None) -> int:
+    """Steady-state `daily_cap`, ramped down for a young sending domain.
+
+    `send_days` counts days this domain has actually sent on (today counts if
+    it has already had an external send). Pass None to read it from the
+    daily-count record. Internal-recipient sends never advance `send_days`
+    (see `_check_and_increment_daily_count`) — they're seed traffic, not the
+    cold, unengaged reach the ramp is protecting against."""
+    if send_days is None:
+        send_days = _load_daily_count().get("send_days", 0)
+    for threshold, cap in _warmup_ramp_steps(daily_cap, ramp_days):
+        if max(send_days, 1) <= threshold:
+            return min(cap, daily_cap)
+    return daily_cap
+
+
+def _check_and_increment_daily_count(daily_cap: int, ramp_days: int = 0, *, internal: bool = False) -> None:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     record = _load_daily_count()
-    if record.get("date") != today:
-        record = {"date": today, "count": 0}
-    if record["count"] >= daily_cap:
-        raise DailyCap(f"Daily send cap of {daily_cap} reached for {today}")
+    is_new_day = record.get("date") != today
+    if is_new_day:
+        record = {"date": today, "count": 0, "send_days": record.get("send_days", 0)}
+    counted_send_days = record["send_days"] + (1 if is_new_day and not internal else 0)
+    effective_cap = current_daily_cap(daily_cap, ramp_days, counted_send_days)
+    if record["count"] >= effective_cap:
+        raise DailyCap(f"Daily send cap of {effective_cap} reached for {today}")
     record["count"] += 1
+    if is_new_day and not internal:
+        record["send_days"] = record["send_days"] + 1
     _save_daily_count(record)
 
 
@@ -143,6 +192,8 @@ def _send_resend(payload: dict, from_addr: str, from_name: str) -> requests.Resp
         body["html"] = payload["html"]
     if payload.get("bcc"):
         body["bcc"] = [payload["bcc"]]
+    if payload.get("reply_to"):
+        body["reply_to"] = payload["reply_to"]
     return requests.post(
         "https://api.resend.com/emails",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -165,6 +216,8 @@ def _send_sendgrid(payload: dict, from_addr: str, from_name: str) -> requests.Re
         "subject": payload["subject"],
         "content": content,
     }
+    if payload.get("reply_to"):
+        body["reply_to"] = {"email": payload["reply_to"]}
     return requests.post(
         "https://api.sendgrid.com/v3/mail/send",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -185,6 +238,8 @@ def _send_mailgun(payload: dict, from_addr: str, from_name: str, send_domain: st
         data["html"] = payload["html"]
     if payload.get("bcc"):
         data["bcc"] = payload["bcc"]
+    if payload.get("reply_to"):
+        data["h:Reply-To"] = payload["reply_to"]
     return requests.post(
         f"https://api.mailgun.net/v3/{send_domain}/messages",
         auth=("api", api_key),
@@ -201,8 +256,19 @@ def send_email(
     body_html: Optional[str] = None,
     recipient_tz: Optional[str] = None,
     bcc: Optional[str] = None,
+    reply_to: Optional[str] = None,
+    ignore_business_hours: bool = False,
 ) -> dict:
     """Send an email via the configured provider.
+
+    reply_to: optional Reply-To address. Default None keeps replies on the
+    from-address. Set it when replies should land somewhere other than the
+    sending mailbox (e.g. a founder-voice campaign whose replies should
+    reach the founder's real inbox, not the outreach mailbox reply-monitor
+    polls).
+
+    ignore_business_hours: skip the business-hours gate. For internal test
+    sends only (format-test-send.yml) -- prospect sends always respect it.
 
     Returns:
         {"success": bool, "error": str | None, "smtp_code": int | None,
@@ -214,6 +280,7 @@ def send_email(
     profile = config.load()
     provider = config.get("sending.provider", "resend", profile)
     daily_cap = int(config.get("sending.daily_cap", 100, profile))
+    ramp_days = int(config.get("sending.warmup_ramp_days", 0, profile))
     from_addr = _from_address(profile)
     if from_name is None:
         from_name = config.sender_persona(profile)["name"]
@@ -222,7 +289,7 @@ def send_email(
 
     _assert_safe_domain(profile, from_addr)
 
-    if not _is_business_hours(recipient_tz, profile):
+    if not ignore_business_hours and not _is_business_hours(recipient_tz, profile):
         return {
             "success": False,
             "error": f"Outside business hours for timezone {recipient_tz}",
@@ -230,9 +297,11 @@ def send_email(
             "hard_bounce": False,
         }
 
-    _check_and_increment_daily_count(daily_cap)
+    primary_domain = (config.get("company.domain", "", profile) or "").lower().strip()
+    is_internal = bool(primary_domain) and to.strip().lower().endswith(f"@{primary_domain}")
+    _check_and_increment_daily_count(daily_cap, ramp_days, internal=is_internal)
 
-    payload = {"to": to, "subject": subject, "text": body, "html": body_html, "bcc": bcc}
+    payload = {"to": to, "subject": subject, "text": body, "html": body_html, "bcc": bcc, "reply_to": reply_to}
 
     try:
         if provider == "resend":

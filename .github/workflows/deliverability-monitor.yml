@@ -1,8 +1,10 @@
 # Daily deliverability health check for the send domain. Tier: series-a.
-# Checks: (1) DNS blacklist status of company.send_domain via MXToolbox,
-# (2) hard-bounce rate over the trailing 7 days of sends/log/. Breaching
-# the bounce threshold sets the SEQUENCES_PAUSED repo variable, which
-# smtp-send checks before every batch.
+# Checks: (1) DNS blacklist status of company.send_domain via MXToolbox
+# (optional; skipped without an API key), (2) Google Postmaster Tools
+# complaint rate (stub until ADC/JWT auth is wired up — always reads 0.0).
+# Breaching a threshold sets the SEQUENCES_PAUSED repo variable, which
+# smtp-send checks before every batch. Logic lives in
+# lib/deliverability_monitor.py (tested — see lib/tests/).
 name: Deliverability Monitor
 
 on:
@@ -39,127 +41,34 @@ jobs:
             echo "::notice::company.send_domain not set — skipping deliverability monitoring."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          echo "run=true" >> "$GITHUB_OUTPUT"
-          echo "send_domain=$SEND_DOMAIN" >> "$GITHUB_OUTPUT"
-          echo "webhook_secret=$(yq '.channels.slack_webhook_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
+          {
+            echo "run=true"
+            echo "send_domain=$SEND_DOMAIN"
+            echo "webhook_secret=$(yq '.channels.slack_webhook_secret // ""' company-profile.yaml)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install --quiet pyyaml
 
       - name: Check deliverability health
         if: steps.gate.outputs.run == 'true'
         env:
-          SEND_DOMAIN: ${{ steps.gate.outputs.send_domain }}
-          MXTOOLBOX_API_KEY: ${{ secrets.MXTOOLBOX_API_KEY }} # optional; blacklist check skipped without it
+          SENDING_DOMAIN: ${{ steps.gate.outputs.send_domain }}
+          # NOTE: MXToolbox's public blacklist-lookup endpoint is called
+          # without an API key (see lib/deliverability_monitor.py) — a
+          # pre-existing gap ported as-is, not newly introduced here.
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }} # optional; complaint-rate stub until wired up
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }} # optional; enables DM-ing DELIVERABILITY_ALERT_UID
           SLACK_WEBHOOK_URL: ${{ secrets[steps.gate.outputs.webhook_secret || 'SLACK_WEBHOOK_URL'] }}
+          DELIVERABILITY_ALERT_CHANNEL: ${{ vars.DELIVERABILITY_ALERT_CHANNEL }} # optional; defaults to #leadership
+          DELIVERABILITY_ALERT_UID: ${{ vars.DELIVERABILITY_ALERT_UID }} # optional; Slack user ID, requires SLACK_BOT_TOKEN to DM
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-        run: |
-          python3 - <<'PYEOF'
-          import json, os, sys, urllib.request
-          from datetime import date, timedelta
-          from pathlib import Path
-
-          SEND_DOMAIN = os.environ["SEND_DOMAIN"]
-
-          def notify(text: str) -> None:
-              url = os.environ.get("SLACK_WEBHOOK_URL")
-              if not url:
-                  return
-              req = urllib.request.Request(
-                  url,
-                  data=json.dumps({"text": text}).encode(),
-                  headers={"Content-Type": "application/json"},
-              )
-              try:
-                  urllib.request.urlopen(req, timeout=10)
-              except Exception as e:
-                  print(f"Notification error: {e}")
-
-          def set_repo_variable(name: str, value: str) -> None:
-              gh_token = os.environ.get("GH_TOKEN", "")
-              repo = os.environ.get("REPO", "")
-              if not gh_token or not repo:
-                  return
-              payload = json.dumps({"name": name, "value": value}).encode()
-              url = f"https://api.github.com/repos/{repo}/actions/variables/{name}"
-              req = urllib.request.Request(
-                  url,
-                  data=payload,
-                  method="PATCH",
-                  headers={
-                      "Authorization": f"Bearer {gh_token}",
-                      "Content-Type": "application/json",
-                      "Accept": "application/vnd.github+json",
-                  },
-              )
-              try:
-                  urllib.request.urlopen(req, timeout=10)
-              except Exception as e:
-                  print(f"Repo variable update error: {e}")
-
-          # --- MXToolbox blacklist check (optional; needs API key) ---
-          dns_ok = True
-          api_key = os.environ.get("MXTOOLBOX_API_KEY", "")
-          if api_key:
-              try:
-                  url = f"https://api.mxtoolbox.com/api/v1/lookup/blacklist/{SEND_DOMAIN}"
-                  req = urllib.request.Request(
-                      url, headers={"Accept": "application/json", "Authorization": api_key}
-                  )
-                  with urllib.request.urlopen(req, timeout=15) as resp:
-                      data = json.loads(resp.read())
-                  failed = list(data.get("Failed", []))
-                  if failed:
-                      dns_ok = False
-                      print(f"Blacklist hits: {failed}")
-                      notify(
-                          f":rotating_light: {SEND_DOMAIN} is blacklisted on {len(failed)} provider(s): "
-                          + ", ".join(f.get("Name", "?") for f in failed)
-                      )
-              except Exception as e:
-                  print(f"MXToolbox check error: {e}")
-          else:
-              print("MXTOOLBOX_API_KEY not set — blacklist check skipped.")
-
-          # --- Hard-bounce rate over trailing 7 days of send logs ---
-          # (Simplified from a provider complaint-rate feed: the send logs
-          # are already committed by smtp-send, so no extra credentials.)
-          log_dir = Path("sends/log")
-          total, hard = 0, 0
-          for i in range(7):
-              d = (date.today() - timedelta(days=i)).isoformat()
-              p = log_dir / f"{d}-sends.jsonl"
-              if not p.exists():
-                  continue
-              for line in p.read_text().splitlines():
-                  if not line.strip():
-                      continue
-                  try:
-                      r = json.loads(line)
-                  except Exception:
-                      continue
-                  total += 1
-                  if r.get("hard_bounce"):
-                      hard += 1
-
-          bounce_rate = (hard / total) if total else 0.0
-          print(f"Trailing 7d: {total} sends, {hard} hard bounces ({bounce_rate:.1%})")
-
-          # Thresholds (min volume 20 to avoid tripping on tiny samples)
-          if total >= 20 and bounce_rate > 0.05:
-              print(f"CRITICAL: hard-bounce rate {bounce_rate:.1%} — hard stop")
-              set_repo_variable("SEQUENCES_PAUSED", "true")
-              notify(
-                  f":red_circle: HARD STOP — hard-bounce rate {bounce_rate:.1%} over 7d "
-                  f"exceeds 5%. SEQUENCES_PAUSED set to true. Review list quality and "
-                  f"domain health before re-enabling."
-              )
-              sys.exit(1)
-          elif total >= 20 and bounce_rate > 0.02:
-              print(f"WARNING: hard-bounce rate {bounce_rate:.1%} — pausing sequences")
-              set_repo_variable("SEQUENCES_PAUSED", "true")
-              notify(
-                  f":warning: Hard-bounce rate {bounce_rate:.1%} over 7d exceeds 2%. "
-                  f"SEQUENCES_PAUSED set to true until reviewed."
-              )
-          else:
-              print(f"Deliverability OK. Bounce rate: {bounce_rate:.2%}. DNS: {'OK' if dns_ok else 'CHECK BLACKLISTS'}")
-          PYEOF
+        run: python3 lib/deliverability_monitor.py

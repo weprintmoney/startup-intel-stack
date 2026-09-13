@@ -1,0 +1,34 @@
+name: Send Format Check
+
+# What sits in sends/ is what goes out — smtp-send hands `body` to the
+# provider verbatim. This blocks copy that carries hard line breaks
+# mid-paragraph, which render as ragged mid-sentence breaks in every email
+# client whose window isn't the author's width.
+
+on:
+  pull_request:
+    paths:
+      - "sends/queue/**"
+      - "sends/format-test-queue/**"
+      - "sends/linkedin/**"
+      - "lib/format_body.py"
+      - "scripts/check_send_format.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check queued bodies for hard wrapping
+        run: python scripts/check_send_format.py
