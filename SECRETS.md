@@ -34,10 +34,31 @@ GitHub Actions secrets per instance repo. Set with `gh secret set NAME -R <owner
 
 | Secret | Powers | Prerequisite |
 |---|---|---|
-| `RESEND_API_KEY` | outbound send | `sending.provider: resend` |
-| `RESEND_FROM` | from-address | a configured `send_domain` (never the primary domain) |
+| `RESEND_API_KEY` / `SENDGRID_API_KEY` / `MAILGUN_API_KEY` | outbound send | match `sending.provider` in company-profile.yaml |
+| `SEND_FROM` | from-address override | optional; default is `outreach@{company.send_domain}` |
+| `CRM_BCC_ADDRESS` | bcc every send to the CRM for logging | optional |
 | `IMAP_HOST` / `IMAP_USER` / `IMAP_PASSWORD` | reply monitoring | the send mailbox must exist |
-| `WARMUP_SEED_ADDRESSES` | warmup ramp | comma-separated seed list |
+| `WARMUP_SEED_ADDRESSES` | manual warmup fallback | comma-separated seed list; `sending.warmup_ramp_days` ramps the real send path automatically, this is a separate one-shot tool |
+
+## Notifications (optional, any tier)
+
+Two ways to get alerts; pick one, or both. Everything above prefers `SLACK_WEBHOOK_URL` and only needs the bot token for the DM-a-specific-person alerts below.
+
+| Secret | Powers |
+|---|---|
+| `SLACK_WEBHOOK_URL` | posts to one fixed channel (the `channels.slack_webhook_secret` name in company-profile.yaml) |
+| `SLACK_BOT_TOKEN` | also enables DM-ing a specific person by Slack user ID, for the alert-routing repo variables below |
+
+These are repo **variables**, not secrets (`gh variable set NAME`, not `gh secret set`) — none of them are sensitive:
+
+| Variable | Powers | Requires |
+|---|---|---|
+| `HEARTBEAT_ALERT_CHANNEL` | where pipeline-heartbeat alerts land | — |
+| `DELIVERABILITY_ALERT_CHANNEL` / `DELIVERABILITY_ALERT_UID` | deliverability hard-stop alerts | UID needs `SLACK_BOT_TOKEN` |
+| `REPLY_MONITOR_OWNER_UID` / `REPLY_MONITOR_ESCALATION_UID` | DM on every reply / on non-unsubscribe replies | `SLACK_BOT_TOKEN` |
+| `SLACK_SALES_REVIEW_CHANNEL` | team channel for reply + soft-bounce notices | — |
+| `TEST_SEND_RECIPIENT` | who format-test-send.yml is allowed to send to | required to use that workflow at all |
+| `HEARTBEAT_SKIP` | comma-separated workflow filenames to mute pre-launch | — |
 
 ## Rules
 
