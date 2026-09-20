@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/lead-deduped.schema.json",
+  "title": "Deduped lead",
+  "description": "leads/deduped/*.json — a lead-raw record with prior_contact added by dedup.py after an CRM name-based lookup.",
+  "type": "object",
+  "required": [
+    "company_name", "website", "employee_count", "industry", "contact_name",
+    "contact_title", "linkedin_url", "icp_segment", "icp_rationale", "country_code",
+    "source", "prior_contact"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "company_name": { "type": "string" },
+    "website": { "type": "string" },
+    "employee_count": { "type": "integer", "minimum": 0 },
+    "industry": { "type": "string" },
+    "contact_name": { "type": "string" },
+    "contact_title": { "type": "string" },
+    "linkedin_url": { "type": "string" },
+    "icp_segment": { "type": "string" },
+    "icp_rationale": { "type": "string" },
+    "country_code": { "type": "string" },
+    "source": { "type": "string" },
+    "prior_contact": { "type": "boolean", "description": "True if a matching name was already found in CRM" },
+    "icp_score": { "type": "number" },
+    "target_product": { "type": "string" },
+    "funding_stage": { "type": "string" },
+    "funding_date": { "type": "string", "format": "date" },
+    "funding_amount": { "type": "string" },
+    "announcement_link": { "type": "string" },
+    "event_slug": { "type": "string" },
+    "eu_flagged": { "type": "boolean" },
+    "apollo_id": { "type": "string" }
+  }
+}

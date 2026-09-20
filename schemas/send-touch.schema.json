@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/send-touch.schema.json",
+  "title": "Send touch",
+  "description": "One queued outreach touch. Shared by sends/queue/*.json (email, sent by smtp-send.py), sends/linkedin/*.json (channel: linkedin, sent manually), and sends/rejected/*.json (moved here unmodified by the copy-evaluator gate -- same shape). See send-touch-format-test.schema.json for the format-test-send.yml variant, which extends this with 3 required keys (original_to, reply_to, campaign).",
+  "type": "object",
+  "required": ["lead_id", "contact_id", "touch_number", "channel", "scheduled_date", "to", "subject", "body", "from_name", "recipient_tz"],
+  "additionalProperties": false,
+  "properties": {
+    "lead_id": { "type": "string" },
+    "contact_id": { "type": "string", "description": "CRM record id" },
+    "touch_number": { "type": "integer", "minimum": 1 },
+    "channel": { "enum": ["email", "linkedin"] },
+    "scheduled_date": { "type": "string", "format": "date" },
+    "to": { "type": "string" },
+    "subject": { "type": "string" },
+    "body": { "type": "string", "description": "plain text, one line per paragraph -- never hard-wrapped" },
+    "from_name": { "type": "string" },
+    "recipient_tz": { "type": "string", "description": "IANA timezone, e.g. America/Chicago" },
+    "body_html": { "type": "string" },
+    "reply_to": { "type": "string" },
+    "original_to": { "type": "string", "description": "format-test-send.yml only: the real prospect address the test send stands in for" },
+    "campaign": { "type": "string" },
+    "note": { "type": "string" },
+    "is_nurture": { "type": "boolean", "description": "evergreen-nurture touches only" }
+  }
+}

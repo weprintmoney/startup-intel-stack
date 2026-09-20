@@ -6,7 +6,7 @@
 # Scope: only fires on PRs authored by a bot account. Loop prevention: never fires on
 # comments made by github-actions[bot]. Concurrency: one run per PR at a time.
 #
-# Tier: all stages (event-driven; it services whatever agents are active).
+# Mode: any (event-driven; it services whatever agents are active).
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
 name: PR Comment Resolver
 
@@ -41,9 +41,9 @@ jobs:
 
       - name: Stage gate
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          echo "stage=$STAGE"
-          # runs at every tier — it services PRs opened by whatever agents are active
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          echo "mode=$MODE"
+          # runs in every mode — it services PRs opened by whatever agents are active
 
       - name: Resolve comment
         env:

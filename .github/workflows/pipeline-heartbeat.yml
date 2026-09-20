@@ -1,19 +1,21 @@
-# Absence-alerting for the pipeline's scheduled workflows. Tier: seed.
+# Absence-alerting for the pipeline's scheduled workflows. Mode: find-leads.
 # GitHub alerts when a workflow RUN fails, but says nothing when a schedule
 # silently stops firing or a workflow "succeeds" while producing nothing.
 # This check alerts on:
-#   1. staleness — no successful run of a scheduled workflow within its window
+#   1. staleness — no successful run of a monitored workflow within its window
 #   2. latest completed run of a monitored workflow failed
 #   3. CRITICAL — emails were sent recently but reply-monitor is stale, which
 #      means the pause-on-reply hard rule is not being enforced
 #   4. weekly-crawl succeeded but leads/raw/ has no fresh output (zero-output)
 #
-# Silence = healthy. Alerts go to the configured Slack webhook
-# (channels.slack_webhook_secret); without one, findings only appear in the
-# run log (the job still fails on problems, so GitHub's own notifications
-# fire). To mute a check pre-launch (e.g. reply-monitor before DNS is live),
-# set the repo variable HEARTBEAT_SKIP to a comma-separated list of workflow
-# filenames.
+# Silence = healthy. Logic lives in lib/heartbeat.py (tested — see
+# lib/tests/); the monitored set widens once company.stage reaches
+# series-a. Alerts go to the configured Slack webhook (or a bot-token DM/
+# channel if HEARTBEAT_ALERT_CHANNEL + SLACK_BOT_TOKEN are set); without
+# either, findings only appear in the run log (the job still fails on
+# problems, so GitHub's own notifications fire). To mute a check pre-launch
+# (e.g. reply-monitor before DNS is live), set the repo variable
+# HEARTBEAT_SKIP to a comma-separated list of workflow filenames.
 name: Pipeline Heartbeat
 
 on:
@@ -38,19 +40,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Preflight (stage gate + config)
+      - name: Preflight (mode gate + config)
         id: gate
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
-          if [ "$(rank "$STAGE")" -lt "$(rank seed)" ]; then
-            echo "::notice::company.stage '$STAGE' is below 'seed' — heartbeat skipped (stage gate)."
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          rank() { case "$1" in docs-only|pre-seed) echo 0;; find-leads|seed) echo 1;; find-and-draft|series-a) echo 2;; *) echo -1;; esac; }
+          if [ "$(rank "$MODE")" -lt 0 ]; then
+            echo "::warning::company.mode '$MODE' is not recognized — expected docs-only, find-leads, or find-and-draft. Treating as docs-only."
+          fi
+          if [ "$(rank "$MODE")" -lt "$(rank find-leads)" ]; then
+            echo "::notice::company.mode '$MODE' is below 'find-leads' — heartbeat skipped (mode gate)."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          echo "run=true" >> "$GITHUB_OUTPUT"
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          echo "tz=$(yq '.company.hq_timezone // "UTC"' company-profile.yaml)" >> "$GITHUB_OUTPUT"
-          echo "webhook_secret=$(yq '.channels.slack_webhook_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
+          {
+            echo "run=true"
+            echo "mode=$MODE"
+            echo "tz=$(yq '.company.hq_timezone // "UTC"' company-profile.yaml)"
+            echo "webhook_secret=$(yq '.channels.slack_webhook_secret // ""' company-profile.yaml)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         if: steps.gate.outputs.run == 'true'
@@ -63,145 +70,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          STAGE: ${{ steps.gate.outputs.stage }}
+          STAGE: ${{ steps.gate.outputs.mode }}
           HQ_TZ: ${{ steps.gate.outputs.tz }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }} # optional; enables DM/channel-by-ID via HEARTBEAT_ALERT_CHANNEL
           SLACK_WEBHOOK_URL: ${{ secrets[steps.gate.outputs.webhook_secret || 'SLACK_WEBHOOK_URL'] }}
+          HEARTBEAT_ALERT_CHANNEL: ${{ vars.HEARTBEAT_ALERT_CHANNEL }} # optional; channel or user ID, requires SLACK_BOT_TOKEN to DM
           HEARTBEAT_SKIP: ${{ vars.HEARTBEAT_SKIP }}
-        run: |
-          python - <<'PYEOF'
-          import json, os, re, urllib.request
-          from datetime import datetime, timedelta, timezone
-          from pathlib import Path
-          from zoneinfo import ZoneInfo
-
-          REPO = os.environ["REPO"]
-          GH_TOKEN = os.environ["GH_TOKEN"]
-          STAGE = os.environ.get("STAGE", "seed")
-          SKIP = {s.strip() for s in os.environ.get("HEARTBEAT_SKIP", "").split(",") if s.strip()}
-          NOW = datetime.now(timezone.utc)
-          try:
-              LOCAL_NOW = NOW.astimezone(ZoneInfo(os.environ.get("HQ_TZ", "UTC")))
-          except Exception:
-              LOCAL_NOW = NOW
-          IN_BUSINESS_WINDOW = LOCAL_NOW.weekday() < 5 and 9 <= LOCAL_NOW.hour < 18
-
-          # workflow file -> max hours since last successful run. Windows are
-          # sized so the Tue-Sat morning check tolerates the weekend gap of
-          # weekday-only schedules. Series-a workflows are only monitored
-          # once the stage unlocks them (below that they exit as skipped
-          # no-ops, which never trips staleness anyway, but keeping the list
-          # stage-aware makes the alert text honest).
-          MONITORED = {
-              "weekly-crawl.yml": 204,  # weekly (Mon)
-          }
-          if STAGE == "series-a":
-              MONITORED.update({
-                  "deliverability-monitor.yml": 36,  # daily
-                  "smtp-send.yml": 28,               # hourly, business days
-                  "reply-monitor.yml": 28,           # hourly, business days
-                  "evergreen-nurture.yml": 204,      # weekly
-              })
-
-          def gh(path):
-              req = urllib.request.Request(
-                  f"https://api.github.com/repos/{REPO}{path}",
-                  headers={"Authorization": f"Bearer {GH_TOKEN}", "Accept": "application/vnd.github+json"},
-              )
-              with urllib.request.urlopen(req, timeout=15) as r:
-                  return json.load(r)
-
-          def runs(workflow_file):
-              try:
-                  return gh(f"/actions/workflows/{workflow_file}/runs?status=completed&per_page=20")["workflow_runs"]
-              except Exception as e:
-                  return {"error": str(e)}
-
-          problems, warnings = [], []
-
-          reply_monitor_age_h = None
-          for wf, max_age in MONITORED.items():
-              if wf in SKIP:
-                  continue
-              rs = runs(wf)
-              if isinstance(rs, dict):
-                  warnings.append(f"`{wf}`: could not read run history ({rs['error']})")
-                  continue
-              if not rs:
-                  problems.append(f"`{wf}`: no completed runs found at all")
-                  continue
-              latest = rs[0]
-              if latest["conclusion"] not in ("success", "skipped"):
-                  problems.append(f"`{wf}`: latest run concluded *{latest['conclusion']}* — {latest['html_url']}")
-              success = next((r for r in rs if r["conclusion"] == "success"), None)
-              if success is None:
-                  problems.append(f"`{wf}`: no successful run in the last {len(rs)} completed runs")
-                  continue
-              age_h = (NOW - datetime.fromisoformat(success["created_at"].replace("Z", "+00:00"))).total_seconds() / 3600
-              if wf == "reply-monitor.yml":
-                  reply_monitor_age_h = age_h
-              if age_h > max_age:
-                  problems.append(f"`{wf}`: last successful run was {age_h:.0f}h ago (window: {max_age}h) — schedule may have silently stopped")
-
-          # CRITICAL: sends happened recently but reply-monitor is stale.
-          # Reply detection is what enforces the pause-on-reply hard rule.
-          try:
-              dc = json.loads(Path("sends/daily-count.json").read_text())
-              sent_recently = dc.get("count", 0) > 0 and dc.get("date", "") >= (NOW - timedelta(days=2)).date().isoformat()
-          except Exception:
-              sent_recently = False
-          if (
-              sent_recently
-              and "reply-monitor.yml" not in SKIP
-              and IN_BUSINESS_WINDOW
-              and (reply_monitor_age_h is None or reply_monitor_age_h > 3)
-          ):
-              age = "unknown" if reply_monitor_age_h is None else f"{reply_monitor_age_h:.0f}h"
-              problems.insert(0, (
-                  f":rotating_light: *CRITICAL*: emails were sent recently (daily count {dc.get('count')} on {dc.get('date')}) "
-                  f"but reply-monitor's last success was {age} ago. Replies are NOT being detected — pause-on-reply "
-                  f"is not enforced. Consider setting SEQUENCES_PAUSED=true until it recovers."
-              ))
-
-          # Zero-output check: weekly-crawl healthy but no fresh raw leads file.
-          if "weekly-crawl.yml" not in SKIP:
-              dates = []
-              raw_dir = Path("leads/raw")
-              for f in raw_dir.glob("*.json") if raw_dir.exists() else []:
-                  m = re.match(r"(\d{4}-\d{2}-\d{2})", f.name)
-                  if m:
-                      dates.append(m.group(1))
-              if dates and max(dates) < (NOW - timedelta(days=9)).date().isoformat():
-                  if not any("weekly-crawl.yml" in p for p in problems):
-                      warnings.append(
-                          f"`weekly-crawl.yml`: runs are green but the newest `leads/raw/` file is dated {max(dates)} "
-                          f"(>9 days). The crawl may be succeeding while producing nothing."
-                      )
-
-          if not problems and not warnings:
-              print("Heartbeat healthy — all monitored workflows within their windows.")
-              raise SystemExit(0)
-
-          lines = [f"*Pipeline heartbeat — {REPO}*"]
-          if problems:
-              lines += ["", "*Problems:*"] + [f"• {p}" for p in problems]
-          if warnings:
-              lines += ["", "*Warnings:*"] + [f"• {w}" for w in warnings]
-          if SKIP:
-              lines += ["", f"_Muted checks (HEARTBEAT_SKIP): {', '.join(sorted(SKIP))}_"]
-          text = "\n".join(lines)
-          print(text)
-
-          url = os.environ.get("SLACK_WEBHOOK_URL", "")
-          if url:
-              req = urllib.request.Request(
-                  url,
-                  data=json.dumps({"text": text}).encode(),
-                  headers={"Content-Type": "application/json"},
-              )
-              try:
-                  urllib.request.urlopen(req, timeout=10)
-              except Exception as e:
-                  print(f"Webhook error: {e}")
-
-          raise SystemExit(1 if problems else 0)
-          PYEOF
+        run: python3 lib/heartbeat.py

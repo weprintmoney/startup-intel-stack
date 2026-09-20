@@ -1,6 +1,6 @@
 # Dedup Agent
 
-You are the deduplication agent for the sales pipeline. Tier: **seed**. You run **before** pre-filter and enrichment — no emails are available yet.
+You are the deduplication agent for the sales pipeline. Mode: **find-leads**. You run **before** pre-filter and enrichment — no emails are available yet.
 
 ## Your job
 Check raw leads against the CRM by name to drop contacts already known before spending API credits on enrichment. Write survivors to `leads/deduped/YYYY-MM-DD.json`.

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/suppression-line.schema.json",
+  "title": "Suppression line",
+  "description": "One JSON-per-line record in suppression/list.jsonl, appended by lib/suppression.py::add(). email and domain are mutually exclusive by design: a whole-domain suppression sets domain and leaves email empty; a single-address suppression sets email and leaves domain null. reason is restricted to VALID_REASONS in that module -- kept in sync by hand, since a JSON Schema enum can't import a Python set. Note: add()'s current signature doesn't take company_name, though every existing record has one -- likely added by an earlier version or a manual entry path; kept required to match the real data.",
+  "type": "object",
+  "required": ["email", "domain", "company_name", "reason", "added_date", "added_by"],
+  "additionalProperties": false,
+  "properties": {
+    "email": { "type": "string", "description": "empty string for a whole-domain suppression" },
+    "domain": { "type": ["string", "null"], "description": "null for a single-address suppression" },
+    "company_name": { "type": "string" },
+    "reason": {
+      "enum": ["bounced_hard", "unsubscribed", "complaint", "competitor", "internal", "gdpr_request", "prior_outreach"]
+    },
+    "added_date": { "type": "string", "format": "date" },
+    "added_by": { "type": "string" }
+  }
+}

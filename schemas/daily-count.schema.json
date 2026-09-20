@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/daily-count.schema.json",
+  "title": "Daily send count",
+  "description": "sends/daily-count.json -- the single-object counter lib/smtp_send.py uses to enforce sending.daily_cap and, when sending.warmup_ramp_days is set, ramp up to it. Not a per-day log; this file is overwritten in place.",
+  "type": "object",
+  "required": ["date", "count", "send_days"],
+  "additionalProperties": false,
+  "properties": {
+    "date": { "type": "string", "format": "date", "description": "last date count was incremented" },
+    "count": { "type": "integer", "minimum": 0, "description": "external sends today, resets daily" },
+    "send_days": { "type": "integer", "minimum": 0, "description": "count of distinct days with an external send (internal-domain sends don't count); drives the warmup ramp tier" }
+  }
+}

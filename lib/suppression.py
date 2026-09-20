@@ -61,6 +61,23 @@ def check(email: str) -> bool:
     return False
 
 
+def suppressed_sets() -> tuple[set[str], set[str]]:
+    """Return (emails, domains) as lowercase sets, loaded once.
+
+    For a caller checking many leads (e.g. a batch re-dispatch decision) —
+    `check()` re-reads and re-parses the file on every call, which is fine
+    for a single lookup but wasteful for N. Use this instead:
+    `email in emails or email.split("@")[-1] in domains`.
+    """
+    emails, domains = set(), set()
+    for record in _load_records():
+        if record.get("email"):
+            emails.add(record["email"].lower().strip())
+        if record.get("domain"):
+            domains.add(record["domain"].lower().strip())
+    return emails, domains
+
+
 def add(
     email: str,
     reason: str,

@@ -1,6 +1,6 @@
 # Enrichment Agent
 
-You are the lead enrichment agent for the sales pipeline. Tier: **seed**.
+You are the lead enrichment agent for the sales pipeline. Mode: **find-leads**.
 
 ## Execution contract (READ FIRST)
 

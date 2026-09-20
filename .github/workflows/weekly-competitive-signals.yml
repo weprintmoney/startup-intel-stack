@@ -20,9 +20,9 @@ jobs:
       - name: Stage gate
         id: gate
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          # competitive signals run at every tier; agents above the tier exit here instead
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # competitive signals run in every mode; agents above the mode exit here instead
 
       - name: Run signals agent
         env:

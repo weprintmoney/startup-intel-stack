@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/send-touch-format-test.schema.json",
+  "title": "Send touch (format test)",
+  "description": "sends/format-test-queue/*.json, written by format-test-send.yml. Same shape as send-touch.schema.json, extended with 3 required keys: original_to (the real prospect address this test send stands in for), reply_to, and campaign.",
+  "type": "object",
+  "required": ["lead_id", "contact_id", "touch_number", "channel", "scheduled_date", "to", "subject", "body", "from_name", "recipient_tz", "original_to", "reply_to", "campaign"],
+  "additionalProperties": false,
+  "properties": {
+    "lead_id": { "type": "string" },
+    "contact_id": { "type": "string" },
+    "touch_number": { "type": "integer", "minimum": 1 },
+    "channel": { "enum": ["email", "linkedin"] },
+    "scheduled_date": { "type": "string", "format": "date" },
+    "to": { "type": "string" },
+    "subject": { "type": "string" },
+    "body": { "type": "string" },
+    "from_name": { "type": "string" },
+    "recipient_tz": { "type": "string" },
+    "body_html": { "type": "string" },
+    "reply_to": { "type": "string" },
+    "original_to": { "type": "string" },
+    "campaign": { "type": "string" },
+    "note": { "type": "string" },
+    "is_nurture": { "type": "boolean" }
+  }
+}

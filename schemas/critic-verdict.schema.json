@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/critic-verdict.schema.json",
+  "title": "Qualifier-critic verdict",
+  "description": "One record in leads/critic/YYYY-MM-DD.json, per agents/qualifier-critic/CLAUDE.md's output schema. warmup_promoted/original_decision are added by dedup-review.yml's warmup override (CLAUDE.md 'Critic warmup override'), not by the critic itself.",
+  "type": "object",
+  "required": [
+    "lead_email", "company_name", "decision", "normalized_score",
+    "category_scores", "failing_criteria", "disqualifier_hits", "reason", "timestamp"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "lead_email": { "type": "string" },
+    "company_name": { "type": "string" },
+    "decision": { "enum": ["PASS", "FAIL", "ESCALATE", "INSUFFICIENT_DATA"] },
+    "normalized_score": { "type": "number", "minimum": 0, "maximum": 100 },
+    "category_scores": { "type": "object", "description": "per-category point totals, e.g. {\"A\": 40, \"B\": 20, \"C\": 10}" },
+    "failing_criteria": { "type": "array", "items": { "type": "string" } },
+    "bonus_signals_found": { "type": "array", "items": { "type": "string" } },
+    "disqualifier_hits": { "type": "array", "items": { "type": "string" } },
+    "floors_failed": { "type": "array", "items": { "type": "string" } },
+    "reason": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "rubric_version": { "type": "string" },
+    "warmup_promoted": { "type": "boolean" },
+    "original_decision": { "type": "string" }
+  }
+}

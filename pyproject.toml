@@ -1,0 +1,14 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+# examples/ holds genericized point-in-time snapshots of the sales-ops and
+# agent-ops reference implementations (see examples/README.md) — read to see
+# the shape, not run or maintained from here, so they're out of this repo's
+# own lint floor.
+extend-exclude = ["examples/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "C90", "I"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10

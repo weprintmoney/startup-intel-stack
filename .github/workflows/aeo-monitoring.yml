@@ -8,7 +8,7 @@
 # checks (using OPENAI_API_KEY / PERPLEXITY_API_KEY directly when present, degrading
 # to web search when not) and compares against the previous dated results file.
 #
-# Tier: seed (content ops). Exits with a notice at pre-seed.
+# Mode: find-leads (content ops). Exits with a notice in docs-only mode.
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
 # Optional secrets: OPENAI_API_KEY, PERPLEXITY_API_KEY (more answer engines covered),
 #                   SLACK_WEBHOOK_URL (failure notifications).
@@ -33,9 +33,9 @@ jobs:
       - name: Stage gate
         id: gate
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          if [ "$STAGE" = "pre-seed" ]; then
-            echo "::notice::AEO Monitoring is a seed-tier workflow; company.stage is pre-seed — skipping."
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          if [ "$MODE" = "docs-only" ] || [ "$MODE" = "pre-seed" ] || [ -z "$MODE" ]; then
+            echo "::notice::AEO Monitoring needs mode find-leads or higher; company.mode is docs-only — skipping."
             echo "run=false" >> "$GITHUB_OUTPUT"
           else
             echo "run=true" >> "$GITHUB_OUTPUT"

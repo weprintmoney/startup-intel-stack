@@ -1,0 +1,79 @@
+name: Data Validate
+
+# JSON Schema validation for lead/send/suppression data files
+# (schemas/*.schema.json). Most pipeline workflows commit data straight to
+# main as a bot account, so a PR check never sees most of these writes. Two
+# triggers, two postures:
+#   - pull_request: GATES on sends/queue/** and sends/linkedin/** (plus
+#     schemas/** itself) -- the only data a human ever sees in a PR, via
+#     the sequence-enrollment approval PR (human-approval-gate hard rule).
+#   - push to main: ADVISORY across every schema-covered directory --
+#     both the validate step and the alert step are continue-on-error, so
+#     this job never fails the run (including when no Slack notification
+#     method is configured -- lib/slack.py degrades to log-only), since
+#     there is no PR left to block by the time a bot push lands on main.
+# workflow_dispatch exists to demonstrate/test the advisory path on a
+# scratch branch without waiting for a real bot push.
+
+on:
+  pull_request:
+    paths: ["sends/queue/**", "sends/linkedin/**", "schemas/**"]
+  push:
+    branches: [main]
+    paths: ["leads/**", "sends/**", "suppression/**", "schemas/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install jsonschema
+        run: pip install --quiet "jsonschema[format]"
+
+      - name: Validate-data unit tests
+        run: python -m unittest lib.tests.test_validate_data -v
+
+      - name: Validate changed data (PR scope — gates the merge)
+        run: python lib/validate_data.py pr .
+
+  validate-push:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install jsonschema
+        run: pip install --quiet "jsonschema[format]"
+
+      - name: Validate all data (advisory — never blocks)
+        id: validate
+        continue-on-error: true
+        run: python lib/validate_data.py full .
+
+      - name: Alert on failure
+        if: steps.validate.outcome == 'failure'
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ALERT_CHANNEL: ${{ vars.DATA_VALIDATE_ALERT_CHANNEL }} # optional; channel or (with SLACK_BOT_TOKEN) user ID
+        run: |
+          python3 lib/slack.py "$ALERT_CHANNEL" ":warning: data-validate found schema violations in this repo's data files (advisory only — nothing was blocked). ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

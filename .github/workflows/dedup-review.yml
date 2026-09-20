@@ -1,4 +1,4 @@
-# Qualifier-critic gate + CRM pending upsert. Tier: seed.
+# Qualifier-critic gate + CRM pending upsert. Mode: find-leads.
 # Leads only reach the CRM upsert with a PASS verdict from the
 # qualifier-critic rubric. Fail-closed — no verdict, no upsert.
 # Triggered by stack-profile.yml, or manually.
@@ -19,6 +19,10 @@ on:
         type: string
         default: "30"
         description: "Minimum normalized critic score required for promotion"
+      skip_downstream:
+        type: boolean
+        default: false
+        description: "Don't chain into sequence-enrollment when this finishes (find-and-draft mode only)"
 
 permissions:
   contents: read
@@ -28,19 +32,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write # chain into sequence-enrollment in find-and-draft mode
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Preflight (stage gate + secrets + config)
+      - name: Preflight (mode gate + secrets + config)
         id: gate
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
-          if [ "$(rank "$STAGE")" -lt "$(rank seed)" ]; then
-            echo "::notice::company.stage '$STAGE' is below 'seed' — dedup-review skipped (stage gate)."
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          rank() { case "$1" in docs-only|pre-seed) echo 0;; find-leads|seed) echo 1;; find-and-draft|series-a) echo 2;; *) echo -1;; esac; }
+          if [ "$(rank "$MODE")" -lt 0 ]; then
+            echo "::warning::company.mode '$MODE' is not recognized — expected docs-only, find-leads, or find-and-draft. Treating as docs-only."
+          fi
+          if [ "$(rank "$MODE")" -lt "$(rank find-leads)" ]; then
+            echo "::notice::company.mode '$MODE' is below 'find-leads' — dedup-review skipped (mode gate)."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ -z "$ANTHROPIC_API_KEY" ]; then
@@ -51,8 +59,12 @@ jobs:
             echo "::warning::qualifier-critic rubric missing at docs/03-commercial-revenue/rubrics/qualifier-critic.md — skipping (fail-closed)."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          echo "run=true" >> "$GITHUB_OUTPUT"
-          echo "crm_secret=$(yq '.crm.api_key_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
+          {
+            echo "run=true"
+            echo "mode=$MODE"
+            echo "crm_secret=$(yq '.crm.api_key_secret // ""' company-profile.yaml)"
+            echo "drafts=$([ "$(rank "$MODE")" -ge "$(rank find-and-draft)" ] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         if: steps.gate.outputs.run == 'true'
@@ -63,6 +75,13 @@ jobs:
       - name: Install dependencies
         if: steps.gate.outputs.run == 'true'
         run: pip install requests pyyaml
+
+      - name: Check doc versions
+        # Fails loud before scoring if the rubric moved without a matching
+        # Calibrated-against update in the agent's CLAUDE.md — silent rubric
+        # skew is a worse failure mode than a blocked run.
+        if: steps.gate.outputs.run == 'true'
+        run: python scripts/check_doc_version.py agents/qualifier-critic/CLAUDE.md
 
       - name: Set up Claude Code
         if: steps.gate.outputs.run == 'true'
@@ -299,3 +318,22 @@ jobs:
             git pull --rebase origin main
             sleep $((i * 2))
           done
+
+      # In find-and-draft mode the pipeline keeps going: qualified leads get
+      # outreach drafted and an approval PR opened. In find-leads mode it
+      # stops here with a scored lead list and writes no outreach — that's
+      # the difference between the two modes. Merging the PR that
+      # sequence-enrollment opens is still the only thing that can send.
+      - name: Trigger sequence-enrollment (find-and-draft mode)
+        if: steps.gate.outputs.run == 'true' && steps.gate.outputs.drafts == 'true' && inputs.skip_downstream != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run sequence-enrollment.yml \
+            --repo ${{ github.repository }} \
+            --ref main
+
+      - name: Note stopping point (find-leads mode)
+        if: steps.gate.outputs.run == 'true' && steps.gate.outputs.drafts != 'true'
+        run: |
+          echo "::notice::Scored lead list is ready in leads/critic/. company.mode is '${{ steps.gate.outputs.mode }}', so no outreach was drafted. Set company.mode to 'find-and-draft' to have drafts written for your approval."

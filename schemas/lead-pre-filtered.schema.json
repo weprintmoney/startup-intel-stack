@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/lead-pre-filtered.schema.json",
+  "title": "Pre-filtered lead (passed)",
+  "description": "leads/pre-filtered/*.json (excluding *-rejects.json, which is lead-reject) — a lead-deduped record with pre-filter's structural gate fields added. Only leads that pass the gate land here; failures go to the sibling *-rejects.json file (lead-reject.schema.json).",
+  "type": "object",
+  "required": [
+    "company_name", "website", "employee_count", "industry", "contact_name",
+    "contact_title", "linkedin_url", "icp_segment", "icp_rationale", "country_code",
+    "source", "prior_contact", "eu_flagged", "mql_score", "pre_filter_passed", "pre_filter_date"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "company_name": { "type": "string" },
+    "website": { "type": "string" },
+    "employee_count": { "type": "integer", "minimum": 0 },
+    "industry": { "type": "string" },
+    "contact_name": { "type": "string" },
+    "contact_title": { "type": "string" },
+    "linkedin_url": { "type": "string" },
+    "icp_segment": { "type": "string" },
+    "icp_rationale": { "type": "string" },
+    "country_code": { "type": "string" },
+    "source": { "type": "string" },
+    "prior_contact": { "type": "boolean" },
+    "eu_flagged": { "type": "boolean" },
+    "mql_score": { "type": "number" },
+    "pre_filter_passed": { "const": true },
+    "pre_filter_date": { "type": "string", "format": "date" },
+    "title_match": { "type": "string", "description": "the matched title category, e.g. 'CTO', 'VP of Engineering'" },
+    "employee_count_flag": { "type": "string", "description": "e.g. unknown_needs_review" },
+    "icp_score": { "type": "number" },
+    "target_product": { "type": "string" },
+    "funding_stage": { "type": "string" },
+    "funding_date": { "type": "string", "format": "date" },
+    "funding_amount": { "type": "string" },
+    "announcement_link": { "type": "string" },
+    "event_slug": { "type": "string" },
+    "apollo_id": { "type": "string" }
+  }
+}

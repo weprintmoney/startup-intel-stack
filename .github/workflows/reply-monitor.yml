@@ -1,7 +1,8 @@
-# Poll the outreach inbox for replies. Tier: series-a.
+# Poll the outreach inbox for replies. Mode: find-and-draft.
 # Hard rule: pause-on-reply — the moment a reply is detected, the contact's
 # sequence_status is set to paused in the CRM and no further automated
-# sends happen. Unsubscribe requests are auto-suppressed.
+# sends happen. Unsubscribe requests are auto-suppressed. Logic lives in
+# lib/reply_monitor.py (tested — see lib/tests/).
 name: Reply Monitor
 
 on:
@@ -23,26 +24,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Preflight (stage gate + IMAP secrets + config)
+      - name: Preflight (mode gate + IMAP secrets + config)
         id: gate
         env:
           IMAP_HOST: ${{ secrets.IMAP_HOST }}
           IMAP_USER: ${{ secrets.IMAP_USER }}
           IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
         run: |
-          STAGE=$(yq '.company.stage' company-profile.yaml)
-          rank() { case "$1" in pre-seed) echo 0;; seed) echo 1;; series-a) echo 2;; *) echo 0;; esac; }
-          if [ "$(rank "$STAGE")" -lt "$(rank series-a)" ]; then
-            echo "::notice::company.stage '$STAGE' is below 'series-a' — reply monitoring skipped (stage gate)."
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          rank() { case "$1" in docs-only|pre-seed) echo 0;; find-leads|seed) echo 1;; find-and-draft|series-a) echo 2;; *) echo -1;; esac; }
+          if [ "$(rank "$MODE")" -lt 0 ]; then
+            echo "::warning::company.mode '$MODE' is not recognized — expected docs-only, find-leads, or find-and-draft. Treating as docs-only."
+          fi
+          if [ "$(rank "$MODE")" -lt "$(rank find-and-draft)" ]; then
+            echo "::notice::company.mode '$MODE' is below 'find-and-draft' — reply monitoring skipped (mode gate)."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ -z "$IMAP_HOST" ] || [ -z "$IMAP_USER" ] || [ -z "$IMAP_PASSWORD" ]; then
             echo "::notice::IMAP_HOST / IMAP_USER / IMAP_PASSWORD not fully set — skipping reply monitoring."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          echo "run=true" >> "$GITHUB_OUTPUT"
-          echo "crm_secret=$(yq '.crm.api_key_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
-          echo "webhook_secret=$(yq '.channels.slack_webhook_secret // ""' company-profile.yaml)" >> "$GITHUB_OUTPUT"
+          {
+            echo "run=true"
+            echo "crm_secret=$(yq '.crm.api_key_secret // ""' company-profile.yaml)"
+            echo "webhook_secret=$(yq '.channels.slack_webhook_secret // ""' company-profile.yaml)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         if: steps.gate.outputs.run == 'true'
@@ -61,7 +67,11 @@ jobs:
           IMAP_USER: ${{ secrets.IMAP_USER }}
           IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
           CRM_API_KEY: ${{ secrets[steps.gate.outputs.crm_secret || 'CRM_API_KEY'] }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }} # optional; enables DM-ing REPLY_MONITOR_OWNER_UID / _ESCALATION_UID
           SLACK_WEBHOOK_URL: ${{ secrets[steps.gate.outputs.webhook_secret || 'SLACK_WEBHOOK_URL'] }}
+          SLACK_SALES_REVIEW_CHANNEL: ${{ vars.SLACK_SALES_REVIEW_CHANNEL }} # optional team channel, in addition to the DMs above
+          REPLY_MONITOR_OWNER_UID: ${{ vars.REPLY_MONITOR_OWNER_UID }} # optional; Slack user ID, requires SLACK_BOT_TOKEN to DM
+          REPLY_MONITOR_ESCALATION_UID: ${{ vars.REPLY_MONITOR_ESCALATION_UID }} # optional; ditto, for normal (non-unsubscribe) replies
           SUPPRESSION_LIST_PATH: suppression/list.jsonl
         run: |
           PROVIDER=$(yq '.crm.provider // "none"' company-profile.yaml)
@@ -69,92 +79,7 @@ jobs:
             echo "::warning::crm.provider is '$PROVIDER' but its API key secret is unset — updating the local store only."
             export CRM_PROVIDER=none
           fi
-          python - <<'PYEOF'
-          import json, os, sys, urllib.request
-
-          sys.path.insert(0, "lib")
-          import imap_poll
-          import crm
-          import suppression
-
-          UNSUBSCRIBE_KEYWORDS = ["unsubscribe", "opt out", "opt-out", "remove me", "take me off"]
-
-          def is_unsubscribe(reply: dict) -> bool:
-              haystack = (
-                  reply.get("subject", "") + " " + reply.get("body_snippet", "")
-              ).lower()
-              return any(kw in haystack for kw in UNSUBSCRIBE_KEYWORDS)
-
-          def notify(text: str) -> None:
-              url = os.environ.get("SLACK_WEBHOOK_URL")
-              if not url:
-                  return
-              req = urllib.request.Request(
-                  url,
-                  data=json.dumps({"text": text}).encode(),
-                  headers={"Content-Type": "application/json"},
-              )
-              try:
-                  urllib.request.urlopen(req, timeout=10)
-              except Exception as e:
-                  print(f"Notification failed: {e}")
-
-          replies = imap_poll.check_replies(since_hours=2)
-          if not replies:
-              print("No new replies detected.")
-              sys.exit(0)
-
-          for reply in replies:
-              from_addr = reply.get("from", "")
-              subject = reply.get("subject", "")
-              date_str = reply.get("date", "")
-              print(f"Reply detected: {from_addr} — {subject}")
-
-              email = from_addr.split("<")[-1].rstrip(">").strip() if "<" in from_addr else from_addr
-              contact = crm.get_contact(email)
-              contact_id = contact.get("id") if contact else None
-
-              if is_unsubscribe(reply):
-                  # Auto-suppress and close out cleanly
-                  try:
-                      suppression.add(email, "unsubscribed", "reply-monitor")
-                      print(f"Suppressed (unsubscribe): {email}")
-                  except Exception as e:
-                      print(f"Suppression error: {e}")
-                  if contact_id:
-                      try:
-                          crm.set_field(contact_id, "suppressed", True)
-                          crm.set_field(contact_id, "sequence_status", "paused")
-                          crm.log_interaction(
-                              contact_id,
-                              f"Unsubscribe request received on {date_str}. Contact suppressed. Sequence stopped."
-                          )
-                      except Exception as e:
-                          print(f"CRM update error: {e}")
-                  notify(
-                      f":no_entry: Unsubscribe request — contact suppressed\n"
-                      f"From: {from_addr}\nDate: {date_str}\n"
-                      f"Added to suppression list. No further sends."
-                  )
-              else:
-                  # Normal reply — pause sequence, notify
-                  if contact_id:
-                      try:
-                          crm.set_field(contact_id, "sequence_status", "paused")
-                          crm.set_field(contact_id, "reply_received", True)
-                          crm.log_interaction(
-                              contact_id,
-                              f"Reply received on {date_str}. Subject: {subject}. Sequence paused."
-                          )
-                          print(f"CRM: sequence paused for {email}")
-                      except Exception as e:
-                          print(f"CRM update error: {e}")
-                  notify(
-                      f":email: Reply received — sequence paused\n"
-                      f"From: {from_addr}\nSubject: {subject}\nDate: {date_str}\n"
-                      f"Sequence for this contact is now paused. Review and respond manually."
-                  )
-          PYEOF
+          python3 lib/reply_monitor.py
 
       - name: Commit suppression + local CRM updates
         if: steps.gate.outputs.run == 'true'
