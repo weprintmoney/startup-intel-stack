@@ -14,7 +14,9 @@ Enrichment (email-finder API calls) costs money. Running enrichment on leads tha
 
 ### 1. Load ICP criteria
 
-Read the `icp:` block of `company-profile.yaml` — verticals, `company_size`, `geographies`, `buyer_titles`, `disqualifiers` — plus `docs/01-market-intelligence/ideal-customer-profile.md` if present. This is your ground truth. Do not invent criteria.
+Read the `icp:` block of `company-profile.yaml` — verticals, `company_size`, `geographies`, `locations`, `buyer_titles`, `disqualifiers` — plus `docs/01-market-intelligence/icp.md` (or the older `ideal-customer-profile.md`) if present. This is your ground truth. Do not invent criteria.
+
+`icp.locations` (optional) lists the metros the ICP is bounded to, each with `city`, `aliases`, and `include_remote_hq_with_local_office`. The `metro` hard filter below is active only when this list is non-empty; when it is empty, skip that row entirely.
 
 ### 2. Load competitor blocks
 
@@ -35,6 +37,7 @@ For each lead, evaluate every hard filter. A lead is rejected if **any** hard fi
 | `icp_relevance` | The lead's `icp_segment` is not blank, OR the company description (if available in the raw record) contains signals matching the problem described in `company.one_liner` / the ICP doc. If `icp_segment` is set, treat as passing. |
 | `not_competitor` | The lead's `website` domain does not match any competitor `domain` (config block or suppression list). Also check `company_name` case-insensitively against competitor names. Reject if either matches. Log: `"Rejected {company_name}: competitor (suppression match)"`. |
 | `disqualifiers` | The lead does not match any hard-fail condition in `icp.disqualifiers` (e.g. agency, direct competitor). |
+| `metro` | **Only when `icp.locations` is non-empty.** Use the lead's `metro_match` if present; if absent, derive it by matching `contact_location` then `company_hq_location` (case-insensitive substring) against each metro's `city` and `aliases`. `contact` or `company_hq` → pass. `local_office` → pass only if that metro's `include_remote_hq_with_local_office` is true, else reject. `none` → reject with reason `"outside_metro: {contact_location} / {company_hq_location}"`. `unknown` (no location data at all) → pass with `location_flag: "unknown_needs_review"` — never reject on missing data alone. Write the derived `metro_match` back onto the record. |
 
 ### 5. Apply title eligibility check
 
@@ -82,10 +85,12 @@ The bonus applies **before** the threshold check — a lead scoring 25 that prev
   "pre_filter_date": "YYYY-MM-DD",
   "momentum": true,
   "prior_mql_score": 20,
-  "prior_reject_date": "YYYY-MM-DD"
+  "prior_reject_date": "YYYY-MM-DD",
+  "metro_match": "contact",
+  "location_flag": "unknown_needs_review"
 }
 ```
-The three momentum fields are only present when the Step 6b bonus applied.
+The three momentum fields are only present when the Step 6b bonus applied. `metro_match` is only present when `icp.locations` is non-empty; `location_flag` only when `metro_match` is `unknown`.
 
 **Rejects** — write to `leads/pre-filtered/YYYY-MM-DD-rejects.json`. Each object is the raw lead record with:
 ```json
@@ -107,11 +112,13 @@ Pre-filter summary YYYY-MM-DD
     - Hard filter (company_size):   {n}
     - Hard filter (not_competitor): {n}
     - Hard filter (icp_relevance):  {n}
+    - Hard filter (metro):          {n}
     - Title excluded:               {n}
     - Title not primary:            {n}
     - Score below threshold:        {n}
   Momentum bonus applied:           {n}
   EU flagged (linkedin_only):       {n}
+  Location unknown (flagged):       {n}
 ```
 
 ## Hard rules

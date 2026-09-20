@@ -52,6 +52,22 @@ class MonitoredForStage(unittest.TestCase):
         monitored = hb._monitored_for_stage("series-a")
         self.assertEqual(monitored["smtp-send.yml"], hb.MONITORED["smtp-send.yml"])
 
+    def test_find_and_draft_mode_name_adds_the_send_loop_too(self):
+        # pipeline-heartbeat.yml passes the canonical mode, not the legacy
+        # stage name; both must widen the monitored set.
+        monitored = hb._monitored_for_stage("find-and-draft")
+        self.assertTrue(set(hb.SEND_PATH_WORKFLOWS) <= set(monitored))
+
+    def test_manual_provider_never_monitors_the_send_loop(self):
+        for stage in ("find-and-draft", "series-a"):
+            with self.subTest(stage=stage):
+                monitored = hb._monitored_for_stage(stage, "manual")
+                self.assertEqual(set(monitored), {"weekly-crawl.yml", "dedup-review.yml"})
+
+    def test_send_path_workflows_are_real_files(self):
+        missing = [wf for wf in hb.SEND_PATH_WORKFLOWS if not (WORKFLOWS_DIR / wf).exists()]
+        self.assertEqual(missing, [])
+
 
 class Evaluate(unittest.TestCase):
     def test_healthy_is_no_problems_no_warnings(self):
@@ -132,6 +148,28 @@ class Evaluate(unittest.TestCase):
             monitored={"reply-monitor.yml": 28},
         )
         self.assertTrue(problems[0].startswith(":rotating_light: *CRITICAL*"))
+
+    def test_critical_is_silent_in_manual_mode_even_with_a_stale_daily_count(self):
+        stale_reply = (NOW - timedelta(hours=10)).isoformat().replace("+00:00", "Z")
+        runs_by_workflow = {"weekly-crawl.yml": [run(NOW.isoformat().replace("+00:00", "Z"))]}
+        problems, _ = hb.evaluate(
+            now=NOW, skip=set(), in_business_window=True,
+            runs_by_workflow=runs_by_workflow,
+            daily_count={"count": 5, "date": NOW.date().isoformat()},
+            raw_lead_dates=[],
+            monitored={"weekly-crawl.yml": 204},
+            manual=True,
+        )
+        self.assertEqual(problems, [])
+        # And the same inputs without manual would have fired, so the flag is load-bearing.
+        problems, _ = hb.evaluate(
+            now=NOW, skip=set(), in_business_window=True,
+            runs_by_workflow={"reply-monitor.yml": [run(stale_reply)]},
+            daily_count={"count": 5, "date": NOW.date().isoformat()},
+            raw_lead_dates=[],
+            monitored={"reply-monitor.yml": 28},
+        )
+        self.assertTrue(problems and problems[0].startswith(":rotating_light: *CRITICAL*"))
 
     def test_critical_does_not_fire_outside_business_window(self):
         stale_reply = (NOW - timedelta(hours=10)).isoformat().replace("+00:00", "Z")

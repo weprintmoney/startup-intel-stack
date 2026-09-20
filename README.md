@@ -36,7 +36,7 @@ Read the two field-notes papers first (framework + implementation companion). Th
 |-------|--------------|----------------|
 | **L1 · Docs SSOT** | Positioning, messaging, ICP, personas, brand voice, sales playbook, sequences, pricing skeleton, decision log | `docs/01-` through `docs/06-` |
 | **L1 · Content ops** | Blog/KB drafting, AEO gap monitoring, competitive signals, topic-cluster health | `docs/04-marketing/` + workflows |
-| **L2 · Sales pipeline (live scaffold)** | Lead crawl → dedup → pre-filter → enrich → stack-profile → qualify (rubric-gated) → sequence enrollment → copy evaluation → send, with human approval via PR merge before any email goes out | `agents/`, `lib/`, `.github/workflows/` |
+| **L2 · Sales pipeline (live scaffold)** | Lead sourcing (Apollo, Apify public-page actors, or your own CSV) → dedup → pre-filter (incl. an optional metro filter) → enrich (Prospeo / Apollo / Hunter) → per-company profile (tech stack or organisation context) → qualify (rubric-gated) → sequence enrollment → copy evaluation → send, with human approval via PR merge before any email goes out — or, with `sending.provider: manual`, a copy-paste packet and one GitHub issue per lead instead of a send | `agents/`, `lib/`, `.github/workflows/` |
 | **L2 · Feedback loop** | Monthly agent mines your edits to approval PRs and proposes rubric/template improvements | `.github/workflows/feedback-loop.yml` |
 | **L2 · Reference (mature)** | Fuller version of the sales pipeline — 23 workflows, kill switch, EU router, deliverability monitor, judge-evals regression harness. Genericized from a live implementation for study, not to run from here. | [`examples/sales-ops-skeleton/`](examples/sales-ops-skeleton/) |
 | **L3 · Coding harness (reference)** | The self-improving ticket → spec → implement → review → judge → PR → dream-loop pipeline. Not shipped in this template's live scaffold; open the skeleton to see the shape. | [`examples/agent-ops-skeleton/`](examples/agent-ops-skeleton/) |
@@ -49,9 +49,9 @@ Set `mode:` in `company-profile.yaml`. Agents check the mode and skip anything a
 
 | Mode | What runs | What you need |
 |------|-----------|---------------|
-| `docs-only` | Positioning, ICP, personas, brand voice, decision log, weekly market and competitor signals, content ops | `ANTHROPIC_API_KEY` |
-| `find-leads` | + the lead pipeline: crawl → dedup → pre-filter → enrich → score against your rubric. Produces a qualified lead list, writes no outreach | + a contact source: `APOLLO_API_KEY` (paid) **or** a contact-list CSV you export yourself |
-| `find-and-draft` | + drafts outreach for qualified leads and opens an approval PR, + sends what you approve there | + an email provider key (`RESEND_API_KEY`, `SENDGRID_API_KEY`, or `MAILGUN_API_KEY`) and a `send_domain` |
+| `docs-only` | Positioning, ICP, personas, brand voice, decision log, weekly market and competitor signals, content ops, AEO monitoring | `ANTHROPIC_API_KEY` |
+| `find-leads` | + the lead pipeline: source → dedup → pre-filter → enrich → profile → score against your rubric. Produces a qualified lead list, writes no outreach | + a contact source: `APIFY_API_KEY` (public-page LinkedIn actors, Google Maps, job postings — see `apify_sources`), `APOLLO_API_KEY`, **or** a contact-list CSV you export yourself. Email finding: `PROSPEO_API_KEY` (LinkedIn URL → verified email), Apollo, or `HUNTER_API_KEY` |
+| `find-and-draft` | + drafts outreach for qualified leads and opens an approval PR, + sends what you approve there | + an email provider key (`RESEND_API_KEY`, `SENDGRID_API_KEY`, or `MAILGUN_API_KEY`) and a `send_domain` — **or** `sending.provider: manual`: no key, no send domain; merging the approval PR produces a copy-paste send packet and one GitHub issue per lead, and a human sends |
 
 **Nothing is ever emailed without your explicit approval, in any mode.** Drafts are written to a branch and opened as a pull request; the sending job only ever reads what you've merged.
 
@@ -63,7 +63,7 @@ Designed to degrade gracefully when API keys are absent:
 
 - **Minimum:** Anthropic API key only (~$30–100/mo). Signals, content drafts, doc maintenance all work.
 - **Recommended (seed+):** + Resend (free tier, 100 sends/day cap enforced), Exa (signal enrichment).
-- **Optional:** Apollo (lead sourcing), Hunter (email finding), CRM API (Attio/Airtable — abstracted in `lib/`).
+- **Optional:** Apify (lead sourcing from public pages; pay per actor run), Prospeo (LinkedIn URL → verified email; free tier then per-email pricing), Apollo (lead sourcing + email), Hunter (email finding), CRM API (Attio/Airtable — abstracted in `lib/`). Instances with no email provider run `sending.provider: manual` at zero sending cost.
 
 ## Getting started
 

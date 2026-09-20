@@ -40,6 +40,11 @@ jobs:
             echo "::notice::company.mode '$MODE' is below 'find-and-draft' — reply monitoring skipped (mode gate)."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          PROVIDER=$(yq '.sending.provider // "resend"' company-profile.yaml)
+          if [ "$PROVIDER" = "manual" ]; then
+            echo "::notice::sending.provider is 'manual' — replies are recorded by the human on each lead issue (status:replied), synced by lead-issue-sync.yml. No mailbox to poll; skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           if [ -z "$IMAP_HOST" ] || [ -z "$IMAP_USER" ] || [ -z "$IMAP_PASSWORD" ]; then
             echo "::notice::IMAP_HOST / IMAP_USER / IMAP_PASSWORD not fully set — skipping reply monitoring."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0

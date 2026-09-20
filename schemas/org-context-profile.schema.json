@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/org-context-profile.schema.json",
+  "title": "Org-context profile",
+  "description": "One record in leads/org-profiles/YYYY-MM-DD.json, written by the org-context-profile agent. `fields` is keyed by the agent's fixed dimension set (metro_presence, local_headcount, people_leader, people_signal_recent, layoffs_recent, training_vendors, gathering_cadence, culture_language, glassdoor_themes); only the per-field {value, confidence, evidence} shape is validated, so a field with no evidence can simply be omitted.",
+  "type": "object",
+  "required": ["lead_id", "email", "company_name", "fields", "overall_confidence", "routing", "contradictions", "profile_date"],
+  "additionalProperties": false,
+  "properties": {
+    "lead_id": { "type": "string" },
+    "email": { "type": "string" },
+    "company_name": { "type": "string" },
+    "profile_kind": { "const": "org-context" },
+    "fields": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["value", "confidence", "evidence"],
+        "properties": {
+          "value": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "overall_confidence": { "type": "number", "minimum": 0, "maximum": 100 },
+    "routing": { "enum": ["ready_for_drafting", "thin_profile", "human_review"] },
+    "contradictions": {
+      "type": "array",
+      "description": "Two shapes seen in practice: structured (values + evidence arrays) and prose (a free-text detail string). Only 'field' is required.",
+      "items": {
+        "type": "object",
+        "required": ["field"],
+        "properties": {
+          "field": { "type": "string" },
+          "values": { "type": "array", "items": { "type": "string" } },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "profile_date": { "type": "string", "format": "date" }
+  }
+}

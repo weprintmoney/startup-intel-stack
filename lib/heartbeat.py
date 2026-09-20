@@ -22,6 +22,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import config  # noqa: E402
 from slack import post  # noqa: E402
 
 # Channel ID (or Slack user ID for a DM, if SLACK_BOT_TOKEN is set — see
@@ -39,8 +40,16 @@ MONITORED = {
     "dedup-review.yml": 204,           # part of the weekly-crawl chain
 }
 # Add a judge-evals.yml / evergreen-nurture.yml entry (204h ~ weekly) once
-# this instance schedules those workflows — they're intentionally absent
+# this repo schedules those workflows — they're intentionally absent
 # here so heartbeat never reports a "stale" workflow that doesn't exist yet.
+# apify-ingest.yml is likewise absent until its cron is enabled.
+
+# The automated send loop. Monitored only in find-and-draft mode with a
+# real email provider; with sending.provider "manual" these workflows are
+# permanent no-ops (humans send from the packet + lead issues), so their
+# "staleness" would be noise and the sends-without-reply-monitor CRITICAL
+# has nothing to enforce.
+SEND_PATH_WORKFLOWS = ("deliverability-monitor.yml", "smtp-send.yml", "reply-monitor.yml")
 
 
 def fetch_runs(repo: str, token: str, workflow_file: str):
@@ -96,10 +105,19 @@ def _check_monitored_workflows(
 
 
 def _reply_monitor_critical(
-    now: datetime, skip: set[str], in_business_window: bool, daily_count: dict | None, reply_monitor_age_h: float | None
+    now: datetime,
+    skip: set[str],
+    in_business_window: bool,
+    daily_count: dict | None,
+    reply_monitor_age_h: float | None,
+    manual: bool = False,
 ) -> str | None:
     """CRITICAL: sends happened recently but reply-monitor is stale. Reply
-    detection is what enforces Hard Rule 5 (pause on reply)."""
+    detection is what enforces Hard Rule 5 (pause on reply). In manual
+    mode nothing is sent by CI and replies are recorded by the human on the
+    lead issue, so there is nothing for this check to enforce."""
+    if manual:
+        return None
     dc = daily_count or {}
     sent_recently = dc.get("count", 0) > 0 and dc.get("date", "") >= (now - timedelta(days=2)).date().isoformat()
     if not (
@@ -142,11 +160,14 @@ def evaluate(
     daily_count: dict | None,
     raw_lead_dates: list[str],
     monitored: dict[str, int] = MONITORED,
+    manual: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Pure decision function — no I/O. Returns (problems, warnings)."""
     problems, warnings, reply_monitor_age_h = _check_monitored_workflows(now, skip, runs_by_workflow, monitored)
 
-    critical = _reply_monitor_critical(now, skip, in_business_window, daily_count, reply_monitor_age_h)
+    critical = _reply_monitor_critical(
+        now, skip, in_business_window, daily_count, reply_monitor_age_h, manual=manual
+    )
     if critical:
         problems.insert(0, critical)
 
@@ -179,16 +200,15 @@ def _raw_lead_dates(raw_dir: Path) -> list[str]:
     return dates
 
 
-def _monitored_for_stage(stage: str) -> dict[str, int]:
-    """series-a unlocks the full outbound-send loop; below that, those
-    workflows are stage-gated no-ops in their own preflight and would never
-    show a real "success" run, so staleness would just be noise."""
+def _monitored_for_stage(stage: str, provider: str = "resend") -> dict[str, int]:
+    """find-and-draft (legacy alias: series-a) unlocks the full outbound-send
+    loop; below that, those workflows are mode-gated no-ops in their own
+    preflight and would never show a real "success" run, so staleness would
+    just be noise. The same applies when sending.provider is "manual": the
+    send-path workflows exit at their provider gate on every run."""
     monitored = {k: v for k, v in MONITORED.items() if k in ("weekly-crawl.yml", "dedup-review.yml")}
-    if stage == "series-a":
-        monitored.update({
-            k: v for k, v in MONITORED.items()
-            if k in ("deliverability-monitor.yml", "smtp-send.yml", "reply-monitor.yml")
-        })
+    if config.normalize_mode(stage) == "find-and-draft" and provider != config.MANUAL_PROVIDER:
+        monitored.update({k: v for k, v in MONITORED.items() if k in SEND_PATH_WORKFLOWS})
     return monitored
 
 
@@ -196,6 +216,8 @@ def main() -> int:
     repo = os.environ["REPO"]
     token = os.environ["GH_TOKEN"]
     stage = os.environ.get("STAGE", "seed")
+    provider = (os.environ.get("SENDING_PROVIDER") or "resend").strip().lower()
+    manual = provider == config.MANUAL_PROVIDER
     skip = {s.strip() for s in os.environ.get("HEARTBEAT_SKIP", "").split(",") if s.strip()}
     now = datetime.now(timezone.utc)
     try:
@@ -204,7 +226,7 @@ def main() -> int:
         local_now = now
     in_business_window = local_now.weekday() < 5 and 9 <= local_now.hour < 18
 
-    monitored = _monitored_for_stage(stage)
+    monitored = _monitored_for_stage(stage, provider)
     runs_by_workflow = {wf: fetch_runs(repo, token, wf) for wf in monitored if wf not in skip}
 
     try:
@@ -220,6 +242,7 @@ def main() -> int:
         daily_count=daily_count,
         raw_lead_dates=_raw_lead_dates(Path("leads/raw")),
         monitored=monitored,
+        manual=manual,
     )
 
     if not problems and not warnings:

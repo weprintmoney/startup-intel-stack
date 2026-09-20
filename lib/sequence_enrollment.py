@@ -65,7 +65,24 @@ def unverdicted_email_leads(queue_dir: Path, scored_ids: set) -> list[str]:
     return unverdicted
 
 
-def build_pr_body(verdicts: list[dict], today: str) -> str:
+MANUAL_PROVIDER = "manual"
+
+
+def _intro(provider: str) -> str:
+    if provider == MANUAL_PROVIDER:
+        return """Each file under `sends/queue/` and `sends/linkedin/` is one drafted touch.
+    **Nothing is emailed by the system** (`sending.provider: manual`). After
+    merge, `manual-send-packet.yml` compiles these into
+    `sends/manual/<date>-send-packet.md` and opens one GitHub issue per lead
+    with the paste-ready copy and a checkbox per touch — you send by hand
+    from your own mailbox and LinkedIn, tick each touch as you go, and label
+    the issue with the outcome."""
+    return """Each file under `sends/queue/` is one email that WILL BE SENT after
+    merge (on its scheduled date, via the configured email provider). Files
+    under `sends/linkedin/` are LinkedIn touches for manual sending."""
+
+
+def build_pr_body(verdicts: list[dict], today: str, provider: str = "resend") -> str:
     rows = []
     for v in sorted(verdicts, key=lambda x: x.get("decision", "")):
         mark = "✅" if v.get("decision") == "PASS" else "❌"
@@ -77,9 +94,7 @@ def build_pr_body(verdicts: list[dict], today: str) -> str:
 
     body = f"""## Review before merging
 
-    Each file under `sends/queue/` is one email that WILL BE SENT after
-    merge (on its scheduled date, via Resend). Files under `sends/linkedin/`
-    are LinkedIn touches for manual sending.
+    {_intro(provider)}
 
     ## Copy-evaluator verdicts ({today})
 
@@ -87,7 +102,7 @@ def build_pr_body(verdicts: list[dict], today: str) -> str:
     |---|---|---|---|
     {chr(10).join(rows)}
 
-    FAILed leads' drafts were moved to `sends/rejected/` — they will NOT send.
+    FAILed leads' drafts were moved to `sends/rejected/` — they will NOT be sent or compiled.
     To rescue one: fix the copy per the `feedback` field in
     `sends/verdicts/{today}.json`, move the files back to
     `sends/queue/` on this branch, then merge.
@@ -101,7 +116,14 @@ def build_pr_body(verdicts: list[dict], today: str) -> str:
 
 
 def run(
-    *, queue_dir: Path, linkedin_dir: Path, rejected_dir: Path, vfile: Path, today: str, pr_body_path: Path,
+    *,
+    queue_dir: Path,
+    linkedin_dir: Path,
+    rejected_dir: Path,
+    vfile: Path,
+    today: str,
+    pr_body_path: Path,
+    provider: str = "resend",
 ) -> int:
     verdicts = load_verdicts(vfile)
     if verdicts is None:
@@ -118,13 +140,23 @@ def run(
 
     print(f"Failed leads: {len(failed_ids)}; draft files moved to sends/rejected/: {moved}")
 
-    pr_body_path.write_text(build_pr_body(verdicts, today))
+    pr_body_path.write_text(build_pr_body(verdicts, today, provider))
     return 0
+
+
+def _configured_provider() -> str:
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import config
+        return config.sending_provider()
+    except Exception:
+        return "resend"
 
 
 def main() -> int:
     today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return run(
+        provider=_configured_provider(),
         queue_dir=Path("sends/queue"),
         linkedin_dir=Path("sends/linkedin"),
         rejected_dir=Path("sends/rejected"),

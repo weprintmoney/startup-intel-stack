@@ -83,7 +83,7 @@ jobs:
           fi
 
       # Chain: enrichment.yml runs dedup + pre-filter before spending
-      # enrichment credits, then triggers stack-profile -> dedup-review.
+      # enrichment credits, then triggers the selected profile agent -> dedup-review.
       - name: Trigger enrichment
         if: steps.gate.outputs.run == 'true' && steps.commit.outputs.committed == 'true'
         env:

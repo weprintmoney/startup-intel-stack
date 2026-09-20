@@ -192,11 +192,17 @@ class TestCheckFullScope(unittest.TestCase):
             "lead-enriched": LEAD_RAW_SCHEMA,
             "critic-verdict": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
             "stack-profile": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
+            "org-context-profile": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
+            "company-lead": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
             "send-touch": SEND_TOUCH_SCHEMA,
             "send-touch-format-test": SEND_TOUCH_SCHEMA,
             "copy-verdict": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
             "suppression-line": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
             "daily-count": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
+            "outcome-line": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object", "required": ["ts", "lead_id", "event"],
+            },
         }
         _make_root_with_schemas(root, specs)
         schemas, _ = vd.load_schemas(root / "schemas")
@@ -222,6 +228,19 @@ class TestCheckFullScope(unittest.TestCase):
             schemas = self._schemas(d)
             failures = vd.check_full_scope(schemas, d)
             self.assertEqual(failures, [])
+
+    def test_outcomes_jsonl_validated_line_by_line_when_present(self):
+        with _tmp_dir() as d:
+            schemas = self._schemas(d)
+            p = d / "sends" / "outcomes.jsonl"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(
+                '{"ts": "2026-09-20T10:00:00Z", "lead_id": "a", "event": "touch_sent"}\n'
+                '{"ts": "2026-09-20T10:01:00Z", "lead_id": "a"}\n'
+            )
+            failures = vd.check_full_scope(schemas, d)
+            self.assertEqual(len(failures), 1)
+            self.assertIn("outcomes.jsonl:2", failures[0])
 
 
 class TestRunAndMain(unittest.TestCase):

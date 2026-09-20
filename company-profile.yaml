@@ -43,8 +43,20 @@ icp:
   verticals: []                    # e.g. ["fintech", "healthcare AI"]
   company_size: { min: 20, max: 2000 }
   geographies: ["US"]              # EU contacts are auto-routed to LinkedIn-only (no SMTP)
+  locations: []                    # OPTIONAL metro constraint for a local/regional ICP. Empty = no metro filter (country-level only).
+  # Read by crawler, pre-filter, event-ingest, apify-ingest, enrichment (step 6b) and qualifier-critic A7.
+  # Agents text-match `city` + `aliases` (nothing geocodes); `radius_miles` is the tie-break instruction for unlisted towns.
+  # - metro: "Springfield, IL"
+  #   city: "Springfield"
+  #   region: "Illinois"
+  #   country_code: "US"
+  #   radius_miles: 40
+  #   aliases: ["Chatham", "Sherman", "Rochester", "Riverton"]
+  #   include_remote_hq_with_local_office: true   # HQ elsewhere + a staffed local office counts as in-metro
+  #   apollo_location: "Springfield, Illinois, United States"   # exact string for Apollo person_locations[] / organization_locations[]
   buyer_titles: []                 # e.g. ["VP Engineering", "Head of AI", "CTO"]
   disqualifiers: []                # hard-fail conditions, e.g. ["direct competitor", "agency"]
+  profile_agent: "stack"           # stack | org-context — the per-company research stage between enrichment and the critic. stack = tech stack from public code/manifests (software buyers); org-context = offices, People leader, people-side signals, culture language (any other buyer)
   qualification_thresholds:
     pre_seed_pass: 60              # relaxed bar for leads that are themselves pre-seed companies (see rubrics/pre-seed-qualifier.md)
     standard_pass: 70
@@ -62,7 +74,7 @@ channels:
   blog_path: ""                    # where published content lives, if any
 
 sending:
-  provider: "resend"               # resend | sendgrid | mailgun (see lib/smtp_send)
+  provider: "resend"               # resend | sendgrid | mailgun | manual (see lib/smtp_send). manual = CI drafts and opens the approval PR; merging it produces sends/manual/<date>-send-packet.md plus one GitHub issue per lead for a human to send by hand. Nothing is emailed by CI.
   daily_cap: 100
   send_window: { days: "Mon-Fri", start: "08:00", end: "18:00" }
   warmup_ramp_days: 28
@@ -70,6 +82,53 @@ sending:
 crm:
   provider: "none"                 # none | attio | airtable (see lib/crm adapter)
   api_key_secret: ""               # name of the GitHub secret holding the key
+
+apify_sources:
+  # Apify actors that find people and companies for the lead pipeline (agents/apify-ingest).
+  # LinkedIn sources must be public-page actors — the agent refuses any input carrying a
+  # cookie / li_at / sessionCookie key, so no staff LinkedIn account is ever used.
+  # apify-ingest.yml no-ops green while `enabled` is false or APIFY_API_KEY is unset.
+  enabled: false
+  max_items_per_source: 150        # default cap on records kept per source per run
+  sources: []
+  # One entry per source. `emit`: contact → leads/raw/, company → leads/companies/, event → event-candidates.md.
+  # Empty `input` lists default from the ICP (buyer_titles, locations). Optional `max_total_items` is a hard
+  # cap on records KEPT from that source per run (applied after fetch; overrides max_items_per_source).
+  # - id: li-people-metro
+  #   kind: linkedin_people_search
+  #   actor: "harvestapi/linkedin-profile-search"      # public-page actor
+  #   enabled: true
+  #   emit: contact
+  #   input: { currentJobTitles: [], locations: [], maxItems: 150, profileScraperMode: "Short" }
+  #   # locations default: "<city>, <region> Metropolitan Area" + bare city, from icp.locations
+  # - id: li-employees-at-target-accounts
+  #   kind: linkedin_company_employees
+  #   actor: "harvestapi/linkedin-company-employees"   # public-page actor; skipped with a notice until leads/companies/ has records
+  #   enabled: true
+  #   emit: contact
+  #   input: { companies: [], jobTitles: [], locations: [], maxItems: 5 }   # maxItems is per company
+  # - id: maps-metro-employers
+  #   kind: google_maps
+  #   actor: "compass/crawler-google-places"
+  #   enabled: true
+  #   emit: company
+  #   signal: local_employer
+  #   max_total_items: 150
+  #   input: { searchStringsArray: ["software company", "law firm", "accounting firm"], locationQuery: "Springfield, IL", maxCrawledPlacesPerSearch: 40 }
+  #   # maxCrawledPlacesPerSearch is PER SEARCH STRING: 3 strings × 40 = up to 120 places fetched
+  # - id: job-postings-buyer-roles
+  #   kind: job_postings
+  #   actor: "misceres/indeed-scraper"
+  #   enabled: true
+  #   emit: company
+  #   signal: hiring_buyer_function
+  #   input: { position: "Head of People OR HR Business Partner", location: "Springfield, IL", country: "US", maxItemsPerSearch: 100 }
+  # - id: meetup-metro-buyers
+  #   kind: events
+  #   actor: "filip_cicvarek/meetup-scraper"
+  #   enabled: true
+  #   emit: event
+  #   input: { searchKeyword: "HR people culture", city: "Springfield", country: "US", maxResults: 50 }
 
 cadences:
   # Cron schedules (UTC). Stagger these if you fork multiple instances.

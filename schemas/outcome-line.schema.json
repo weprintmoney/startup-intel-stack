@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/outcome-line.schema.json",
+  "title": "Manual-send outcome line",
+  "description": "One line of sends/outcomes.jsonl — what actually happened to a lead when sending is manual. Appended by lead-issue-sync.yml from checkbox ticks and status labels on `lead` issues, or by a human. feedback-loop reads this instead of sends/log/ when sending.provider is manual.",
+  "type": "object",
+  "required": ["ts", "lead_id", "event"],
+  "additionalProperties": false,
+  "properties": {
+    "ts": { "type": "string", "description": "ISO-8601 UTC timestamp" },
+    "lead_id": { "type": "string" },
+    "email": { "type": "string" },
+    "event": { "enum": ["touch_sent", "replied", "booked", "no_response", "do_not_contact", "note"] },
+    "touch_number": { "type": "integer", "minimum": 1 },
+    "channel": { "enum": ["email", "linkedin"] },
+    "source": { "enum": ["issue-sync", "manual"] },
+    "actor": { "type": "string", "description": "GitHub login of the human whose action produced this line, when known" },
+    "issue_number": { "type": "integer", "minimum": 1 },
+    "note": { "type": "string" }
+  }
+}

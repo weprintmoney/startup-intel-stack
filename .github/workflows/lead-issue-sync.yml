@@ -1,0 +1,83 @@
+# Manual sending: write a human's actions on a `lead` issue back into the
+# local CRM. Mode: find-and-draft, sending.provider "manual".
+# Ticking "- [x] Touch N — ..." records a touch_sent outcome and advances
+# sequence_status / last_touch_*; a status:* label sets the sequence state
+# (replied -> paused, booked / no-response -> completed, do-not-contact ->
+# rejected + suppression list + a notice comment). Everything lands in
+# leads/crm-local/, sends/outcomes.jsonl and suppression/ — the human never
+# edits a data file. Fires only on human issue events; issues the bot
+# creates with GITHUB_TOKEN do not trigger it. Logic lives in
+# lib/lead_issues.py (tested — see lib/tests/).
+name: Lead Issue Sync
+
+on:
+  issues:
+    types: [edited, labeled, unlabeled, closed]
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    if: contains(github.event.issue.labels.*.name, 'lead')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit CRM / outcomes / suppression updates
+      issues: write # post the do-not-contact notice
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (provider)
+        id: gate
+        run: |
+          PROVIDER=$(yq '.sending.provider // "resend"' company-profile.yaml)
+          if [ "$PROVIDER" != "manual" ]; then
+            echo "::notice::sending.provider is '$PROVIDER' — lead issues are only the CRM layer in manual mode; nothing to sync."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install --quiet pyyaml
+
+      - name: Sync issue into the local CRM
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SUPPRESSION_LIST_PATH: suppression/list.jsonl
+          CRM_PROVIDER: none
+        run: python3 lib/lead_issues.py sync --issue "$ISSUE_NUMBER"
+
+      - name: Commit CRM, outcomes and suppression updates
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          for p in leads/crm-local sends/outcomes.jsonl suppression/list.jsonl; do
+            if [ -e "$p" ]; then git add "$p"; fi
+          done
+          if git diff --staged --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git commit -m "lead-issue-sync: issue #${{ github.event.issue.number }} $(date -u +%Y-%m-%dT%H:%M)
+
+          Agent: lead-issue-sync
+          Agent-Model: none
+          Triggered-By: lead-issue-sync.yml"
+          for i in 1 2 3 4 5; do
+            if git push; then break; fi
+            echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+            git pull --rebase origin main
+            sleep $((i * 2))
+          done

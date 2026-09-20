@@ -39,6 +39,11 @@ jobs:
             echo "::notice::company.mode '$MODE' is below 'find-and-draft' — deliverability monitoring skipped (mode gate)."
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          PROVIDER=$(yq '.sending.provider // "resend"' company-profile.yaml)
+          if [ "$PROVIDER" = "manual" ]; then
+            echo "::notice::sending.provider is 'manual' — no sending domain exists to monitor; skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           SEND_DOMAIN=$(yq '.company.send_domain // ""' company-profile.yaml)
           if [ -z "$SEND_DOMAIN" ]; then
             echo "::notice::company.send_domain not set — skipping deliverability monitoring."

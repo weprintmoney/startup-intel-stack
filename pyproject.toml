@@ -1,6 +1,10 @@
 [tool.ruff]
 target-version = "py312"
 line-length = 120
+# lib/ modules import each other by bare name after a sys.path insert; declaring lib as a
+# source root keeps ruff's isort classification stable across ruff versions and across the
+# runtime dirs (suppression/, sends/, leads/) that share names with lib modules.
+src = [".", "lib"]
 # examples/ holds genericized point-in-time snapshots of the sales-ops and
 # agent-ops reference implementations (see examples/README.md) — read to see
 # the shape, not run or maintained from here, so they're out of this repo's

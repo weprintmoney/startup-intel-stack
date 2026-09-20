@@ -6,12 +6,19 @@
 # Simplified from a source pipeline that used a custom checker script with dedicated
 # OpenAI + Perplexity keys and a state branch. Here a single agent run does the
 # checks (using OPENAI_API_KEY / PERPLEXITY_API_KEY directly when present, degrading
-# to web search when not) and compares against the previous dated results file.
+# to Exa or web search when not) and compares against the previous dated results file.
 #
-# Mode: find-leads (content ops). Exits with a notice in docs-only mode.
+# Query set: docs/04-marketing/aeo/queries.yaml when present (ids, segments,
+# priorities, brand_terms, competitor_terms, alert_threshold_pct); otherwise the
+# newest docs/04-marketing/aeo/*-aeo-results.md; otherwise generated from the profile.
+#
+# Mode: docs-only — content ops run in every mode; nothing here touches contact data.
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
-# Optional secrets: OPENAI_API_KEY, PERPLEXITY_API_KEY (more answer engines covered),
-#                   SLACK_WEBHOOK_URL (failure notifications).
+# Optional secrets: OPENAI_API_KEY, PERPLEXITY_API_KEY (real answer engines),
+#                   EXA_API_KEY or EXA_AI_API (fallback engine when the two above are
+#                   absent — measures whether the brand surfaces in web-grounded
+#                   results, which is a proxy, not a chatbot answer),
+#                   SLACK_WEBHOOK_URL (below-threshold and failure notifications).
 name: AEO Monitoring
 
 on:
@@ -34,12 +41,25 @@ jobs:
         id: gate
         run: |
           MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
-          if [ "$MODE" = "docs-only" ] || [ "$MODE" = "pre-seed" ] || [ -z "$MODE" ]; then
-            echo "::notice::AEO Monitoring needs mode find-leads or higher; company.mode is docs-only — skipping."
-            echo "run=false" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # content ops run in every mode; no skip
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve query source
+        if: steps.gate.outputs.run == 'true'
+        id: q
+        run: |
+          if [ -f docs/04-marketing/aeo/queries.yaml ]; then
+            echo "source=docs/04-marketing/aeo/queries.yaml" >> "$GITHUB_OUTPUT"
           else
-            echo "run=true" >> "$GITHUB_OUTPUT"
+            latest=$(find docs/04-marketing/aeo -maxdepth 1 -name '*-aeo-results.md' 2>/dev/null | sort | tail -1)
+            echo "source=${latest}" >> "$GITHUB_OUTPUT"
           fi
+          echo "Query source: $(grep source= "$GITHUB_OUTPUT" | tail -1)"
+
+      - name: Install Exa CLI dependency
+        if: steps.gate.outputs.run == 'true'
+        run: pip install exa-py==2.14.0 pyyaml
 
       - name: Ensure aeo-gap label exists
         if: steps.gate.outputs.run == 'true'
@@ -57,31 +77,54 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY || secrets.EXA_AI_API }} # optional fallback engine; either name
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          AEO_QUERY_SOURCE: ${{ steps.q.outputs.source }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -z "$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY not set — skipping"; exit 0; fi
           npm install -g @anthropic-ai/claude-code
-          claude -p "Run the AEO check for this company.
-          1. Read company-profile.yaml (company name, domain, one_liner, icp) and
-             docs/01-market-intelligence/positioning.md if it exists.
-          2. Build 10-15 buyer-intent queries a prospect would type into ChatGPT or
-             Perplexity (category queries like 'best <category> for <vertical>',
-             'alternatives to <top competitor>', and problem-phrased queries from the
-             ICP's pains). Reuse the query list from the most recent file in
-             docs/04-marketing/aeo/ if one exists, so results are comparable week to week.
-          3. For each query, check whether the company (name or domain) appears in the
-             answer. Use the OpenAI API (OPENAI_API_KEY) and Perplexity API
-             (PERPLEXITY_API_KEY) via curl when those env vars are set; for any engine
-             whose key is missing, fall back to WebSearch and note reduced coverage.
-          4. Write docs/04-marketing/aeo/$(date +%F)-aeo-results.md with standard
-             frontmatter: the query list, hit/miss per query per engine, coverage
-             percentage, and the delta vs the previous results file.
-          5. For each MISS that a prospect would plausibly ask, file a GitHub issue
-             (gh issue create) labeled 'aeo-gap' — title 'AEO gap: <query>', body with
-             the exact query phrasing, which engines missed, who answered instead, and
-             a suggested content angle. Skip queries that already have an open
-             aeo-gap issue.
-          6. Commit the results file to main: git config user.name 'gtm-agent';
+          claude -p "Run the AEO check for this company. Never print secret values.
+          1. Read company-profile.yaml (company name, domain, one_liner, icp,
+             competitors) and docs/01-market-intelligence/positioning.md if it exists.
+          2. Load the query set from \$AEO_QUERY_SOURCE:
+             - If it ends in queries.yaml: use every queries[].text VERBATIM and carry
+               id, segment and priority into the results table. A case-insensitive
+               substring match of any brand_terms entry in an answer is a HIT. Record
+               which competitor_terms appear in each answer under 'who answered
+               instead'. Use its alert_threshold_pct.
+             - Else if it names a results file: reuse that file's query list so results
+               stay comparable; treat the company name and domain as the brand terms.
+             - Else (no source at all): build 10-15 buyer-intent queries from the
+               profile and positioning doc and write them as the first results file.
+          3. For each query, check whether the brand appears in the answer:
+             - OpenAI API via curl when OPENAI_API_KEY is set (model gpt-4o-mini,
+               temperature 0, the query as the only user message).
+             - Perplexity API via curl when PERPLEXITY_API_KEY is set (model sonar).
+             - If NEITHER key is set, use the fallback engine and say so in the file:
+               run python3 lib/exa_search.py '<query>' --num-results 10 when
+               EXA_API_KEY is set, else WebSearch; a HIT means a brand_terms entry or
+               the company domain appears in the top results' titles, URLs or
+               highlights. Label that column 'Fallback engine (Exa)' or 'Fallback
+               engine (WebSearch)' — it measures web-grounded visibility, a proxy for
+               chatbot answers, and the file must state that plainly.
+          4. Write docs/04-marketing/aeo/\$(date +%F)-aeo-results.md with standard
+             frontmatter (title, description, owner, status: draft, last_reviewed) and
+             these sections: '## Queries' (table: #, id, query, segment, priority),
+             '## Results' (table: #, query, one column per engine actually used, who
+             answered instead), '## Coverage' (hits / checks, percentage, the alert
+             threshold, and a 'Below threshold: yes/no' line), '## Delta vs previous'
+             (compare against the newest earlier results file; 'First measured run'
+             if the only earlier file is a seed).
+          5. If coverage is below the threshold and SLACK_WEBHOOK_URL is set, post a
+             two-line summary (coverage, top three missed critical queries) with curl.
+          6. For each MISS whose priority is critical or high (all misses when the
+             source has no priorities), file a GitHub issue (gh issue create) labeled
+             'aeo-gap' — title 'AEO gap: <query>', body with the exact query phrasing,
+             which engines missed, who answered instead, and a suggested content
+             angle grounded in positioning.md. Skip queries that already have an open
+             aeo-gap issue (search titles).
+          7. Commit the results file to main: git config user.name 'gtm-agent';
              git config user.email 'agent@users.noreply.github.com'; commit with the
              trailers 'Agent: ci' and 'Triggered-By: aeo-monitoring.yml';
              git pull --rebase origin main && git push." \

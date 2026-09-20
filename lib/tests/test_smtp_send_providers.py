@@ -110,5 +110,42 @@ class SendEmailIgnoreBusinessHours(unittest.TestCase):
         mock_post.assert_called_once()
 
 
+class SendEmailManualProvider(unittest.TestCase):
+    """sending.provider "manual" must return before the send-domain
+    assertion (manual instances have none) and before the daily-count write
+    (a not-sent must never burn a slot or advance the warmup ramp)."""
+
+    def setUp(self):
+        self._real_path = smtp_send.DAILY_COUNT_PATH
+        self.tmp_dir = tempfile.mkdtemp()
+        smtp_send.DAILY_COUNT_PATH = Path(self.tmp_dir) / "daily-count.json"
+        self.profile = {
+            "company": {"domain": "acme.example", "send_domain": "", "hq_timezone": "UTC"},
+            "sending": {"provider": "manual", "daily_cap": 20, "warmup_ramp_days": 0},
+        }
+
+    def tearDown(self):
+        smtp_send.DAILY_COUNT_PATH = self._real_path
+
+    def test_manual_returns_not_sent_without_touching_daily_count_or_provider(self):
+        with patch("smtp_send.config.load", return_value=self.profile), \
+             patch("smtp_send._is_business_hours", return_value=True), \
+             patch("smtp_send.requests.post") as mock_post:
+            result = smtp_send.send_email(to="lead@example.com", subject="Hi", body="body")
+        self.assertFalse(result["success"])
+        self.assertIn("manual", result["error"])
+        self.assertFalse(result["hard_bounce"])
+        mock_post.assert_not_called()
+        self.assertFalse(smtp_send.DAILY_COUNT_PATH.exists(), "manual mode must not write sends/daily-count.json")
+
+    def test_manual_does_not_raise_unsafe_send_domain_despite_empty_send_domain(self):
+        with patch("smtp_send.config.load", return_value=self.profile), \
+             patch("smtp_send.requests.post"):
+            try:
+                smtp_send.send_email(to="lead@example.com", subject="Hi", body="body")
+            except smtp_send.UnsafeSendDomain:
+                self.fail("manual provider must short-circuit before _assert_safe_domain")
+
+
 if __name__ == "__main__":
     unittest.main()

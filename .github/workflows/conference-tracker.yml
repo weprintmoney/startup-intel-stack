@@ -45,8 +45,10 @@ jobs:
           if [ -z "$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY not set — skipping"; exit 0; fi
           npm install -g @anthropic-ai/claude-code
           claude -p "Run this week's conference & events tracker.
-          1. Read docs/01-market-intelligence/conference-tracker.md. If it does not
-             exist, bootstrap it: read company-profile.yaml (icp.verticals,
+          1. Read docs/01-market-intelligence/conference-tracker.md, and also
+             docs/01-market-intelligence/event-candidates.md if it exists (written by
+             the apify-ingest agent) — propose any candidate there that is not yet
+             tracked. If the tracker does not exist, bootstrap it: read company-profile.yaml (icp.verticals,
              one_liner) and propose 8-12 conferences/events our buyers and community
              attend, as a table with columns: event, date, location, CFP deadline,
              why we care, competitor presence, status. Mark the file as a proposed

@@ -1,0 +1,110 @@
+# Organisation-context profiling for enriched leads. Mode: find-leads.
+# Runs only when icp.profile_agent in company-profile.yaml is "org-context"
+# (enrichment.yml dispatches "${icp.profile_agent}-profile.yml"). A manual
+# dispatch on an instance that selected a different profile agent is a
+# green no-op. Triggered by enrichment.yml after a batch completes, or manually.
+name: Org Context Profile
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_leads:
+        description: "Max leads to profile in this run"
+        type: string
+        default: "15"
+      skip_downstream:
+        description: "Skip triggering dedup-review after profiling"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  org-context-profile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write # trigger downstream dedup-review workflow
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (mode gate + profile-agent selection + secrets)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          rank() { case "$1" in docs-only|pre-seed) echo 0;; find-leads|seed) echo 1;; find-and-draft|series-a) echo 2;; *) echo -1;; esac; }
+          if [ "$(rank "$MODE")" -lt 0 ]; then
+            echo "::warning::company.mode '$MODE' is not recognized — expected docs-only, find-leads, or find-and-draft. Treating as docs-only."
+          fi
+          if [ "$(rank "$MODE")" -lt "$(rank find-leads)" ]; then
+            echo "::notice::company.mode '$MODE' is below 'find-leads' — org-context profiling skipped (mode gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          PROFILE_AGENT=$(yq '.icp.profile_agent // "stack"' company-profile.yaml)
+          if [ "$PROFILE_AGENT" != "org-context" ]; then
+            echo "::notice::icp.profile_agent is '$PROFILE_AGENT' — org-context-profile is not the selected profile agent; nothing to do."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — skipping org-context profiling."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.run == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Install Python dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install exa-py==2.14.0 pyyaml
+
+      - name: Run org-context-profile agent
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY || secrets.EXA_AI_API }} # optional; either secret name works, lib/exa_search.py reads EXA_API_KEY; agent falls back to web search
+          MAX_LEADS: ${{ inputs.max_leads || '15' }}
+        run: |
+          claude -p "$(cat agents/org-context-profile/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,WebSearch,WebFetch" \
+            --max-turns 80
+
+      - name: Commit org profiles
+        if: steps.gate.outputs.run == 'true'
+        id: commit
+        run: |
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          git add leads/org-profiles/
+          if git diff --staged --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "No new org profiles."
+          else
+            git commit -m "org-context-profile: organisation inference $(date +%F)
+
+          Agent: org-context-profile
+          Agent-Model: claude-code
+          Triggered-By: org-context-profile.yml"
+            # Push race: concurrent workflows push to main. Retry with rebase.
+            for i in 1 2 3 4 5; do
+              if git push; then break; fi
+              echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+              git pull --rebase origin main
+              sleep $((i * 2))
+            done
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger dedup-review
+        if: steps.gate.outputs.run == 'true' && inputs.skip_downstream != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run dedup-review.yml \
+            --repo ${{ github.repository }} \
+            --ref main

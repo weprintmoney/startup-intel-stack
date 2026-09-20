@@ -1,0 +1,135 @@
+# Manual sending: turn an approved outreach batch into something a human can
+# paste. Mode: find-and-draft, and only when sending.provider is "manual".
+# Fires when sequence-enrollment's approval PR merges (queue files land on
+# main). Writes sends/manual/YYYY-MM-DD-send-packet.md and opens one GitHub
+# issue per lead (label `lead`) with the same copy and a checkbox per touch.
+# Nothing is emailed. Queue files stay in place — sequence-enrollment's
+# "already drafted" check depends on them and smtp-send is a no-op here.
+# Logic lives in lib/manual_send.py + lib/lead_issues.py (tested — see
+# lib/tests/).
+name: Manual Send Packet
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sends/queue/**"
+      - "sends/linkedin/**"
+  workflow_dispatch:
+    inputs:
+      files:
+        description: "Space-separated queue files to compile (default: every queue file without a lead issue yet)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  packet:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit the packet
+      issues: write # create lead issues + labels
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needed to diff the pushed range
+
+      - name: Preflight (mode gate + provider)
+        id: gate
+        run: |
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          rank() { case "$1" in docs-only|pre-seed) echo 0;; find-leads|seed) echo 1;; find-and-draft|series-a) echo 2;; *) echo -1;; esac; }
+          if [ "$(rank "$MODE")" -lt 0 ]; then
+            echo "::warning::company.mode '$MODE' is not recognized — expected docs-only, find-leads, or find-and-draft. Treating as docs-only."
+          fi
+          if [ "$(rank "$MODE")" -lt "$(rank find-and-draft)" ]; then
+            echo "::notice::company.mode '$MODE' is below 'find-and-draft' — nothing to compile (mode gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          PROVIDER=$(yq '.sending.provider // "resend"' company-profile.yaml)
+          if [ "$PROVIDER" != "manual" ]; then
+            echo "::notice::sending.provider is '$PROVIDER' — smtp-send owns the queue in this repo; manual-send-packet has nothing to do."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install --quiet pyyaml
+
+      - name: Resolve which queue files to compile
+        if: steps.gate.outputs.run == 'true'
+        id: files
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          INPUT_FILES: ${{ inputs.files }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_FILES" ]; then
+            FILES="$INPUT_FILES"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE" ] && ! echo "$BEFORE" | grep -q '^0*$' && git cat-file -e "$BEFORE" 2>/dev/null; then
+            # Only files added or modified in the pushed range, so a re-run
+            # never re-packets a batch that already has issues.
+            FILES=$(git diff --name-only --diff-filter=AM "$BEFORE" "$AFTER" -- sends/queue sends/linkedin | grep '\.json$' | tr '\n' ' ')
+          else
+            FILES=$(find sends/queue sends/linkedin -name '*.json' 2>/dev/null | tr '\n' ' ')
+          fi
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          echo "Queue files to compile: ${FILES:-<none>}"
+
+      - name: Render send packet
+        if: steps.gate.outputs.run == 'true' && steps.files.outputs.files != ''
+        id: packet
+        env:
+          FILES: ${{ steps.files.outputs.files }}
+        run: |
+          OUT="sends/manual/$(date -u +%F)-send-packet.md"
+          # shellcheck disable=SC2086 # FILES is intentionally word-split into paths
+          python3 lib/manual_send.py packet --files $FILES --out "$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Create one lead issue per lead
+        if: steps.gate.outputs.run == 'true' && steps.files.outputs.files != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          FILES: ${{ steps.files.outputs.files }}
+        run: |
+          # shellcheck disable=SC2086 # FILES is intentionally word-split into paths
+          python3 lib/lead_issues.py create --files $FILES
+
+      - name: Commit the packet
+        if: steps.gate.outputs.run == 'true' && steps.files.outputs.files != ''
+        run: |
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          git add sends/manual/
+          if git diff --staged --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git commit -m "manual-send: packet $(date -u +%F)
+
+          Agent: manual-send-packet
+          Agent-Model: none
+          Triggered-By: manual-send-packet.yml"
+          for i in 1 2 3 4 5; do
+            if git push; then break; fi
+            echo "Push rejected (attempt $i/5); rebasing on origin/main..."
+            git pull --rebase origin main
+            sleep $((i * 2))
+          done
+
+      - name: Nothing to compile
+        if: steps.gate.outputs.run == 'true' && steps.files.outputs.files == ''
+        run: echo "::notice::No queue files in this push — nothing compiled."

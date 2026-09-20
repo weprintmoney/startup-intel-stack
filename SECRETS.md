@@ -12,25 +12,29 @@ GitHub Actions secrets per instance repo. Set with `gh secret set NAME -R <owner
 
 | Secret | Powers | Without it |
 |---|---|---|
-| `EXA_API_KEY` | semantic search in signals + enrichment | degrades to plain web search |
+| `EXA_API_KEY` (or `EXA_AI_API`) | semantic search in signals, enrichment, Apify company-URL resolution, and the AEO fallback engine | degrades to plain web search. Workflows read `secrets.EXA_API_KEY || secrets.EXA_AI_API`, so either name works |
 | `SLACK_WEBHOOK_URL` | notifications (digests, alerts, reply notices) | agents skip notifying |
 
-## Content ops (seed+, optional quality boosters)
+## Content ops (all modes, optional quality boosters)
 
 | Secret | Powers | Without it |
 |---|---|---|
-| `OPENAI_API_KEY` | AEO checks against ChatGPT | AEO monitoring covers fewer engines |
+| `OPENAI_API_KEY` | AEO checks against ChatGPT | AEO monitoring falls back to Exa (if set) or WebSearch and marks the engine column accordingly |
 | `PERPLEXITY_API_KEY` | web-grounded AEO checks | same |
 
-## Lead pipeline (seed+)
+## Lead pipeline (find-leads and up)
 
 | Secret | Powers | Without it |
 |---|---|---|
-| `APOLLO_API_KEY` | lead crawling + enrichment | crawler skips; use event-ingest instead |
-| `HUNTER_API_KEY` | email finding fallback | enrichment relies on Apollo only |
+| `APIFY_API_KEY` | `apify-ingest.yml` — Apify actors: public-page LinkedIn people search and company-employees, Google Maps company discovery, Indeed job-posting signals, Meetup events (`lib/apify.py` also accepts the older name `APIFY_TOKEN`) | apify-ingest skips (green no-op) |
+| `PROSPEO_API_KEY` | email finding in enrichment — LinkedIn URL → verified email (1 credit per found email, none on a miss). Tried first when set; best fit for LinkedIn-sourced leads | enrichment tries Apollo/Hunter if present, else marks leads `not_found` |
+| `APOLLO_API_KEY` | Apollo people search in the crawler, `people/match` email fallback, LinkedIn company-URL resolution | crawler skips; enrichment relies on Prospeo |
+| `HUNTER_API_KEY` | last email-finder fallback | enrichment relies on Prospeo (and Apollo if set) |
 | `ATTIO_API_KEY` / `AIRTABLE_API_KEY` | CRM backend (match `crm.provider`) | `crm.provider: none` uses local JSONL store |
 
-## Sending (series-a tier only)
+## Sending (find-and-draft mode only)
+
+> **Not needed when `sending.provider: manual`.** Manual instances email nothing from CI: approved drafts become `sends/manual/<date>-send-packet.md` plus one GitHub issue per lead, and a human sends from their own mailbox and LinkedIn. Every secret in this table stays unset and every send-path workflow exits green at its provider gate.
 
 | Secret | Powers | Prerequisite |
 |---|---|---|

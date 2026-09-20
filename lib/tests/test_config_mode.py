@@ -98,5 +98,20 @@ class ModeAtLeast(unittest.TestCase):
         self.assertFalse(config.stage_at_least("series-a", profile(stage="seed")))
 
 
+class SendingProvider(unittest.TestCase):
+    def test_defaults_to_resend(self):
+        self.assertEqual(config.sending_provider({}), "resend")
+        self.assertFalse(config.is_manual_sending({}))
+
+    def test_manual_detected_case_insensitively(self):
+        p = {"sending": {"provider": " Manual "}}
+        self.assertEqual(config.sending_provider(p), "manual")
+        self.assertTrue(config.is_manual_sending(p))
+
+    def test_real_providers_are_not_manual(self):
+        for prov in ("resend", "sendgrid", "mailgun"):
+            self.assertFalse(config.is_manual_sending({"sending": {"provider": prov}}))
+
+
 if __name__ == "__main__":
     unittest.main()

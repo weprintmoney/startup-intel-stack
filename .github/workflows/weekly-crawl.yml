@@ -1,6 +1,6 @@
 # Weekly lead crawl -> leads/raw/. Mode: find-leads.
 # Chain: weekly-crawl -> enrichment (which runs dedup + pre-filter first)
-# -> stack-profile -> dedup-review (qualifier-critic + CRM upsert).
+# -> the selected profile agent (icp.profile_agent) -> dedup-review (qualifier-critic + CRM upsert).
 name: Weekly Lead Crawl
 
 on:

@@ -2,7 +2,10 @@
 Provider-agnostic outbound email sender.
 
 All company-specific parameters come from company-profile.yaml:
-- provider:      sending.provider   (resend | sendgrid | mailgun)
+- provider:      sending.provider   (resend | sendgrid | mailgun | manual —
+                 "manual" means this module never sends: send_email() returns
+                 a not-sent result before touching the daily count or the
+                 send-domain assertion; humans send from sends/manual/)
 - daily cap:     sending.daily_cap  (steady-state ceiling once ramped up)
 - warmup ramp:   sending.warmup_ramp_days (sending-days to reach daily_cap;
                  0 or unset disables ramping and applies daily_cap from day 1)
@@ -40,8 +43,9 @@ from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-import config
 import requests
+
+import config
 
 SEND_INTERVAL_SECONDS = random.uniform(180, 480)  # 3-8 min between sends
 
@@ -248,6 +252,24 @@ def _send_mailgun(payload: dict, from_addr: str, from_name: str, send_domain: st
     )
 
 
+def _dispatch(provider: str, payload: dict, from_addr: str, from_name: str, profile: dict):
+    """Route to the provider sender. Returns a requests.Response, or a
+    not-sent result dict for an unknown provider."""
+    if provider == "resend":
+        return _send_resend(payload, from_addr, from_name)
+    if provider == "sendgrid":
+        return _send_sendgrid(payload, from_addr, from_name)
+    if provider == "mailgun":
+        send_domain = config.get("company.send_domain", "", profile)
+        return _send_mailgun(payload, from_addr, from_name, send_domain)
+    return {
+        "success": False,
+        "error": f"Unknown sending.provider '{provider}' in company-profile.yaml",
+        "smtp_code": None,
+        "hard_bounce": False,
+    }
+
+
 def send_email(
     to: str,
     subject: str,
@@ -278,7 +300,18 @@ def send_email(
         UnsafeSendDomain if the send would leave from the primary domain.
     """
     profile = config.load()
-    provider = config.get("sending.provider", "resend", profile)
+    provider = config.sending_provider(profile)
+    if provider == config.MANUAL_PROVIDER:
+        # Must return before _assert_safe_domain (manual instances have no
+        # send_domain) and before _check_and_increment_daily_count (a
+        # not-sent must never burn a daily slot or advance the warmup ramp).
+        return {
+            "success": False,
+            "error": "sending.provider is 'manual' — nothing sends automatically; "
+                     "see sends/manual/ and the lead issues",
+            "smtp_code": None,
+            "hard_bounce": False,
+        }
     daily_cap = int(config.get("sending.daily_cap", 100, profile))
     ramp_days = int(config.get("sending.warmup_ramp_days", 0, profile))
     from_addr = _from_address(profile)
@@ -304,20 +337,9 @@ def send_email(
     payload = {"to": to, "subject": subject, "text": body, "html": body_html, "bcc": bcc, "reply_to": reply_to}
 
     try:
-        if provider == "resend":
-            resp = _send_resend(payload, from_addr, from_name)
-        elif provider == "sendgrid":
-            resp = _send_sendgrid(payload, from_addr, from_name)
-        elif provider == "mailgun":
-            send_domain = config.get("company.send_domain", "", profile)
-            resp = _send_mailgun(payload, from_addr, from_name, send_domain)
-        else:
-            return {
-                "success": False,
-                "error": f"Unknown sending.provider '{provider}' in company-profile.yaml",
-                "smtp_code": None,
-                "hard_bounce": False,
-            }
+        resp = _dispatch(provider, payload, from_addr, from_name, profile)
+        if isinstance(resp, dict):
+            return resp
     except KeyError as e:
         return {
             "success": False,

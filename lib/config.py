@@ -106,6 +106,22 @@ def stage_at_least(required: str, profile: dict | None = None) -> bool:
     return mode_at_least(required, profile)
 
 
+MANUAL_PROVIDER = "manual"
+
+
+def sending_provider(profile: dict | None = None) -> str:
+    """`sending.provider`, lower-cased, defaulting to resend. The value
+    "manual" means the system drafts and a human sends by hand — see
+    lib/manual_send.py and lib/lead_issues.py."""
+    return str(get("sending.provider", "resend", profile) or "resend").strip().lower()
+
+
+def is_manual_sending(profile: dict | None = None) -> bool:
+    """True when nothing may be emailed by CI: drafts become a copy-paste
+    packet and per-lead GitHub issues instead of a send queue."""
+    return sending_provider(profile) == MANUAL_PROVIDER
+
+
 def sender_persona(profile: dict | None = None) -> dict:
     """First person in people: with sender_persona: true, or a company
     fallback. Returns {'name': ..., 'email': ...}."""

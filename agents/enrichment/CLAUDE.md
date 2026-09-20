@@ -18,7 +18,7 @@ You are running headless in GitHub Actions. There is no human on the other end.
 ## Your job
 Take pre-filtered leads from `leads/pre-filtered/` and enrich them with verified emails and company context. Write enriched records to `leads/enriched/`.
 
-Email-finder providers are OPTIONAL. If neither `APOLLO_API_KEY` nor `HUNTER_API_KEY` is set, skip email lookup entirely, mark every lead `email_status: "not_found"`, still run signal research (step 5) for leads with a LinkedIn URL, and note the degraded mode in your summary.
+Email-finder providers are OPTIONAL and run in this order: **Prospeo** (`PROSPEO_API_KEY`, LinkedIn URL → verified email, tried first when its key is set), then Apollo (`APOLLO_API_KEY`) and Hunter (`HUNTER_API_KEY`) only as fallbacks when their keys happen to be present. If no provider key is set, skip email lookup entirely, mark every lead `email_status: "not_found"`, still run signal research (step 5) for leads with a LinkedIn URL, and note the degraded mode in your summary. Record which provider found each email in `email_source` (`prospeo` | `apollo` | `hunter`).
 
 ## Retry mode (`RETRY_NOT_FOUND=true`)
 
@@ -51,17 +51,24 @@ Process at most **40 leads per run**, oldest pre-filtered file first (normal mod
    - If either matches: skip the lead entirely. Log: `"Skipped {company_name}: competitor (suppression match)"`. Do not spend an API call on this lead.
    - If the suppression list is unavailable (file not found), log a warning and continue — do not fail the run.
 
-3. **Email lookup.** Use whichever provider has an API key in the environment (check with shell `test -n` style checks, never print key values):
-   - **Apollo (`APOLLO_API_KEY` set):** Call `POST https://api.apollo.io/api/v1/people/match` with header `X-Api-Key: $APOLLO_API_KEY` and JSON body `{"name": "<contact_name>", "organization_name": "<company_name>", "domain": "<website>", "reveal_personal_emails": false}`. Use the returned `person.email`. Treat `email_status` from Apollo as the verification signal (`verified` → deliverable).
-   - **Hunter (`HUNTER_API_KEY` set):** Split the contact name into first/last. Call `GET https://api.hunter.io/v2/email-finder?domain={website}&first_name={first_name}&last_name={last_name}&api_key={HUNTER_API_KEY}`. Use the returned `email` field if `score >= 70` (the finder returns `score`, NOT `confidence` — reading the wrong field silently zeroes every hit). Then verify: `GET https://api.hunter.io/v2/email-verifier?email={email}&api_key={HUNTER_API_KEY}` — only mark `email_verified: true` if `result: "deliverable"`.
+3. **Email lookup.** Try providers in the order below, stopping at the first that returns an email. Check for keys with shell `test -n` style checks; never print key values.
+   - **Prospeo (`PROSPEO_API_KEY` set) — primary; runs only when the lead has a `linkedin_url`.** Endpoint and fields verified against https://prospeo.io/api-docs/enrich-person on 2026-09-20:
+     ```
+     POST https://api.prospeo.io/enrich-person
+     headers: X-KEY: $PROSPEO_API_KEY   Content-Type: application/json
+     body:    {"data": {"linkedin_url": "<linkedin_url>"}, "only_verified_email": true}
+     ```
+     Response: `{"error": false, "person": {"email": {"status": "VERIFIED|UNVERIFIED|UNKNOWN", "email": "..."}, ...}, "company": {...}}`. Use `person.email.email` and mark `email_verified: true`, `email_status: "deliverable"` only when `person.email.status` is `VERIFIED` (with `only_verified_email: true` an unverified match comes back as a `NO_MATCH` error, which is the intended outcome). Set `email_source: "prospeo"`. Also copy `person.email.email_mx_provider` into `email_provider` when present, and fill blank `website` / `company_description` from the `company` object when Prospeo returns one. Errors arrive as HTTP 400 with `{"error": true, "error_code": "NO_MATCH|INVALID_DATAPOINTS|INSUFFICIENT_CREDITS|INVALID_API_KEY|INVALID_REQUEST|INTERNAL_ERROR"}`; HTTP 429 is the rate limit. `NO_MATCH` → fall through to the next provider (no credit is charged on a miss, nor on a re-enrich within 90 days). `INSUFFICIENT_CREDITS`, `INVALID_API_KEY`, or 429 → stop calling Prospeo for the rest of the run and say so in the summary. If a lead has no `linkedin_url`, Prospeo also accepts `{"data": {"first_name": "...", "last_name": "...", "company_website": "<website>"}}` — use that shape when both name parts and a website are known; otherwise skip Prospeo for that lead.
+   - **Apollo (`APOLLO_API_KEY` set) — fallback.** Call `POST https://api.apollo.io/api/v1/people/match` with header `X-Api-Key: $APOLLO_API_KEY` and JSON body `{"name": "<contact_name>", "organization_name": "<company_name>", "domain": "<website>", "linkedin_url": "<linkedin_url>", "reveal_personal_emails": false}` (Apollo matches on `linkedin_url` when given — the strongest key for LinkedIn-sourced leads). Use the returned `person.email`. Treat `email_status` from Apollo as the verification signal (`verified` → deliverable). If the raw lead's `linkedin_url` was blank and Apollo returns `person.linkedin_url`, copy it back. Set `email_source: "apollo"`.
+   - **Hunter (`HUNTER_API_KEY` set) — last fallback.** Set `email_source: "hunter"` on a hit. Split the contact name into first/last. Call `GET https://api.hunter.io/v2/email-finder?domain={website}&first_name={first_name}&last_name={last_name}&api_key={HUNTER_API_KEY}`. Use the returned `email` field if `score >= 70` (the finder returns `score`, NOT `confidence` — reading the wrong field silently zeroes every hit). Then verify: `GET https://api.hunter.io/v2/email-verifier?email={email}&api_key={HUNTER_API_KEY}` — only mark `email_verified: true` if `result: "deliverable"`.
      - **Hunter is behind Cloudflare** and 403s default Python user-agents (`Python-urllib`, `python-requests`). Always send a browser-like `User-Agent` header. Treat any non-JSON response as a hard error and stop — do NOT record it as `not_found`.
-   - If both keys are set, prefer Apollo and fall back to Hunter when Apollo finds no match.
-   - If a lead has no `website` domain, try the provider lookup with name + company name only (Apollo supports this); otherwise mark `email_status: "not_found"`.
+   - Order is always Prospeo → Apollo → Hunter; each later provider runs only when the earlier one returned no email (or is not configured).
+   - If a lead has no `website` domain and no `linkedin_url`, try Apollo with name + company name only when available; otherwise mark `email_status: "not_found"`.
    - **Post-lookup suppression check.** Once a lookup returns an email, check it against the FULL suppression list (any reason, not just competitor): exact email match or domain match, case-insensitive. If suppressed: set `suppressed: true` on the record, log `"Suppressed {email}: {reason}"`, and skip steps 4–5 for this lead — no research spend on someone we'll never email. Keep the record in the output so downstream sees it.
 
 4. **Company context enrichment.** If the raw lead has a thin company description (fewer than 20 words or blank), use web search to find:
    - What the company does (1–2 sentences)
-   - Their primary technology stack or industry focus
+   - Their industry focus and organisation shape (size, locations, People function)
 
 5. **Signal research (critic evidence).** The qualifier-critic gate downstream scores pain-point and timing evidence, and absent evidence scores 0 — a lead with none can never pass. For each lead that got a deliverable email AND is not suppressed (don't spend research on leads you couldn't or won't reach), run up to 3 searches covering:
 
@@ -75,7 +82,7 @@ Process at most **40 leads per run**, oldest pre-filtered file first (normal mod
    - Pain: `"{company_name}"` + the problem keywords our product addresses
    - Product launch: `"{company_name} product launch {current year}"`
 
-   If `EXA_API_KEY` is not set or `exa-py` is not installed, fall back to `WebSearch` for each query. The agent checks: `python3 lib/exa_search.py "test" --num-results 1` exits 0 when Exa is available.
+   If `EXA_API_KEY` is not set or `exa-py` is not installed, fall back to `WebSearch` for each query — the same three-search cap applies and the evidence rules below do not relax. The agent checks: `python3 lib/exa_search.py "test" --num-results 1` exits 0 when Exa is available.
 
    Signals to find:
    - **Funding:** round closed within ~90 days → `funding_date`, `funding_round`, `announcement_link`
@@ -93,12 +100,18 @@ Process at most **40 leads per run**, oldest pre-filtered file first (normal mod
 
 6. **Country code.** If the raw lead's `country_code` is blank, determine it from the provider response or company HQ research. Keep the raw value if already set.
 
+6b. **Metro presence (only when `icp.locations` in `company-profile.yaml` is non-empty).** Record `contact_location` and `company_hq_location` from the provider response when the raw lead lacks them (Apollo: `person.city`/`state`/`country` and `organization.city`/`state`/`country`). Then:
+   - If `metro_match` is already `contact` or `company_hq`, keep it.
+   - If HQ is outside every metro (`company_hq_location` matches no metro `city`/alias) and `metro_match` is not `contact`, spend **one** search — `"{company_name}" {metro city} office` (careers page, office listing, Maps entry) — and, if a staffed local office is evidenced, set `metro_match: "local_office"` and `metro_evidence` to that URL. Otherwise set `metro_match: "none"`.
+   - If nothing can be determined, leave `metro_match: "unknown"`. Never guess a location.
+
 7. **Output format.** Write enriched records to `leads/enriched/YYYY-MM-DD.json` (use today's date). Each object extends the raw lead with:
    ```json
    {
      "email": "string",
      "email_verified": true,
      "email_status": "deliverable | risky | undeliverable | not_found",
+     "email_source": "prospeo | apollo | hunter (omit when not_found)",
      "company_description": "string (1-2 sentences)",
      "country_code": "US",
      "pain_points": [{"quote": "string", "source": "url", "date": "YYYY-MM-DD"}],
@@ -109,10 +122,14 @@ Process at most **40 leads per run**, oldest pre-filtered file first (normal mod
      "hiring_signal": {"role": "string", "link": "url", "date": "YYYY-MM-DD"},
      "product_launch_date": "YYYY-MM-DD",
      "product_launch_link": "url",
-     "rfp_status": "active_rfp | evaluating | none"
+     "rfp_status": "active_rfp | evaluating | none",
+     "contact_location": "string",
+     "company_hq_location": "string",
+     "metro_match": "contact | company_hq | local_office | none | unknown",
+     "metro_evidence": "field name or url"
    }
    ```
-   The signal fields (everything after `country_code`) are optional — include only what step 5 found with a source.
+   The signal fields (everything after `country_code`) are optional — include only what step 5 found with a source. The four location fields are only written when `icp.locations` is non-empty (step 6b).
 
 8. **Skip leads with no email.** If lookup finds no email, set `email: ""` and `email_verified: false`. Include the record anyway — downstream handles it.
 

@@ -34,7 +34,7 @@ Fill every field in `company-profile.yaml`. Interview for what scraping can't gi
 > Three ways to run this. Which sounds right to start?
 > 1. **Research and writing only** — it keeps your positioning, ICP, personas and brand voice current, and watches your market and competitors. Doesn't touch contact data. Needs nothing but an Anthropic key.
 > 2. **Find leads too** — it also finds people matching your ICP every week, enriches them, and scores them against your rubric, so you get a qualified list. It does *not* write outreach. Needs a contact source (see below).
-> 3. **Find leads and draft outreach** — it also writes the outreach for each qualified lead and opens it for your approval. Nothing sends until you approve it. Needs a contact source plus an email provider.
+> 3. **Find leads and draft outreach** — it also writes the outreach for each qualified lead and opens it for your approval. Nothing sends until you approve it. Needs a contact source, plus either an email provider or the willingness to send by hand (`sending.provider: manual` — the system compiles approved drafts into a copy-paste packet and one GitHub issue per lead; nothing is ever emailed by CI).
 
 Map the answer to `company.mode`: 1 → `docs-only`, 2 → `find-leads`, 3 → `find-and-draft`. You can always change it later.
 
@@ -42,8 +42,10 @@ Map the answer to `company.mode`: 1 → `docs-only`, 2 → `find-leads`, 3 → `
 
 **Also flag if their targets aren't reachable this way.** Apollo indexes people by company and job title. If their ICP isn't "a role at a company" — individual investors, family offices, private buyers, consumers — say so directly: the crawler will not find those, and a list they source themselves fed through `event-ingest.yml` is the honest path. Don't let them configure a mode whose lead sourcing can't work for their targets.
 
+**Is the market a metro or region rather than a country?** A local services business, a regional practice, a city-bound venue. If yes, fill `icp.locations` — metro name, the suburbs that count (`aliases`), how far out is still "local" (`radius_miles`), and whether a company headquartered elsewhere but with a staffed local office counts (`include_remote_hq_with_local_office`). Also record the exact `apollo_location` string Apollo uses for that metro. Leave the list empty for a national or global ICP; every metro rule in the pipeline switches off when it is empty.
+
 Then the rest:
-- send domain (must NOT be the primary domain) — only needed for `find-and-draft`
+- sending: `resend` / `sendgrid` / `mailgun` with a dedicated send domain (must NOT be the primary domain), or `manual` (no domain, no provider — humans paste from `sends/manual/` and tick touches on `lead` issues). `manual` is the right answer for anyone sending a few dozen emails a month from their own mailbox.
 - sender personas (who is willing to have email go out under their name)
 - disqualifiers and geographies (EU → LinkedIn-only routing)
 - CRM: none / airtable / attio (`none` is a real answer — it uses a local file, zero setup)
@@ -71,7 +73,7 @@ Present drafts as **"here's what I inferred — correct me"**, one doc at a time
 2. List the GitHub secrets the chosen mode needs, by exact name, and tell them to add each one themselves in the repo's Settings → Secrets and variables → Actions. **Never ask anyone to paste a key into the chat** — it would land in the transcript. Offer `gh secret set NAME` (which prompts for the value without echoing it) as the alternative for anyone comfortable in a terminal.
    - every mode: `ANTHROPIC_API_KEY`
    - `find-leads`+: a contact source (`APOLLO_API_KEY`, paid) unless they're supplying their own CSV; optional `EXA_API_KEY`, `HUNTER_API_KEY`, CRM key
-   - `find-and-draft`: an email provider key matching `sending.provider`, plus `IMAP_*` for reply monitoring
+   - `find-and-draft`: an email provider key matching `sending.provider`, plus `IMAP_*` for reply monitoring — **or nothing at all when `sending.provider` is `manual`**
    Full table: `SECRETS.md`.
 3. Disable (comment out cron) workflows above the mode.
 4. Verify branch protection on main. The approval gate does not depend on it — agents write drafts to a branch and open a PR regardless — but branch protection is what stops anyone, human or agent, from pushing queue files straight to main and bypassing review.
@@ -93,4 +95,4 @@ If they have no contact source configured, say plainly that the weekly crawl wil
 - Never copy another company's claims, pricing, or named customers into this instance.
 - Never ask anyone to paste an API key, password, or token into the chat.
 - If the founder asks to skip approval gates or send caps: refuse and explain rule 5 in CLAUDE.md.
-- Don't let someone leave onboarding configured for a mode that can't work for them — no contact source in `find-leads`, no send domain in `find-and-draft`, or an ICP the crawler structurally can't reach. Say so at the point they choose.
+- Don't let someone leave onboarding configured for a mode that can't work for them — no contact source in `find-leads`, no send domain in `find-and-draft` (unless `sending.provider` is `manual`), or an ICP the crawler structurally can't reach. Say so at the point they choose.

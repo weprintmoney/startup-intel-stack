@@ -37,15 +37,16 @@ Draft the personalized multi-touch sequence for leads that passed the qualificat
 
    (If the directory uses different filenames, follow its README/index; the Day 0/4/9/15 rhythm is the default.) Follow each template's personalization instructions exactly, including the opt-out line — it is part of the template copy, never strip it. If the sequences directory does not exist yet, stop and report that — never invent email copy from scratch.
 
-3. **Load the lead's stack profile (if one exists).** Look up the lead's `email` in `leads/stack-profiles/*.json`. Confidence rules for using profile fields in copy:
-   - A field may be **stated as an observation** ("you're on X") only if its `confidence` is ≥ 60.
+3. **Load the lead's profile (if one exists).** Read `icp.profile_agent` from `company-profile.yaml`: `org-context` → look up the lead's `email` in `leads/org-profiles/*.json`; `stack` (or unset) → `leads/stack-profiles/*.json`. Confidence rules for using profile fields in copy:
+   - A field may be **stated as an observation** ("you opened a second office this spring" / "you're on X") only if its `confidence` is ≥ 60.
    - Below 60, or if the field is absent, it may only be **framed as a question** — never as a claim.
-   - If the profile has `contradictions`, never assert either conflicting value; a migration question is fine.
+   - If the profile has `contradictions`, never assert either conflicting value; a "which way are you leaning?" question is fine.
    - If `routing` is `thin_profile` or no profile exists, personalize from `icp_segment` alone (step 4).
+   - **Org-context profiles:** facts may be stated only about the **organisation** (office, headcount, public policy change, who leads People, careers-page language quoted verbatim) — never about the individual contact's private circumstances. `glassdoor_themes` shapes which pain the touch leads with and is **never quoted, paraphrased, or attributed**; `layoffs_recent` is routing-only and never appears in copy.
 
-   A wrong claim about a prospect's stack is worse than acknowledging a gap — it kills technical credibility in the first sentence.
+   A wrong claim about a prospect's organisation is worse than acknowledging a gap — it reads as a mail-merge with a research error and kills credibility in the first sentence.
 
-4. **Personalize each touch** per the template instructions. Use the lead's `icp_segment` to select vertical framing, pain point, and proof point from the templates and `docs/01-market-intelligence/` docs — sharpened with stack-profile fields where the confidence rules in step 3 allow. Every product claim must be traceable to `docs/04-marketing/content-ops/claims-vetted.md` — the copy-evaluator hard-fails anything it can't trace there.
+4. **Personalize each touch** per the template instructions. Use the lead's `icp_segment` to select vertical framing, pain point, and proof point from the templates and `docs/01-market-intelligence/` docs — sharpened with profile fields where the confidence rules in step 3 allow. Every product claim must be traceable to `docs/04-marketing/content-ops/claims-vetted.md` — the copy-evaluator hard-fails anything it can't trace there.
 
 5. **Write queue files.** Sender comes from config: use the first `people:` entry with `sender_persona: true` in `company-profile.yaml` for `from_name`; use `company.hq_timezone` as the default `recipient_tz`.
    - Email touches (1, 2, 4) → `sends/queue/YYYY-MM-DD-{lead_id}-touch{n}.json` where the date prefix is the **scheduled send date** (touch-1 = today, touch-2 = today+4, touch-4 = today+15):
@@ -67,11 +68,11 @@ Draft the personalized multi-touch sequence for leads that passed the qualificat
 
 6. **EU contacts** (`outreach_channel: linkedin_only` in the CRM, or `eu_router.is_eu(country_code)` true): draft ONLY touch-3 (LinkedIn). Never write email queue files for them.
 
-7. **Do not touch CRM state.** `sequence_status` stays `pending` — smtp-send flips it to `enrolled` when touch-1 actually sends. Do not call `upsert_contact` or `set_field`.
+7. **Do not touch CRM state.** `sequence_status` stays `pending` — smtp-send flips it to `enrolled` when touch-1 actually sends; when `sending.provider` is `manual`, `lead-issue-sync.yml` flips it when the human ticks Touch 1 on the lead's GitHub issue. Do not call `upsert_contact` or `set_field`.
 
 ## Hard rules
 - Never write email copy for EU contacts.
 - Never hardcode email copy — always read from the template files in `docs/03-commercial-revenue/sequences/`.
 - Never strip the opt-out line from the templates.
-- Match the brand voice defined in `docs/02-brand/brand-voice-tone.md` — the copy-evaluator scores against it.
+- Match the brand voice defined in `docs/02-brand/voice.md` — the copy-evaluator scores against it.
 - Sender for all email touches is the configured sender persona from `company-profile.yaml` — never invent a sender name.

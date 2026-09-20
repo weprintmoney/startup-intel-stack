@@ -4,7 +4,7 @@
 # verified changes with citations. Complements weekly-competitive-signals.yml:
 # that workflow detects weekly deltas; this one refreshes the canonical snapshot.
 #
-# Mode: find-leads (content ops). Exits with a notice in docs-only mode.
+# Mode: docs-only — content ops run in every mode; nothing here touches contact data.
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
 # Optional secrets: SLACK_WEBHOOK_URL (failure notifications).
 name: Competitor Refresh
@@ -29,12 +29,9 @@ jobs:
         id: gate
         run: |
           MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
-          if [ "$MODE" = "docs-only" ] || [ "$MODE" = "pre-seed" ] || [ -z "$MODE" ]; then
-            echo "::notice::Competitor Refresh needs mode find-leads or higher; company.mode is docs-only — skipping."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # content ops run in every mode; no skip
+          echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Run competitor refresh agent
         if: steps.gate.outputs.run == 'true'

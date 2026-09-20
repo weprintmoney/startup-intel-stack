@@ -1,10 +1,10 @@
 ---
 title: "Qualifier-Critic Rubric"
-description: "Adversarial-evaluator rubric for scoring enriched leads before they reach the human review queue. 23 criteria, 5 categories. Pass threshold comes from company-profile.yaml."
+description: "Adversarial-evaluator rubric for scoring enriched leads before they reach the human review queue. 24 criteria, 5 categories (A7 metro presence active only when icp.locations is set). Pass threshold comes from company-profile.yaml."
 owner: ""
 status: template
-last_reviewed: "2026-08-06"
-doc_version: "1.0"
+last_reviewed: "2026-09-20"
+doc_version: "1.1"
 ---
 
 # Qualifier-Critic Rubric
@@ -28,11 +28,11 @@ All thresholds come from `company-profile.yaml` → `icp.qualification_threshold
 
 ## Structure
 
-23 criteria in 5 categories:
+24 criteria in 5 categories:
 
 | Category | Focus | Criteria | Max points |
 |---|---|---|---|
-| A | ICP segment fit | 6 (5 scored + 1 veto) | 42 |
+| A | ICP segment fit | 7 (6 scored + 1 veto) | 50 when `icp.locations` is set (A7 active); 42 otherwise |
 | B | Pain-point evidence | 5 | 35 |
 | C | Reachability | 4 | 26 |
 | D | Timing signals | 4 | 28 |
@@ -40,20 +40,22 @@ All thresholds come from `company-profile.yaml` → `icp.qualification_threshold
 
 ---
 
-## Category A — ICP segment fit (6 criteria, 42 pts)
+## Category A — ICP segment fit (7 criteria, 50 pts with A7 / 42 without)
 
 Segments, verticals, sizes, and buyer titles come from `company-profile.yaml` → `icp` and the ICP doc in `docs/01-market-intelligence/`.
 
 | # | Criterion | Description | Weight | Evidence required | Scoring |
 |---|---|---|---|---|---|
-| A1 | Segment classification | Lead operates in one of the ICP segments defined in `icp.verticals` / the ICP doc | 10 | ≥2 independent signals from enrichment (`industry`, `company_description`, `tech_stack`). Cite the fields. | Pass/fail — if no segment applies, fail |
+| A1 | Segment classification | Lead operates in one of the ICP segments defined in `icp.verticals` / the ICP doc | 10 | ≥2 independent signals from enrichment (`industry`, `company_description`) or from the lead's profile record at confidence ≥ 60 (`leads/stack-profiles/` or `leads/org-profiles/`, per `icp.profile_agent`). Cite the fields. | Pass/fail — if no segment applies, fail |
 | A2 | Primary-segment validation | If lead matches the primary segment: segment-defining attributes are explicitly present, not inferred. *(Generic example: "ACME AI's primary segment is multi-location logistics SaaS — the enrichment must show multiple locations or a SaaS product, not just the word 'logistics.')* | 9 | Segment-defining fields populated (e.g., `customer_count`, `product_type`) OR description explicitly matches. | 0–9. Partial evidence scores roughly half. |
 | A3 | Secondary-segment validation | If lead matches a secondary segment: the quantitative or qualitative trigger for that segment is present (size threshold, stated cost pain, growth signal). | 8 | Specific field or quoted phrase + date. Vague industry inference = low score. | 0–8. Vague = 3. Specific = 8. |
 | A4 | Regulated/constrained-segment validation | If lead is in a segment defined by an external constraint (compliance framework, procurement regime, certification): the constraint is explicitly named. "Security is important to us" is NOT sufficient. | 9 | Named framework/constraint in enrichment OR a discovery quote. | 0–9. One named constraint + intent = 6. Two+ or an audit/procurement trigger = 9. |
 | A5 | Existing-customer pattern match (bonus) | Lead resembles the profile of an existing paying customer (size, segment, use case). Bonus, not veto — absence costs nothing at early stage. | 6 | `company_size`, `funding_stage`, `product_description` classify into a known-won cohort. | 0–6. Strong match = 6. Weaker = 3. None = 0. |
 | A6 | Anti-ICP rejection (veto) | Hard veto if the lead matches any pattern in `icp.disqualifiers` — e.g., no real need for the product category, an adequate-for-them cheaper substitute, or no technical owner who could adopt. | 0 | Check `company_description` / `discovery_notes` / `hiring_breakdown`. Cite the disqualifying statement. | Hard veto. Any match = auto-fail, escalate with reason code. |
 
-**Subtotal:** 42 max (A1–A5 scored; A6 veto-gate).
+| A7 | Metro presence | **Active only when `icp.locations` in `company-profile.yaml` is non-empty.** The contact and/or the company are inside the configured metro. | 8 | `metro_match` and `metro_evidence` on the lead record; profile field `metro_presence` at confidence ≥ 60 when an org-context profile exists. | Contact in metro at a metro-HQ company = 8. Contact in metro, HQ elsewhere with `local_office` evidence = 6. HQ in metro but contact remote or location unknown = 3. `metro_match: unknown` with no evidence = 0. |
+
+**Subtotal:** 50 max with A7 active (A1–A5 + A7 scored; A6 veto-gate); 42 max when `icp.locations` is empty and A7 is skipped.
 
 ---
 
@@ -86,6 +88,8 @@ Segments, verticals, sizes, and buyer titles come from `company-profile.yaml` �
 
 ## Category D — Timing signals (4 criteria, 28 pts)
 
+The four signals below assume a software buyer. Instances selling to a different buyer may re-weight D to the timing signals that matter there (for example a new People leader, a return-to-office change, a new local office) — keep the 28-point total, bump `doc_version`, and record the change in the decision log.
+
 | # | Criterion | Description | Weight | Evidence required | Scoring |
 |---|---|---|---|---|---|
 | D1 | Recent funding | Round closed within 90 days. Signals budget + hiring. | 8 | `funding_date` within 90d OR announcement link. Cite round + date. | <30d = 8. 30–90d = 6. >90d = 0. |
@@ -105,7 +109,7 @@ Binary. **ONE hit = overall fail**, regardless of other scores. Populate specifi
 |---|---|---|---|---|
 | E1 | Suppression list hit | Lead email or company on the do-not-contact list (prior churn, complaint, unsubscribe). | `suppression_list_match` true OR CRM history. | Fail + note reason. |
 | E2 | Competitor employee | Works for a company in `competitors` (as employee, not customer). | LinkedIn OR `company_name` matches a competitor entry. | Fail. |
-| E3 | Geography without outreach path | HQ/operations outside `icp.geographies` with no compliant outreach channel. Note: EU contacts route to LinkedIn-only per the repo's universal rules — that is a routing change, not always a fail. | `company_headquarters_country` + `company_operations`. | Fail (escalate — often recoverable via channel routing). |
+| E3 | Geography without outreach path | HQ/operations outside `icp.geographies` with no compliant outreach channel. Note: EU contacts route to LinkedIn-only per the repo's universal rules — that is a routing change, not always a fail. **When `icp.locations` is set:** `metro_match: none` (contact and company both outside the metro, no local office evidence) with no compliant alternative is a fail. | `company_headquarters_country` + `company_operations`; `metro_match` + `metro_evidence`. | Fail (escalate — often recoverable via channel routing or a local-office finding). |
 | E4 | Decision-maker publicly opposed | Founder/CEO has publicly rejected the product category, or built a competing in-house alternative they champion. | Public post / blog / talk. Cite statement + source. | Fail + escalate to the sales owner for relationship assessment. |
 
 **Category E:** Pass = zero hits. Fail = any single hit. Retiring or adding a disqualifier requires a decision-log entry in `docs/06-operational/decision-log/`.
@@ -114,9 +118,9 @@ Binary. **ONE hit = overall fail**, regardless of other scores. Populate specifi
 
 ## Scoring calculation
 
-**Total available:** 131 points (A: 42 + B: 35 + C: 26 + D: 28; E is a binary veto-gate)
+**Total available:** 139 points when A7 is active (A: 50 + B: 35 + C: 26 + D: 28); 131 points when `icp.locations` is empty and A7 is skipped (A: 42 + B: 35 + C: 26 + D: 28). E is a binary veto-gate.
 
-**Normalization:** `final_score = (A + B + C + D) / 131 × 100`
+**Normalization:** `final_score = (A + B + C + D) / 139 × 100` with A7 active; `/ 131 × 100` without. State which denominator was used in the verdict's `reason` when it matters.
 
 **Pass threshold:** normalized score ≥ `icp.qualification_thresholds.standard_pass` AND all Category E pass.
 
@@ -162,3 +166,8 @@ Binary. **ONE hit = overall fail**, regardless of other scores. Populate specifi
 ## Maintenance
 
 The monthly feedback-loop agent proposes edits to this rubric based on human overrides in the review queue. Threshold changes go in `company-profile.yaml`, not here. Structural changes (adding/removing criteria, retiring a disqualifier) require a decision-log entry.
+
+## Version notes
+
+- **1.1 (2026-09-20):** A7 metro presence added (active only with `icp.locations`); E3 extended for `metro_match: none`; A1/B4 evidence generalised to the lead's profile record (`icp.profile_agent`).
+- **1.0 (2026-08-06):** template baseline.
