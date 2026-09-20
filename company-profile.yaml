@@ -43,6 +43,17 @@ icp:
   verticals: []                    # e.g. ["fintech", "healthcare AI"]
   company_size: { min: 20, max: 2000 }
   geographies: ["US"]              # EU contacts are auto-routed to LinkedIn-only (no SMTP)
+  locations: []                    # OPTIONAL metro constraint for a local/regional ICP. Empty = no metro filter (country-level only).
+  # Read by crawler, pre-filter, event-ingest, apify-ingest, enrichment (step 6b) and qualifier-critic A7.
+  # Agents text-match `city` + `aliases` (nothing geocodes); `radius_miles` is the tie-break instruction for unlisted towns.
+  # - metro: "Springfield, IL"
+  #   city: "Springfield"
+  #   region: "Illinois"
+  #   country_code: "US"
+  #   radius_miles: 40
+  #   aliases: ["Chatham", "Sherman", "Rochester", "Riverton"]
+  #   include_remote_hq_with_local_office: true   # HQ elsewhere + a staffed local office counts as in-metro
+  #   apollo_location: "Springfield, Illinois, United States"   # exact string for Apollo person_locations[] / organization_locations[]
   buyer_titles: []                 # e.g. ["VP Engineering", "Head of AI", "CTO"]
   disqualifiers: []                # hard-fail conditions, e.g. ["direct competitor", "agency"]
   qualification_thresholds:

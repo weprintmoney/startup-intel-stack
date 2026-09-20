@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YOUR_ORG/YOUR_REPO/schemas/company-lead.schema.json",
+  "title": "Company lead",
+  "description": "One company (no contact yet) written to leads/companies/*.json by apify-ingest from company-discovery and signal sources (Google Maps, job postings, events). The crawler (Apollo) or apify-ingest's LinkedIn company-employees source later finds people at these companies and stamps people_searched_date.",
+  "type": "object",
+  "required": [
+    "company_name",
+    "source",
+    "source_id",
+    "signal",
+    "discovered_date"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "company_name": {
+      "type": "string"
+    },
+    "website": {
+      "type": "string",
+      "description": "Domain or URL; empty if unknown"
+    },
+    "address": {
+      "type": "string"
+    },
+    "city": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string",
+      "description": "State / province"
+    },
+    "country_code": {
+      "type": "string",
+      "description": "ISO-3166 alpha-2, or UNKNOWN"
+    },
+    "category": {
+      "type": "string",
+      "description": "Source category, e.g. Maps categoryName"
+    },
+    "employee_count_hint": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Rough headcount if the source gives one; 0 = unknown"
+    },
+    "linkedin_company_url": {
+      "type": "string"
+    },
+    "evidence_url": {
+      "type": "string",
+      "description": "URL backing `signal`"
+    },
+    "signal": {
+      "type": "string",
+      "description": "local_employer | hiring_people_function | hr_event_organizer | new_office | growth | other"
+    },
+    "signal_date": {
+      "type": "string",
+      "description": "Date the signal was observed/posted, YYYY-MM-DD when known"
+    },
+    "posting_title": {
+      "type": "string",
+      "description": "job_postings sources: the role title that triggered the signal"
+    },
+    "people_searched_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Set once a people source has searched this company; absent = still to do"
+    },
+    "metro_match": {
+      "type": "string",
+      "enum": [
+        "contact",
+        "company_hq",
+        "local_office",
+        "none",
+        "unknown"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "description": "apify:google_maps | apify:job_postings | apify:meetup | other"
+    },
+    "source_actor": {
+      "type": "string"
+    },
+    "source_run_id": {
+      "type": "string"
+    },
+    "source_id": {
+      "type": "string",
+      "description": "Stable id from the source (placeId, posting id, event id)"
+    },
+    "discovered_date": {
+      "type": "string",
+      "format": "date"
+    }
+  }
+}

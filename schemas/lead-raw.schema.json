@@ -34,6 +34,19 @@
     "announcement_link": { "type": "string" },
     "event_slug": { "type": "string", "description": "event-ingest only" },
     "eu_flagged": { "type": "boolean" },
-    "apollo_id": { "type": "string" }
+    "apollo_id": { "type": "string" },
+    "contact_location": { "type": "string", "description": "Contact location as reported by the source, e.g. 'Springfield, Illinois, United States'. Empty if unknown." },
+    "company_hq_location": { "type": "string", "description": "Company HQ city/region/country as reported or researched. Empty if unknown." },
+    "metro_match": {
+      "type": "string",
+      "enum": ["contact", "company_hq", "local_office", "none", "unknown"],
+      "description": "How the lead matches icp.locations: contact is in metro | company HQ is in metro | HQ elsewhere but a staffed local office | neither | not determinable. Only meaningful when icp.locations is non-empty."
+    },
+    "metro_evidence": { "type": "string", "description": "Source field name or URL backing metro_match, e.g. 'apollo:person.city' or a careers-page URL." },
+    "signal": { "type": "string", "description": "Why this lead surfaced: local_employer | hiring_people_function | hr_event_organizer | new_office | growth | other. Carried from the company record when people are found at a company." },
+    "evidence_url": { "type": "string", "description": "URL backing `signal` (job post, Maps listing, event page)." },
+    "source_actor": { "type": "string", "description": "Apify actor slug that produced this record, e.g. harvestapi/linkedin-profile-search." },
+    "source_run_id": { "type": "string", "description": "Apify run id, for audit." },
+    "source_id": { "type": "string", "description": "Stable id from the source (LinkedIn public identifier, Maps placeId, job posting id)." }
   }
 }

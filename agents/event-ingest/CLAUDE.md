@@ -14,7 +14,7 @@ The `event-ingest.yml` GitHub Actions workflow is triggered manually (`workflow_
 
 ### 1. Load ICP criteria
 
-Read the `icp:` block of `company-profile.yaml` (verticals, company_size, geographies, buyer_titles, disqualifiers) plus `docs/01-market-intelligence/ideal-customer-profile.md` if present. This is your ground truth for segments, title eligibility, and scoring signals.
+Read the `icp:` block of `company-profile.yaml` (verticals, company_size, geographies, `locations`, buyer_titles, disqualifiers) plus `docs/01-market-intelligence/icp.md` (or the older `ideal-customer-profile.md`) if present. This is your ground truth for segments, title eligibility, and scoring signals. `icp.locations` (optional) bounds the ICP to named metros (`city` + `aliases`); every metro rule below applies only when it is non-empty.
 
 ### 2. Load suppression list (competitor entries)
 
@@ -30,11 +30,12 @@ The input file path is provided as the `EVENT_FILE` environment variable. Parse 
 
 Standard field mapping:
 ```
-company_name   ← Company / Organization / Employer
-contact_name   ← Full Name / First Name + Last Name
-contact_title  ← Title / Job Title / Role
-linkedin_url   ← LinkedIn / LinkedIn URL / LinkedIn Profile
-website        ← Website / Company Website / Domain
+company_name     ← Company / Organization / Employer
+contact_name     ← Full Name / First Name + Last Name
+contact_title    ← Title / Job Title / Role
+linkedin_url     ← LinkedIn / LinkedIn URL / LinkedIn Profile
+website          ← Website / Company Website / Domain
+contact_location ← Location / City / City, State / State / Metro / Region (join City + State with ", " when separate)
 ```
 
 ### 4. Apply title eligibility filter
@@ -51,8 +52,8 @@ For each row, check `contact_title` against the config:
 
 For each company that survived title filtering, classify it using model knowledge first, then web search for unknowns. For each company, determine:
 
-**a. In-geography HQ?**
-Use your training knowledge. If uncertain, use web search: `"{company_name}" headquarters location`. Set `country_code` to the two-letter code if determinable; `"UNKNOWN"` if you cannot determine it. Do NOT guess.
+**a. In-geography HQ — and in-metro?**
+Use your training knowledge. If uncertain, use web search: `"{company_name}" headquarters location`. Set `country_code` to the two-letter code if determinable; `"UNKNOWN"` if you cannot determine it. Do NOT guess. Record the HQ text as `company_hq_location` when known. When `icp.locations` is non-empty, also set `metro_match`: `contact` if `contact_location` matches a metro `city`/alias, else `company_hq` if the HQ does, else `none` if both are known and neither matches, else `unknown`. Set `metro_evidence` to the column name or URL you relied on.
 
 **b. ICP-relevant business?**
 Does the company plausibly have the problem our product solves? Judge from the company one-liner in `company-profile.yaml` and the positioning docs in `docs/01-market-intelligence/`. Mark `icp_relevant: true | false | "unknown"`.
@@ -79,6 +80,7 @@ After classification, apply these hard filters. Leads failing any filter are log
 | ICP-relevant | `icp_relevant` must be `true` or `"unknown"` (pass unknowns through; pre-filter will handle them). |
 | Geography or Unknown | Exclude only if `country_code` is a known country NOT in `icp.geographies`. Pass `"UNKNOWN"` through. EU-coded contacts are NOT excluded — pass them through with `eu_flagged: true` for LinkedIn-only routing. |
 | Employee count | If `employee_count` > 0: must be within `icp.company_size` min–max. If 0 (unknown): pass through. |
+| Metro | **Only when `icp.locations` is non-empty.** Exclude `metro_match: none` (log `"Excluded {contact_name} at {company_name}: outside metro"`). Pass `contact`, `company_hq`, and `unknown`. Pass `local_office` only if the metro's `include_remote_hq_with_local_office` is true. |
 
 ### 7. Write output
 
@@ -98,9 +100,14 @@ Write an array of JSON objects to `leads/raw/YYYY-MM-DD-{event-slug}.json` (date
   "country_code": "US",
   "source": "event",
   "event_slug": "string",
-  "eu_flagged": false
+  "eu_flagged": false,
+  "contact_location": "string (only when the source file had a location column)",
+  "company_hq_location": "string (only when known)",
+  "metro_match": "contact | company_hq | local_office | none | unknown (only when icp.locations is non-empty)",
+  "metro_evidence": "string (column name or URL)"
 }
 ```
+Omit the four location fields entirely when you have nothing to put in them.
 
 Notes:
 - `source: "event"` distinguishes this from crawler-sourced leads.
@@ -123,6 +130,9 @@ Event ingest summary: {event_slug} ({YYYY-MM-DD})
     In geography:       {geo_count}
     EU flagged:         {eu_count}
     HQ unknown:         {unknown_count}
+    In metro:           {metro_count}   (only when icp.locations is set)
+    Metro unknown:      {metro_unknown}
+  Outside metro excluded: {outside_metro}
 ```
 
 ## Hard rules
