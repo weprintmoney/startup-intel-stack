@@ -44,6 +44,9 @@ jobs:
             resend)   KEY="$RESEND_API_KEY";;
             sendgrid) KEY="$SENDGRID_API_KEY";;
             mailgun)  KEY="$MAILGUN_API_KEY";;
+            manual)
+              echo "::notice::sending.provider is 'manual' — there is no sending domain to warm up; skipping."
+              echo "run=false" >> "$GITHUB_OUTPUT"; exit 0;;
             *)        KEY="";;
           esac
           if [ -z "$KEY" ]; then

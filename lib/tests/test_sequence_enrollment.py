@@ -146,6 +146,15 @@ class TestBuildPrBody(unittest.TestCase):
         body = se.build_pr_body(verdicts, "2026-09-12")
         self.assertIn("| ✅ PASS | a@x.com | 95/100 | — |", body)
 
+    def test_manual_provider_body_says_nothing_is_emailed(self):
+        verdicts = [{"lead_id": "a", "lead_email": "a@x.com", "decision": "PASS", "normalized_score": 90}]
+        body = se.build_pr_body(verdicts, "2026-09-12", provider="manual")
+        self.assertIn("Nothing is emailed by the system", body)
+        self.assertIn("send-packet.md", body)
+        self.assertNotIn("WILL BE SENT", body)
+        default_body = se.build_pr_body(verdicts, "2026-09-12")
+        self.assertIn("WILL BE SENT", default_body)
+
     def test_no_leading_whitespace_on_any_line(self):
         verdicts = [{"lead_id": "a", "decision": "PASS", "lead_email": "a@x.com", "normalized_score": 95}]
         body = se.build_pr_body(verdicts, "2026-09-12")

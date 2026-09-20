@@ -13,7 +13,10 @@ The lookback window is `$LOOKBACK_DAYS` days (default 35 — one month with over
    - Drafts rescued from `sends/rejected/` back into `sends/queue/` on a PR branch count as corrections too — the copy-evaluator's `feedback` field for that draft says what was fixed.
 2. **Evaluator verdicts.** Read `sends/verdicts/*.json` and `leads/critic/*.json` dated within the window. Tally frequency of each `failing_criteria` code, `hard_block_hits`, and `disqualifier_hits`. Note every ESCALATE and its `reason`.
 3. **Rejected drafts.** Read `sends/rejected/*.json` within the window alongside their verdict `feedback` — what does the drafting agent keep getting wrong?
-4. **Send outcomes.** Read `sends/log/*.jsonl` within the window: tally hard bounces, soft bounces, and unsubscribes by icp_segment/domain pattern if visible. Read `suppression/list.jsonl` entries added within the window.
+4. **Send outcomes.** Two sources, depending on `sending.provider` in `company-profile.yaml`:
+   - **Automated sending** (`resend` / `sendgrid` / `mailgun`): read `sends/log/*.jsonl` within the window; tally hard bounces, soft bounces, and unsubscribes by icp_segment/domain pattern if visible.
+   - **Manual sending** (`manual`): read `sends/outcomes.jsonl` within the window (schema `schemas/outcome-line.schema.json`; written by `lead-issue-sync.yml` from the checkbox ticks and `status:*` labels on `lead` issues, or appended by hand). Tally `touch_sent` → `replied` / `booked` / `no_response` by `icp_segment`, `contact_title`, touch number, and the sequence template's `last_reviewed` version at send time (join on `lead_id` to `leads/enriched/` and `sends/queue/`). Treat `do_not_contact` like an unsubscribe. Issue-body edits are notes, not corrections — the approval-PR edits (input 1) remain the correction signal.
+   In both cases read `suppression/list.jsonl` entries added within the window.
 
 ## Clustering rule
 

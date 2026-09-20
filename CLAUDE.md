@@ -9,7 +9,7 @@ This repo is a company's GTM single source of truth plus the agents that operate
 3. **Mode gating.** Check `company.mode` before running; skip work above the current mode (`docs-only` → `find-leads` → `find-and-draft`; see README). Legacy instances may say `company.stage` with pre-seed/seed/series-a — those map onto the three modes in order.
 4. **CI, not laptops.** Recurring automation runs on GitHub Actions in this repo. Explicit least-privilege `permissions:` block in every workflow.
 5. **Human approval gates.** No outbound email without a merged approval PR. Never bypass rubric gates, suppression checks, `SEQUENCES_PAUSED`, or the daily send cap.
-6. **Confidentiality.** Lead data (`leads/`) never leaves this repo. No named prospects in docs, issues, or anything shared.
+6. **Confidentiality.** Lead data (`leads/`) never leaves this repo. No named prospects in docs, issues, or anything shared. Instances running `sending.provider: manual` may keep contact names in issues labelled `lead` — those issues are the CRM; the rule holds everywhere else.
 7. **Decision log.** Load-bearing changes (positioning, pricing, ICP, strategy) require a dated entry in `docs/06-operational/decision-log/`.
 8. **Frontmatter.** Every doc in `docs/` carries YAML frontmatter: `title`, `description`, `owner`, `status`, `last_reviewed`.
 9. **Provenance.** CI agents add commit trailers: `Agent:`, `Agent-Model:`, `Triggered-By:`.

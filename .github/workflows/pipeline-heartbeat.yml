@@ -9,8 +9,11 @@
 #   4. weekly-crawl succeeded but leads/raw/ has no fresh output (zero-output)
 #
 # Silence = healthy. Logic lives in lib/heartbeat.py (tested — see
-# lib/tests/); the monitored set widens once company.stage reaches
-# series-a. Alerts go to the configured Slack webhook (or a bot-token DM/
+# lib/tests/); the monitored set widens to the send-path workflows only in
+# find-and-draft mode with a real email provider — with sending.provider
+# "manual" those workflows are permanent no-ops and are never monitored,
+# and the sends-without-reply-monitor check is silent. Alerts go to the
+# configured Slack webhook (or a bot-token DM/
 # channel if HEARTBEAT_ALERT_CHANNEL + SLACK_BOT_TOKEN are set); without
 # either, findings only appear in the run log (the job still fails on
 # problems, so GitHub's own notifications fire). To mute a check pre-launch
@@ -55,6 +58,7 @@ jobs:
           {
             echo "run=true"
             echo "mode=$MODE"
+            echo "provider=$(yq '.sending.provider // "resend"' company-profile.yaml)"
             echo "tz=$(yq '.company.hq_timezone // "UTC"' company-profile.yaml)"
             echo "webhook_secret=$(yq '.channels.slack_webhook_secret // ""' company-profile.yaml)"
           } >> "$GITHUB_OUTPUT"
@@ -71,6 +75,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           STAGE: ${{ steps.gate.outputs.mode }}
+          SENDING_PROVIDER: ${{ steps.gate.outputs.provider }}
           HQ_TZ: ${{ steps.gate.outputs.tz }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }} # optional; enables DM/channel-by-ID via HEARTBEAT_ALERT_CHANNEL
           SLACK_WEBHOOK_URL: ${{ secrets[steps.gate.outputs.webhook_secret || 'SLACK_WEBHOOK_URL'] }}

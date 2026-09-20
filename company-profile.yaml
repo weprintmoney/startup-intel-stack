@@ -74,7 +74,7 @@ channels:
   blog_path: ""                    # where published content lives, if any
 
 sending:
-  provider: "resend"               # resend | sendgrid | mailgun (see lib/smtp_send)
+  provider: "resend"               # resend | sendgrid | mailgun | manual (see lib/smtp_send). manual = CI drafts and opens the approval PR; merging it produces sends/manual/<date>-send-packet.md plus one GitHub issue per lead for a human to send by hand. Nothing is emailed by CI.
   daily_cap: 100
   send_window: { days: "Mon-Fri", start: "08:00", end: "18:00" }
   warmup_ramp_days: 28
