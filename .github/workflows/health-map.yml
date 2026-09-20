@@ -9,7 +9,7 @@
 # a content-merged repository_dispatch you can send from your site repo's deploy
 # workflow, or manual dispatch.
 #
-# Mode: find-leads (content ops). Exits with a notice in docs-only mode.
+# Mode: docs-only — content ops run in every mode; nothing here touches contact data.
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
 name: Topic Cluster Health Map
 
@@ -34,12 +34,9 @@ jobs:
         id: gate
         run: |
           MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
-          if [ "$MODE" = "docs-only" ] || [ "$MODE" = "pre-seed" ] || [ -z "$MODE" ]; then
-            echo "::notice::Health Map needs mode find-leads or higher; company.mode is docs-only — skipping."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # content ops run in every mode; no skip
+          echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Regenerate health map
         if: steps.gate.outputs.run == 'true'

@@ -1,0 +1,52 @@
+# AEO monitoring — tracked buyer queries. COPY THIS FILE TO queries.yaml AND EDIT.
+#
+# aeo-monitoring.yml reads docs/04-marketing/aeo/queries.yaml when present (falling
+# back to the newest *-aeo-results.md, then to queries generated from the profile)
+# so the query set is stable week to week and edited in one place. Keep ids stable
+# so history stays comparable.
+#
+# alert_threshold_pct: post an alert when the brand appears in fewer than X% of checks
+# target_coverage_pct: the 6-month goal — raise it as content lands
+# brand_terms: case-insensitive substrings that count as a HIT in an answer
+# competitor_terms: substrings to record under "who answered instead"
+# priority: critical|high misses file an aeo-gap issue; medium misses are only recorded
+#
+# Engines: OpenAI and Perplexity when their keys are set; otherwise the Exa web-search
+# fallback (or WebSearch) — the results file names which engine ran, and a fallback run
+# measures web-grounded visibility, not chatbot answers.
+
+alert_threshold_pct: 20
+target_coverage_pct: 50
+
+brand_terms:
+  - "acme ai"
+  - "acme.ai"
+
+competitor_terms:
+  - "competitor one"
+  - "competitor two"
+
+queries:
+  # --- Category / buyer-intent ---
+  - id: cat-best
+    text: "best <category> for <vertical>"
+    segment: <segment-slug>
+    priority: critical
+  - id: cat-local
+    text: "<category> near <metro>"          # local-intent queries for metro-bounded ICPs
+    segment: <segment-slug>
+    priority: high
+  # --- Problem-phrased (from persona pains) ---
+  - id: pain-1
+    text: "how to <buyer pain in their words>"
+    segment: <segment-slug>
+    priority: high
+  # --- Competitive ---
+  - id: alt-top-competitor
+    text: "alternatives to <top competitor>"
+    segment: competitive
+    priority: high
+  - id: cat-vendors
+    text: "<category> companies"
+    segment: competitive
+    priority: medium

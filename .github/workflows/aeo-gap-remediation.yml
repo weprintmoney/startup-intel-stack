@@ -13,7 +13,7 @@
 #     PR — this is the reliable path for bot-filed issues
 #   - workflow_dispatch for manual sweeps
 #
-# Mode: find-leads (content ops). Exits with a notice in docs-only mode.
+# Mode: docs-only — content ops run in every mode; nothing here touches contact data.
 # Required secrets: ANTHROPIC_API_KEY (skips gracefully if absent).
 name: AEO Gap Remediation
 
@@ -44,12 +44,9 @@ jobs:
         id: gate
         run: |
           MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
-          if [ "$MODE" = "docs-only" ] || [ "$MODE" = "pre-seed" ] || [ -z "$MODE" ]; then
-            echo "::notice::AEO Gap Remediation needs mode find-leads or higher; company.mode is docs-only — skipping."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # content ops run in every mode; no skip
+          echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Find issues needing remediation
         id: find

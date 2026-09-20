@@ -27,7 +27,7 @@ jobs:
       - name: Run signals agent
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          EXA_API_KEY: ${{ secrets.EXA_API_KEY }} # optional; agent degrades to web search if absent
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY || secrets.EXA_AI_API }} # optional; either secret name; agent degrades to web search if absent
         run: |
           if [ -z "$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY not set — skipping"; exit 0; fi
           npm install -g @anthropic-ai/claude-code
