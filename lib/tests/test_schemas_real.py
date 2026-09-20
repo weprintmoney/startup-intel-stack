@@ -86,7 +86,7 @@ class TestGeoFieldsAccepted(unittest.TestCase):
     def test_enriched_with_geo(self):
         rec = {
             **BASE, **GEO, "metro_match": "local_office",
-            "metro_evidence": "https://example-widgets.test/careers/austin",
+            "metro_evidence": "https://example-widgets.test/careers/springfield",
             "email": "sam@example-widgets.test", "email_verified": True,
             "email_status": "deliverable", "email_source": "prospeo",
         }
