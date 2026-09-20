@@ -120,7 +120,13 @@ jobs:
         run: |
           git config user.name "gtm-agent"
           git config user.email "agent@users.noreply.github.com"
-          git add leads/raw/ leads/companies/ docs/01-market-intelligence/event-candidates.md 2>/dev/null || true
+          # Stage each output separately. A single pathspec fails as a whole when the
+          # optional events file is absent, and `|| true` would hide that — leaving real
+          # lead files unstaged and the run reporting "no new leads".
+          git add -A leads/raw/ leads/companies/
+          if [ -f docs/01-market-intelligence/event-candidates.md ]; then
+            git add docs/01-market-intelligence/event-candidates.md
+          fi
           if git diff --staged --quiet; then
             echo "committed=false" >> "$GITHUB_OUTPUT"
             echo "raw_changed=false" >> "$GITHUB_OUTPUT"

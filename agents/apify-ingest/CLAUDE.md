@@ -76,11 +76,13 @@ Apify actors change field names between versions. Map defensively: try the liste
 | Raw-lead field | From item |
 |---|---|
 | `contact_name` | `firstName` + `" "` + `lastName`; else `fullName`; else `name` |
-| `contact_title` | `currentPosition[0].title`; else `position`; else `headline` (trim at " at ", " @ ", " \| ") |
-| `company_name` | `currentPosition[0].companyName`; else `company`; else the text after " at " in `headline` |
+| `contact_title` | `currentPositions[0].title` or `currentPosition[0].title` (the actor has shipped both spellings); else `position`; else `headline` or `summary` (trim at " at ", " @ ", " \| ") |
+| `company_name` | `currentPositions[0].companyName` or `currentPosition[0].companyName`; else `company`; else the text after " at " in `headline` / `summary` |
 | `linkedin_url` | `linkedinUrl`; else `url`; else `profileUrl` — **normalise**: lowercase scheme+host, force `https://www.linkedin.com/in/<slug>`, strip query string and trailing slash |
-| `contact_location` | `location`; else `locationName`; else `city` + `", "` + `state` |
-| `website` | `currentPosition[0].companyWebsite`; else `""` (enrichment fills it) |
+| `contact_location` | `location` when it is a string; when `location` is an object use `location.linkedinText` (else `location.parsed.text`); else `locationName`; else `city` + `", "` + `state` |
+| `website` | `currentPositions[0].companyWebsite` or `currentPosition[0].companyWebsite`; else `""` (enrichment fills it) |
+
+Actor output fields drift between versions — read the first item of every dataset before mapping, try the alternates above in order, and count an item as `dropped: unmapped` (never fabricate) when none of the keys for `contact_name` or `linkedin_url` are present. Note any new field shape in the summary so the runbook can be updated.
 | `employee_count` | `currentPosition[0].companySize` midpoint if a range; else `0` |
 | `industry` | `industry`; else `currentPosition[0].companyIndustry`; else `""` |
 | `country_code` | derive from `contact_location` (`United States`/`, TX`/`Texas` → `US`); else `"UNKNOWN"` |
