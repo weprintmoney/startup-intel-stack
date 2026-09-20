@@ -17,7 +17,7 @@ dicts: {"id": str, "email": str, <field>: <plain value>, ...}. Callers never
 see provider-specific record shapes.
 
 Pipeline state fields (the sequence state machine lives on these):
-  email, contact_name, company_name, contact_title, icp_segment,
+  email, contact_name, company_name, contact_title, linkedin_url, icp_segment,
   sequence_status (pending|enrolled|completed|paused|rejected),
   sequence_enrolled_date, last_touch_date, last_touch_number,
   reply_received, outreach_channel (email|linkedin_only), eu_contact,
@@ -35,6 +35,7 @@ CONTACT_FIELDS = [
     "contact_name",
     "company_name",
     "contact_title",
+    "linkedin_url",
     "icp_segment",
     "sequence_status",
     "sequence_enrolled_date",

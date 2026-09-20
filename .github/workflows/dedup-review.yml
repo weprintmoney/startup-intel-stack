@@ -1,7 +1,7 @@
 # Qualifier-critic gate + CRM pending upsert. Mode: find-leads.
 # Leads only reach the CRM upsert with a PASS verdict from the
 # qualifier-critic rubric. Fail-closed — no verdict, no upsert.
-# Triggered by stack-profile.yml, or manually.
+# Triggered by the selected profile-agent workflow (icp.profile_agent), or manually.
 name: Dedup Review (critic gate + CRM upsert)
 
 on:
@@ -260,6 +260,7 @@ jobs:
                       "email": email,
                       "company_name": company,
                       "contact_title": lead.get("contact_title", ""),
+                      "linkedin_url": lead.get("linkedin_url", ""),
                       "icp_segment": lead.get("icp_segment", ""),
                       "sequence_status": "pending",
                       "outreach_channel": "linkedin_only" if is_eu else "email",

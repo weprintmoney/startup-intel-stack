@@ -27,6 +27,8 @@ ARRAY_DIRS = {
     "leads/deduped": "lead-deduped",
     "leads/critic": "critic-verdict",
     "leads/stack-profiles": "stack-profile",
+    "leads/org-profiles": "org-context-profile",
+    "leads/companies": "company-lead",
     "sends/verdicts": "copy-verdict",
 }
 
@@ -149,6 +151,11 @@ def check_full_scope(schemas: dict, root: Path) -> list[str]:
     daily_count_path = root / "sends" / "daily-count.json"
     if daily_count_path.exists():
         failures += check_single_file(schemas, "daily-count", daily_count_path)
+
+    # Manual-send outcomes: appended by lead-issue-sync.yml and by hand.
+    outcomes_path = root / "sends" / "outcomes.jsonl"
+    if outcomes_path.exists():
+        failures += check_jsonl_file(schemas, "outcome-line", outcomes_path)
 
     return failures
 

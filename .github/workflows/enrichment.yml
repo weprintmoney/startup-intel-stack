@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write # re-dispatch + trigger stack-profile
+      actions: write # re-dispatch + trigger the selected profile agent (icp.profile_agent)
 
     steps:
       - uses: actions/checkout@v4
@@ -142,7 +142,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }} # optional
           APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }} # optional
-          EXA_API_KEY: ${{ secrets.EXA_API_KEY }} # optional; agent falls back to web search
+          PROSPEO_API_KEY: ${{ secrets.PROSPEO_API_KEY }} # optional; LinkedIn URL -> verified email, tried first when set
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY || secrets.EXA_AI_API }} # optional; either secret name works, lib/exa_search.py reads EXA_API_KEY; agent falls back to web search
           RETRY_NOT_FOUND: ${{ inputs.retry_not_found }}
           SIGNAL_REFRESH: ${{ inputs.signal_refresh }}
         run: |
@@ -246,11 +247,17 @@ jobs:
               print("re-dispatched enrichment to continue")
           PYEOF
 
-      - name: Trigger stack-profile
+      # The per-company research stage is pluggable: icp.profile_agent in
+      # company-profile.yaml names it (stack -> stack-profile.yml,
+      # org-context -> org-context-profile.yml). The selected workflow
+      # self-guards, so a mismatch is a green no-op, never a wrong profile.
+      - name: Trigger the selected profile agent
         if: steps.gate.outputs.run == 'true' && steps.commit.outputs.committed == 'true' && steps.redispatch.outputs.remaining == '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh workflow run stack-profile.yml \
+          PROFILE_AGENT=$(yq '.icp.profile_agent // "stack"' company-profile.yaml)
+          echo "icp.profile_agent=$PROFILE_AGENT -> ${PROFILE_AGENT}-profile.yml"
+          gh workflow run "${PROFILE_AGENT}-profile.yml" \
             --repo ${{ github.repository }} \
             --ref main

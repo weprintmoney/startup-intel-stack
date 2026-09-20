@@ -56,6 +56,7 @@ icp:
   #   apollo_location: "Springfield, Illinois, United States"   # exact string for Apollo person_locations[] / organization_locations[]
   buyer_titles: []                 # e.g. ["VP Engineering", "Head of AI", "CTO"]
   disqualifiers: []                # hard-fail conditions, e.g. ["direct competitor", "agency"]
+  profile_agent: "stack"           # stack | org-context — the per-company research stage between enrichment and the critic. stack = tech stack from public code/manifests (software buyers); org-context = offices, People leader, people-side signals, culture language (any other buyer)
   qualification_thresholds:
     pre_seed_pass: 60              # relaxed bar for leads that are themselves pre-seed companies (see rubrics/pre-seed-qualifier.md)
     standard_pass: 70
