@@ -1,0 +1,165 @@
+# Apify ingest — the people and company source for local / metro ICPs.
+# Runs the Apify actors configured in company-profile.yaml -> apify_sources
+# (public-page LinkedIn people search + company-employees, Google Maps company
+# discovery, job-posting signals, Meetup events) and writes leads/raw/,
+# leads/companies/ and docs/01-market-intelligence/event-candidates.md, then
+# chains into enrichment.yml exactly like weekly-crawl and event-ingest do.
+#
+# Mode: find-leads. Green no-op when apify_sources.enabled is false or the
+# APIFY_API_KEY secret is unset.
+# Required secrets: ANTHROPIC_API_KEY, APIFY_API_KEY.
+# Optional secrets: EXA_API_KEY or EXA_AI_API (Exa resolves LinkedIn company URLs),
+#                   APOLLO_API_KEY (same, via Apollo), SLACK_WEBHOOK_URL (failure alerts).
+#                   Without any of them the agent falls back to one WebSearch per company.
+name: Apify Ingest
+
+on:
+  # Uncomment once the first manual runs look right — keep in sync with
+  # cadences.apify_ingest in company-profile.yaml.
+  # schedule:
+  #   - cron: "0 14 * * 2" # Tuesdays 14:00 UTC
+  workflow_dispatch:
+    inputs:
+      source_ids:
+        description: "Comma-separated apify_sources.sources[].id to run. Empty = every enabled source."
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Build every actor input and print it; call no actors, write no files."
+        required: false
+        default: false
+        type: boolean
+      max_items:
+        description: "Override every source's item cap (e.g. 20 for a first run)."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  apify-ingest:
+    name: Run Apify sources and map into leads/
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: write # trigger downstream enrichment workflow
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (mode gate + config + secrets)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          APIFY_API_KEY: ${{ secrets.APIFY_API_KEY }}
+        run: |
+          MODE=$(yq '.company.mode // .company.stage // ""' company-profile.yaml)
+          rank() { case "$1" in docs-only|pre-seed) echo 0;; find-leads|seed) echo 1;; find-and-draft|series-a) echo 2;; *) echo -1;; esac; }
+          if [ "$(rank "$MODE")" -lt 0 ]; then
+            echo "::warning::company.mode '$MODE' is not recognized — expected docs-only, find-leads, or find-and-draft. Treating as docs-only."
+          fi
+          if [ "$(rank "$MODE")" -lt "$(rank find-leads)" ]; then
+            echo "::notice::company.mode '$MODE' is below 'find-leads' — Apify ingest skipped (mode gate)."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          ENABLED=$(yq '.apify_sources.enabled // false' company-profile.yaml)
+          if [ "$ENABLED" != "true" ]; then
+            echo "::notice::apify_sources.enabled is '$ENABLED' in company-profile.yaml — Apify ingest skipped."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$APIFY_API_KEY" ]; then
+            echo "::notice::APIFY_API_KEY secret not set — Apify ingest skipped."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — Apify ingest skipped."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install pyyaml jsonschema exa-py==2.14.0
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.run == 'true'
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Run apify-ingest agent
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          APIFY_API_KEY: ${{ secrets.APIFY_API_KEY }}
+          APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }} # optional; company URL resolution only
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY || secrets.EXA_AI_API }} # optional; either secret name works
+          SOURCE_IDS: ${{ inputs.source_ids }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          MAX_ITEMS: ${{ inputs.max_items }}
+        run: |
+          claude -p "$(cat agents/apify-ingest/CLAUDE.md)" \
+            --allowedTools "Bash,Read,Write,WebSearch" \
+            --max-turns 80
+
+      - name: Validate written data
+        if: steps.gate.outputs.run == 'true' && inputs.dry_run != true
+        run: python lib/validate_data.py full .
+
+      - name: Commit results
+        if: steps.gate.outputs.run == 'true' && inputs.dry_run != true
+        id: commit
+        run: |
+          git config user.name "gtm-agent"
+          git config user.email "agent@users.noreply.github.com"
+          git add leads/raw/ leads/companies/ docs/01-market-intelligence/event-candidates.md 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "raw_changed=false" >> "$GITHUB_OUTPUT"
+            echo "No new leads, companies, or events."
+          else
+            if git diff --staged --name-only | grep -q '^leads/raw/'; then
+              echo "raw_changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "raw_changed=false" >> "$GITHUB_OUTPUT"
+            fi
+            git commit -m "apify-ingest: $(date +%F)
+
+          Agent: apify-ingest
+          Agent-Model: claude-code
+          Triggered-By: apify-ingest.yml"
+            for attempt in 1 2 3 4 5; do
+              if git pull --rebase origin main && git push; then break; fi
+              echo "push attempt $attempt failed — retrying"; sleep $((attempt * 5))
+            done
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Chain: enrichment.yml runs dedup + pre-filter before spending
+      # enrichment credits, then triggers the profile stage -> dedup-review.
+      - name: Trigger enrichment
+        if: steps.gate.outputs.run == 'true' && steps.commit.outputs.raw_changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run enrichment.yml \
+            --repo ${{ github.repository }} \
+            --ref main
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then echo "SLACK_WEBHOOK_URL not set — skipping"; exit 0; fi
+          curl -sS -X POST "$SLACK_WEBHOOK_URL" -H 'Content-type: application/json' \
+            -d "{\"text\":\"Workflow failed: ${{ github.workflow }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"

@@ -83,6 +83,53 @@ crm:
   provider: "none"                 # none | attio | airtable (see lib/crm adapter)
   api_key_secret: ""               # name of the GitHub secret holding the key
 
+apify_sources:
+  # Apify actors that find people and companies for the lead pipeline (agents/apify-ingest).
+  # LinkedIn sources must be public-page actors — the agent refuses any input carrying a
+  # cookie / li_at / sessionCookie key, so no staff LinkedIn account is ever used.
+  # apify-ingest.yml no-ops green while `enabled` is false or APIFY_API_KEY is unset.
+  enabled: false
+  max_items_per_source: 150        # default cap on records kept per source per run
+  sources: []
+  # One entry per source. `emit`: contact → leads/raw/, company → leads/companies/, event → event-candidates.md.
+  # Empty `input` lists default from the ICP (buyer_titles, locations). Optional `max_total_items` is a hard
+  # cap on records KEPT from that source per run (applied after fetch; overrides max_items_per_source).
+  # - id: li-people-metro
+  #   kind: linkedin_people_search
+  #   actor: "harvestapi/linkedin-profile-search"      # public-page actor
+  #   enabled: true
+  #   emit: contact
+  #   input: { currentJobTitles: [], locations: [], maxItems: 150, profileScraperMode: "Short" }
+  #   # locations default: "<city>, <region> Metropolitan Area" + bare city, from icp.locations
+  # - id: li-employees-at-target-accounts
+  #   kind: linkedin_company_employees
+  #   actor: "harvestapi/linkedin-company-employees"   # public-page actor; skipped with a notice until leads/companies/ has records
+  #   enabled: true
+  #   emit: contact
+  #   input: { companies: [], jobTitles: [], locations: [], maxItems: 5 }   # maxItems is per company
+  # - id: maps-metro-employers
+  #   kind: google_maps
+  #   actor: "compass/crawler-google-places"
+  #   enabled: true
+  #   emit: company
+  #   signal: local_employer
+  #   max_total_items: 150
+  #   input: { searchStringsArray: ["software company", "law firm", "accounting firm"], locationQuery: "Springfield, IL", maxCrawledPlacesPerSearch: 40 }
+  #   # maxCrawledPlacesPerSearch is PER SEARCH STRING: 3 strings × 40 = up to 120 places fetched
+  # - id: job-postings-buyer-roles
+  #   kind: job_postings
+  #   actor: "misceres/indeed-scraper"
+  #   enabled: true
+  #   emit: company
+  #   signal: hiring_buyer_function
+  #   input: { position: "Head of People OR HR Business Partner", location: "Springfield, IL", country: "US", maxItemsPerSearch: 100 }
+  # - id: meetup-metro-buyers
+  #   kind: events
+  #   actor: "filip_cicvarek/meetup-scraper"
+  #   enabled: true
+  #   emit: event
+  #   input: { searchKeyword: "HR people culture", city: "Springfield", country: "US", maxResults: 50 }
+
 cadences:
   # Cron schedules (UTC). Stagger these if you fork multiple instances.
   competitive_signals: "0 4 * * 1"   # Mon 4am
