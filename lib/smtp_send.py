@@ -40,8 +40,9 @@ from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-import config
 import requests
+
+import config
 
 SEND_INTERVAL_SECONDS = random.uniform(180, 480)  # 3-8 min between sends
 
