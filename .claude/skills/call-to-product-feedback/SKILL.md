@@ -15,16 +15,8 @@ Ask for whichever of these is missing, but proceed with flagged assumptions rath
 
 1. **Conversation material**: a transcript, notes, or summary of the conversation about the product. If it's a file path, read it.
 2. **Product context**: the repo or a description of what exists today. If you're inside the product's repo, read the README, the deliverables or output directory, and any agent, workflow, or schedule definitions before writing anything. If you're inside a Startup Intel Stack instance, also read `docs/01-market-intelligence/`, `docs/03-commercial-revenue/`, and `docs/05-product/` so the memo doesn't contradict the SSOT.
-3. **Who reads the output**: the founder alone (default), or a wider audience. This changes what you may include (see Privacy).
+3. **Who reads the output**: the founder alone (default), or a wider audience.
 4. **Optional**: a prospect or contact list with roles and segments. Use it to derive personas only. Never name anyone from it in the output.
-
-## Privacy rules (apply before writing a word)
-
-- Never mention that the conversation was recorded, and never cite timestamps. Say "you mentioned" or "you told me."
-- Never name, count, or describe individual people from a contact list. Derive roles and segments only ("early-stage CEO," "service providers and advisors").
-- Never include third parties raised in the conversation as competitors-who-might-copy, personal asides, or anything the founder said about a specific person.
-- Keep out any question about the advisor's own involvement, compensation, or partnership. That is a separate conversation.
-- No dates or timelines on the vision stages unless the founder asks for them. Use gates ("begins when X is true") instead.
 
 ## Process
 
@@ -94,8 +86,7 @@ Read the draft as a skeptical buyer and as the founder's lawyer, and fix:
 3. **Missing risks**: run the eight risk factors again against the constraints table.
 4. **Jargon**: define NRR, MCP, and any acronym on first use, in plain words.
 5. **Arithmetic**: recount every grade distribution and every "N of M" claim.
-6. **Privacy rules**: search the draft for names, timestamps, "recording," "transcript," "the call," and contact-list words. Remove or rephrase.
-7. **Dates**: none on the vision stages.
+6. **Dates**: none on the vision stages.
 
 ## Output
 
