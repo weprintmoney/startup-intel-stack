@@ -1,43 +1,107 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/<YOUR_ORG>/agent-ops/schemas/judge-verdict.schema.json",
+  "$id": "https://github.com/example-org/agent-ops/schemas/judge-verdict.schema.json",
   "title": "Judge verdict",
-  "description": "Output of a rubric-gated judge (code-judge, founder-voice-pr-reviewer) on one PR. A verdict flip against the golden set freezes auto-merge globally.",
+  "description": "Output of a rubric-gated judge (code-judge, founder-voice-pr-reviewer) on one PR. scripts/validate-judge-verdict.py recomputes score and verdict from criteria; the model's numbers are never trusted. A verdict flip against the golden set freezes auto-merge globally.",
   "type": "object",
-  "required": ["judge", "repo", "pr", "verdict", "score", "threshold", "criteria", "rubric_version", "model", "run_url", "created_at"],
+  "required": [
+    "judge",
+    "repo",
+    "pr",
+    "verdict",
+    "score",
+    "threshold",
+    "criteria",
+    "blocking_findings",
+    "rubric_version",
+    "model",
+    "run_url",
+    "created_at"
+  ],
   "additionalProperties": false,
   "properties": {
-    "judge": { "enum": ["code-judge", "founder-voice-pr-reviewer"] },
-    "repo": { "type": "string", "pattern": "^[A-Za-z0-9._<>-]+/[A-Za-z0-9._-]+$" },
-    "pr": { "type": "integer", "minimum": 1 },
-    "verdict": { "enum": ["pass", "fail"] },
-    "score": { "type": "number", "minimum": 0, "maximum": 100 },
-    "threshold": { "type": "number", "minimum": 0, "maximum": 100 },
+    "judge": {
+      "enum": [
+        "code-judge",
+        "founder-voice-pr-reviewer"
+      ]
+    },
+    "repo": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._<>-]+/[A-Za-z0-9._-]+$"
+    },
+    "pr": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "verdict": {
+      "enum": [
+        "pass",
+        "fail"
+      ]
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
     "criteria": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 20,
       "items": {
         "type": "object",
-        "required": ["id", "result"],
+        "required": [
+          "id",
+          "result"
+        ],
         "additionalProperties": false,
         "properties": {
-          "id": { "type": "string", "description": "Rubric criterion id, e.g. C07" },
-          "result": { "enum": ["pass", "fail", "n/a"] },
-          "note": { "type": "string" }
+          "id": {
+            "type": "string",
+            "pattern": "^C(0[1-9]|1[0-9]|20)$",
+            "description": "Rubric criterion id, C01\u2013C20"
+          },
+          "result": {
+            "enum": [
+              "pass",
+              "fail",
+              "n/a"
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "maxItems": 20,
+      "description": "All twenty rubric criteria C01\u2013C20, each exactly once (n/a where the diff does not touch the subject)"
     },
     "blocking_findings": {
       "type": "array",
-      "items": { "type": "string" },
-      "description": "Findings that fail the PR regardless of score (e.g. expertise-path touch, invariant violation)"
+      "items": {
+        "type": "string"
+      },
+      "description": "Findings that fail the PR regardless of score (e.g. expertise-path touch, invariant violation). Present and empty when there are none."
     },
     "rubric_version": {
       "type": "string",
       "description": "Git SHA of the rubric doc in internal-docs at evaluation time"
     },
-    "model": { "type": "string" },
-    "run_url": { "type": "string", "format": "uri" },
-    "created_at": { "type": "string", "format": "date-time" }
+    "model": {
+      "type": "string"
+    },
+    "run_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
   }
 }

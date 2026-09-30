@@ -1,19 +1,99 @@
 {
   "judge": "code-judge",
-  "repo": "<YOUR_ORG>/example-app-service",
+  "repo": "example-org/example-app-service",
   "pr": 431,
   "verdict": "pass",
-  "score": 85,
+  "score": 89,
   "threshold": 80,
   "criteria": [
-    { "id": "C01", "result": "pass", "note": "Diff matches spec section 3 scope" },
-    { "id": "C02", "result": "pass" },
-    { "id": "C03", "result": "fail", "note": "Error message lacks remediation hint" },
-    { "id": "C04", "result": "n/a", "note": "No persistence paths touched" }
+    {
+      "id": "C01",
+      "result": "pass",
+      "note": "Diff matches spec section 1 contract"
+    },
+    {
+      "id": "C02",
+      "result": "pass"
+    },
+    {
+      "id": "C03",
+      "result": "fail",
+      "note": "Renames an unrelated helper at src/util.py:12 \u2014 out of spec scope"
+    },
+    {
+      "id": "C04",
+      "result": "n/a",
+      "note": "No pinned architecture choice touched"
+    },
+    {
+      "id": "C05",
+      "result": "pass"
+    },
+    {
+      "id": "C06",
+      "result": "pass"
+    },
+    {
+      "id": "C07",
+      "result": "pass"
+    },
+    {
+      "id": "C08",
+      "result": "pass"
+    },
+    {
+      "id": "C09",
+      "result": "pass"
+    },
+    {
+      "id": "C10",
+      "result": "pass"
+    },
+    {
+      "id": "C11",
+      "result": "pass"
+    },
+    {
+      "id": "C12",
+      "result": "pass"
+    },
+    {
+      "id": "C13",
+      "result": "pass"
+    },
+    {
+      "id": "C14",
+      "result": "pass"
+    },
+    {
+      "id": "C15",
+      "result": "pass"
+    },
+    {
+      "id": "C16",
+      "result": "pass"
+    },
+    {
+      "id": "C17",
+      "result": "pass"
+    },
+    {
+      "id": "C18",
+      "result": "fail",
+      "note": "Stray print() left at src/client.py:88"
+    },
+    {
+      "id": "C19",
+      "result": "pass"
+    },
+    {
+      "id": "C20",
+      "result": "pass"
+    }
   ],
   "blocking_findings": [],
   "rubric_version": "9f2c1ab",
   "model": "claude-opus-4-7",
-  "run_url": "https://github.com/<YOUR_ORG>/agent-ops/actions/runs/2",
+  "run_url": "https://github.com/example-org/agent-ops/actions/runs/2",
   "created_at": "2026-08-21T15:30:00Z"
 }

@@ -1,0 +1,220 @@
+name: PR Review Reap
+
+# The missing trigger: nothing watched an open agent PR for a
+# human "Request changes" review. revise.yml already handles this correctly
+# once dispatched -- code-judge always posts a comment starting with
+# "## code-judge:" whether it passed or failed, so revise.yml's own
+# findings.md guard never blocks it, and the reviser persona treats
+# "each unresolved review comment" as a first-class finding, with human
+# comments outranking judge findings. The only thing missing was dispatch.
+#
+# Same shape as spec-pending-reap / pr-merged-reap: poll instead of trying to
+# wire an event trigger across three public product repos (which would need
+# a caller workflow added to each, and this pipeline's own policy is to
+# reach for a caller workflow only where a required check demands one -- see
+# SETUP.md §7). One extra check per `pr-open` claim, every poll:
+#
+#   latest CHANGES_REQUESTED review is new (its id != the claim's
+#   last_review_dispatched)               -> dispatch revise.yml for the
+#                                             ticket's last recorded judge
+#                                             round (the reviser answers it;
+#                                             code-judge re-checks as
+#                                             round+1), patch the claim's
+#                                             last_review_dispatched first so
+#                                             this poll never re-fires for
+#                                             the same review
+#   round cap or per-ticket cost ceiling
+#   already reached, or PR already
+#   agent:needs-human                     -> label + alert instead of
+#                                             dispatching a call revise.yml
+#                                             would itself reject
+#   no new CHANGES_REQUESTED review       -> skip
+#
+# revise.yml's own concurrency group (revise-<repo>-<pr>) serializes any
+# second dispatch for the same PR behind the first; this workflow does not
+# need its own per-PR lock.
+#
+# Cron every 30 min, offset from both existing reapers. No-op without App
+# creds. Reviews from a bot account are ignored (defensive; nothing posts a
+# formal GitHub review today).
+
+on:
+  schedule:
+    - cron: "10,40 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-review-reap
+  cancel-in-progress: false
+
+env:
+  TICKET_REPO: <YOUR_ORG>/example-app-core
+  ROUND_CAP: "3"
+
+jobs:
+  reap:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # queue.json: last_review_dispatched patch
+      actions: write    # dispatch revise.yml
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on App credentials
+        id: gate
+        env:
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
+        run: |
+          if [ -z "$K" ] || [ -z "$C" ]; then
+            echo "BOT_APP_* not configured (SETUP.md §2) — reap is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve product repos from the registry
+        id: repos
+        run: |
+          LIST=$(jq -r '[.repos | to_entries[] | .key] | join(",")' state/impl-repos.json)
+          echo "list=$LIST" >> "$GITHUB_OUTPUT"
+          echo "Product repos: $LIST"
+
+      # The registry list includes example-app-core (the ticket repo), so this
+      # token also carries the issues:write the status-card rewrite needs.
+      - name: Mint token (PR + review read, label write, on product repos)
+        if: steps.gate.outputs.go == 'true'
+        id: bot
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ steps.repos.outputs.list }}
+          permission-pull-requests: write   # gh pr edit --add-label on cap/ceiling
+          permission-issues: write          # gh label create (matches code-judge.yml); status card on the ticket
+
+      - uses: ./.github/actions/bot-identity
+        if: steps.gate.outputs.go == 'true'
+
+      - name: Check open agent PRs for a new "Request changes" review
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          # Dispatching revise.yml is a same-repo action (actions: write on
+          # agent-ops itself) -- the App token above is scoped only
+          # to the product repos and cannot do this. Same pattern as
+          # pr-merged-reap.yml's own ticket-intake.yml dispatch.
+          MAIN_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          open_claims=$(jq -c '.claims[] | select(.status == "pr-open")' state/queue.json)
+          if [ -z "$open_claims" ]; then
+            echo "No pr-open claims."
+            exit 0
+          fi
+          # History-only events on the ticket's status card (status stays pr-open).
+          card() { # <issue> <impl_repo> <status-card args...>
+            local issue="$1" impl="$2"; shift 2
+            python3 scripts/status-card.py upsert --repo "$TICKET_REPO" --issue "$issue" --impl-repo "$impl" --run-url "$RUN_URL" "$@"
+          }
+          while IFS= read -r claim; do
+            [ -z "$claim" ] && continue
+            issue=$(jq -r '.issue' <<<"$claim")
+            IMPL_REPO=$(jq -r '.impl_repo' <<<"$claim")
+            SHORT_REPO="${IMPL_REPO##*/}"
+            pr_url=$(jq -r '.pr_url // ""' <<<"$claim")
+            last_seen=$(jq -r '.last_review_dispatched // ""' <<<"$claim")
+            if [ -z "$pr_url" ]; then
+              echo "SKIP #$issue ($IMPL_REPO): no pr_url on the claim"
+              continue
+            fi
+            num="${pr_url##*/}"
+            if ! pr=$(gh pr view "$num" -R "$IMPL_REPO" --json state,body,labels 2>/dev/null); then
+              echo "::warning::SKIP #$issue ($IMPL_REPO): cannot read $pr_url"
+              continue
+            fi
+            if [ "$(jq -r .state <<<"$pr")" != "OPEN" ]; then
+              echo "SKIP #$issue ($IMPL_REPO): PR #$num is not open"
+              continue
+            fi
+            if jq -e '.labels[] | select(.name == "agent:needs-human")' <<<"$pr" >/dev/null; then
+              echo "SKIP #$issue ($IMPL_REPO): PR #$num already agent:needs-human"
+              continue
+            fi
+
+            # A reviewer's own later APPROVED supersedes their earlier
+            # CHANGES_REQUESTED (this is what GitHub's own reviewDecision
+            # would compute if these repos required reviews for merge --
+            # they don't, so reviewDecision here is always REVIEW_REQUIRED
+            # regardless of actual review state and cannot be used).
+            # Group by author, take each author's single latest review, and
+            # look for one still CHANGES_REQUESTED.
+            latest=$(gh api --paginate "repos/$IMPL_REPO/pulls/$num/reviews" \
+              --jq '[.[] | select(.user.login | endswith("[bot]") | not)]
+                    | group_by(.user.login) | map(max_by(.submitted_at))
+                    | map(select(.state == "CHANGES_REQUESTED"))
+                    | sort_by(.submitted_at) | last // empty')
+            if [ -z "$latest" ]; then
+              echo "SKIP #$issue ($IMPL_REPO): PR #$num has no Request-changes review"
+              continue
+            fi
+            review_id=$(jq -r '.id' <<<"$latest")
+            if [ "$review_id" = "$last_seen" ]; then
+              echo "SKIP #$issue ($IMPL_REPO): PR #$num — review $review_id already dispatched"
+              continue
+            fi
+
+            jq -r .body <<<"$pr" > /tmp/pr-body.md
+            LAST_JUDGE_ROUND=$(( $(python3 scripts/round-history.py --body /tmp/pr-body.md next-round) - 1 ))
+            TOTAL_COST=$(python3 scripts/round-history.py --body /tmp/pr-body.md total-cost)
+            CEILING=$(python3 scripts/round-history.py --body /tmp/pr-body.md read | jq -r '.ceiling_usd')
+
+            if [ "$LAST_JUDGE_ROUND" -lt 1 ]; then
+              echo "SKIP #$issue ($IMPL_REPO): PR #$num has no judge round yet — code-judge should run first"
+              continue
+            fi
+            OVER_CEILING=$(python3 -c "print('1' if float('$TOTAL_COST') >= float('$CEILING') else '0')")
+            if [ "$LAST_JUDGE_ROUND" -ge "$ROUND_CAP" ] || [ "$OVER_CEILING" = "1" ]; then
+              PR_URL="https://github.com/$IMPL_REPO/pull/$num"
+              echo "BLOCKED #$issue ($IMPL_REPO): PR #$num — round $LAST_JUDGE_ROUND/$ROUND_CAP, \$$TOTAL_COST of \$$CEILING spent, cap or ceiling already reached"
+              gh label create "agent:needs-human" -R "$IMPL_REPO" --color FBCA04 --force \
+                --description "The bounded judge/revise loop ended without a pass — a human decides (see the PR's round block)" >/dev/null 2>&1 || true
+              gh pr edit "$num" -R "$IMPL_REPO" --add-label "agent:needs-human" || true
+              card "$issue" "$IMPL_REPO" --event needs-human \
+                --note "reviewer requested changes on PR #$num but the round cap or cost ceiling is reached — labeled agent:needs-human; dispatch revise.yml by hand for another attempt"
+              bash scripts/slack-alert.sh ":raised_hand: A reviewer requested changes on $PR_URL ($TICKET_REPO#$issue) but the round cap or cost ceiling was already reached — labeled agent:needs-human. Dispatch revise.yml by hand if you want another attempt. $RUN_URL"
+              continue
+            fi
+
+            echo "DISPATCH #$issue ($IMPL_REPO): PR #$num — new Request-changes review $review_id, revising round $LAST_JUDGE_ROUND"
+            # A stale agent:judge-pass would misleadingly suggest this PR is
+            # still merge-ready while a human-triggered revision is in
+            # flight (same cleanup code-judge.yml does before its own
+            # fail-path revise dispatch).
+            gh pr edit "$num" -R "$IMPL_REPO" --remove-label "agent:judge-pass" 2>/dev/null || true
+            git pull -q --rebase origin main || true
+            IMPL_REPO="$IMPL_REPO" bash scripts/update-claim.sh "$issue" - \
+              "$(jq -n --arg id "$review_id" '{last_review_dispatched: $id}')"
+            GH_TOKEN="$MAIN_TOKEN" gh workflow run revise.yml -f pr="$num" -f issue="$issue" -f repo="$SHORT_REPO" -f round="$LAST_JUDGE_ROUND" \
+              || echo "::warning::could not dispatch revise.yml for PR #$num — run: gh workflow run revise.yml -f pr=$num -f repo=$SHORT_REPO -f issue=$issue -f round=$LAST_JUDGE_ROUND"
+            card "$issue" "$IMPL_REPO" --event revise-dispatched \
+              --note "reviewer requested changes on PR #$num — revision round $LAST_JUDGE_ROUND dispatched"
+            bash scripts/slack-alert.sh ":arrows_counterclockwise: A reviewer requested changes on https://github.com/$IMPL_REPO/pull/$num ($TICKET_REPO#$issue) — dispatching revision round $LAST_JUDGE_ROUND. $RUN_URL"
+          done <<< "$open_claims"
+
+      - name: Alert on failure
+        if: failure() && steps.gate.outputs.go == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/slack-alert.sh ":x: pr-review-reap failed — a human review requesting changes may not have triggered a revision. $RUN_URL"
