@@ -1,10 +1,40 @@
 name: Spec Draft
+# The orchestrator matches in-flight runs to claims by this title — keep
+# the format in sync with spec-draft-orchestrator.yml.
+run-name: "Spec Draft #${{ inputs.issue }} (${{ inputs.repo }})"
 
 # Stage 2 of the coding loop: draft a 7-section spec for a claimed ticket as
 # a PR to internal-docs, or take the fast path (intent note on the issue) for
-# the template's closed does-not-apply list. Dispatched by ticket-intake per
-# claim; humans approve every spec PR (Phase 2 = human-reviews-everything).
+# the template's closed does-not-apply list. Dispatched by
+# spec-draft-orchestrator.yml, one run per claimed ticket, all in parallel
+# — each run's completion re-fires the orchestrator via
+# workflow_run; humans approve every spec PR (Phase 2 =
+# human-reviews-everything).
 # Degrades gracefully pre-setup: missing secrets -> no-op with a notice.
+#
+# After a SPEC_PR the claim-verify gate runs (agents/claim-verifier, fresh
+# context): the spec's factual claims are checked against features.json /
+# graph.json / invariants / behavior-matrix / the public changelog / the
+# product checkout. contradicted -> PR converted to draft + labeled
+# claims:contradicted + Slack; unverified -> flagged in the PR body. The gate
+# never fails this job (continue-on-error) — a verifier outage is reported,
+# not retried as a spec-draft failure.
+#
+# Three early exits exist besides UNFIT (see agents/spec-drafter/CLAUDE.md
+# "Result lines"): GROOMING_BLOCKER (ticket contradicts itself or its cited
+# source -> labeled groom:redo + dequeued),
+# CLARIFY_NEEDED (one scope question posted -> claim parked as
+# spec-clarify-pending; a human answers on the ticket and re-dispatches this
+# workflow with the same inputs), DEPENDENCY_BLOCKED (prerequisite unlanded
+# -> abandoned with blocked_by + dequeued; re-queue when it lands).
+#
+# Ticket comments: this workflow never posts a narrative comment. Every
+# outcome — spec PR opened, retry, abandon, fast path, parked — is a rewrite
+# of the ticket's status card (scripts/status-card.py, created by intake).
+# The drafter's token is READ-ONLY on the ticket repo; anything it wants a
+# human to read goes to /tmp/ticket-outbox/ and the workflow posts only the
+# allowed kinds (@-mention questions, intent note, blocker quote). Without this, one retry loop once collected
+# 22 bot comments.
 
 on:
   workflow_dispatch:
@@ -15,107 +45,449 @@ on:
       branch:
         description: "Reserved implementation branch (agent/<issue>-<slug>)"
         required: true
+      repo:
+        description: "Implementation repo short name (e.g. example-app-sdk-js). Where the branch, code, and PR land — often not the repo the ticket is filed in."
+        required: false
+        default: example-app-core
 
 permissions:
   contents: read
 
 concurrency:
-  group: spec-draft-${{ inputs.issue }}
+  # One draft per claim, claims in parallel. The old global
+  # single slot dated to a low API rate-limit tier (~5 concurrent
+  # sessions); size `wip_cap` to your current tier, since a draft consumes a
+  # meaningful slice of per-minute token budget. wip_cap in state/queue.json is the only bound: intake
+  # never holds more active claims than that. A global group would also
+  # make GitHub cancel every pending run but the newest.
+  group: spec-draft-${{ inputs.issue }}-${{ inputs.repo }}
   cancel-in-progress: false
 
 env:
-  PRODUCT_REPO: <YOUR_ORG>/example-app-core
+  # Two repos, deliberately distinct. TICKET_REPO is where the issue lives
+  # (always example-app-core — team tickets are filed there whatever repo the
+  # work touches). IMPL_REPO is where the branch, code, and PR land.
+  TICKET_REPO: <YOUR_ORG>/example-app-core
+  IMPL_REPO: <YOUR_ORG>/${{ inputs.repo }}
 
 jobs:
   spec:
     if: vars.AGENT_OPS_PAUSED != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40   # was 30; code-verification + dependency walk add turns
     permissions:
       contents: write   # queue transitions + sessions/ transcript
       actions: write    # dispatch implement.yml on the fast path
     steps:
       - uses: actions/checkout@v4
 
+      # Configured unconditionally, before any step that can fail: every
+      # always()-gated step downstream (failure handling, sessions/ commit,
+      # chaining) commits to this checkout, and a missing git identity fails
+      # that commit silently (caller wraps it in `|| true`), leaving state
+      # changes staged-but-uncommitted-and-unpushed. A later step then reads
+      # that same local, never-pushed copy and can act on it as if it were
+      # durable — see the incident this fixed (agent-ops retry-loop postmortem).
+      - uses: ./.github/actions/bot-identity
+
       - name: Gate on required secrets
         id: gate
         env:
           A: ${{ secrets.ANTHROPIC_API_KEY }}
-          B: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
-          C: ${{ secrets.PRODUCT_REPOS_PAT }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
         run: |
           MISSING=""
           [ -z "$A" ] && MISSING="$MISSING ANTHROPIC_API_KEY"
-          [ -z "$B" ] && MISSING="$MISSING INTERNAL_DOCS_PR_PAT"
-          [ -z "$C" ] && MISSING="$MISSING PRODUCT_REPOS_PAT"
+          [ -z "$K" ] && MISSING="$MISSING BOT_APP_PRIVATE_KEY"
+          [ -z "$C" ] && MISSING="$MISSING BOT_APP_CLIENT_ID"
           if [ -n "$MISSING" ]; then
-            echo "Missing secrets (issue #1):$MISSING — spec-draft is a no-op."
+            echo "Missing secrets/vars (SETUP.md §2):$MISSING — spec-draft is a no-op."
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
+
+      # A run whose `repo` input does not match a live claim cannot record
+      # its own outcome: update-claim.sh keys on (issue, impl_repo) and exits
+      # 1 at the very END of the job, after the drafting spend and after a
+      # spec PR has been opened against ground truth read from the wrong
+      # repo. Assert the pairing up front so a misrouted dispatch costs
+      # seconds instead of a bogus spec PR and an untracked claim.
+      - name: Assert a claim exists for this (issue, repo)
+        id: assert
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          if ! jq -e --argjson n "${{ inputs.issue }}" --arg r "$IMPL_REPO" \
+            'any(.claims[]; .issue == $n and .impl_repo == $r
+                 and (.status | IN("claimed", "spec-clarify-pending")))' \
+            state/queue.json >/dev/null; then
+            echo "::error::No claimable entry for #${{ inputs.issue }} in $IMPL_REPO." \
+                 "state/queue.json holds: $(jq -c '[.claims[] | {issue, impl_repo, status}]' state/queue.json)." \
+                 "The dispatcher passed repo='${{ inputs.repo }}' — check that it forwards the claim's impl_repo."
+            exit 1
+          fi
+          echo "Claim confirmed: #${{ inputs.issue }} -> $IMPL_REPO"
+
+      - name: Mint internal-docs token (spec PR write)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write   # claim-verify labels on the spec PR
+
+      - name: Mint ticket-repo token (issue read + queue)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-product
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-contents: read
+          permission-issues: write
+
+      # The drafter's own ticket-repo token: READ-ONLY. It reads the ticket and
+      # its comments; it cannot post. Human-facing comments go through the
+      # outbox step below, which enforces what may be posted. The write token
+      # (bot-product) stays with the workflow's own steps.
+      - name: Mint ticket-repo token for the drafter (read-only)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-product-ro
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-contents: read
+          permission-issues: read
+
+      # Separate token for the implementation repo: the drafter reads it as
+      # ground truth. contents:read only — the spec stage never writes code.
+      - name: Mint impl-repo token (read-only ground truth)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-impl
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }}
+          permission-contents: read
 
       - name: Checkout internal-docs
         if: steps.gate.outputs.go == 'true'
         uses: actions/checkout@v4
         with:
           repository: <YOUR_ORG>/internal-docs
-          token: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
+          token: ${{ steps.bot-docs.outputs.token }}
           path: internal-docs
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout implementation repo (read-only ground truth)
+        # The drafter greps this for constants, defaults, env vars, routes,
+        # error-catalog entries and cites path:line instead of writing
+        # "confirm before implementing". Shallow, credentials dropped: the
+        # token is contents:read and the prompt forbids writes anyway.
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IMPL_REPO }}
+          token: ${{ steps.bot-impl.outputs.token }}
+          path: product
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Set up Claude Code
         if: steps.gate.outputs.go == 'true'
-        run: npm install -g @anthropic-ai/claude-code@latest
+        uses: ./.github/actions/setup-claude
+
+      - name: Install spec-lint dependency
+        # The drafter self-checks its spec with internal-docs/scripts/spec-lint.py
+        # (step 10 of agents/spec-drafter/CLAUDE.md) before opening the PR.
+        if: steps.gate.outputs.go == 'true'
+        run: pip install --quiet pyyaml
 
       - name: Draft spec
         if: steps.gate.outputs.go == 'true'
         id: draft
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
-          INTERNAL_DOCS_TOKEN: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          GH_TOKEN: ${{ steps.bot-product-ro.outputs.token }}
+          INTERNAL_DOCS_TOKEN: ${{ steps.bot-docs.outputs.token }}
           ISSUE_NUMBER: ${{ inputs.issue }}
           BRANCH: ${{ inputs.branch }}
+          DRAIN_MODE: ${{ vars.DRAIN_MODE }}
         run: |
-          git -C internal-docs config user.name "example-app-eng-bot"
-          git -C internal-docs config user.email "example-app-eng-bot@users.noreply.github.com"
-          claude -p "$(cat agents/spec-drafter/CLAUDE.md)" \
+          # Wire internal-docs remote with the write token so the drafter can
+          # push its spec branch and open a PR.
+          git -C internal-docs remote set-url origin \
+            "https://x-access-token:${INTERNAL_DOCS_TOKEN}@github.com/<YOUR_ORG>/internal-docs.git"
+          # Human-facing ticket comments are files here; the next step posts
+          # the allowed ones. The drafter's GH_TOKEN cannot comment.
+          mkdir -p /tmp/ticket-outbox
+          bash scripts/run-claude.sh /tmp/spec.stream.jsonl "$(cat agents/spec-drafter/CLAUDE.md)
+
+          Task: draft the spec for ticket $TICKET_REPO#$ISSUE_NUMBER (implementation repo $IMPL_REPO, branch $BRANCH) and open the spec PR, or emit the RESULT the situation calls for (FAST_PATH, GROOMING_BLOCKER, CLARIFY_NEEDED, DEPENDENCY_BLOCKED, UNFIT).
+          Inputs at: ./internal-docs (write-enabled checkout); ./product (read-only checkout of $IMPL_REPO); ./guards/${{ inputs.repo }}.paths; ./agents/spec-drafter/named-people.yaml
+          Write output to: internal-docs/07-engineering-docs/specs/features/<issue>-<slug>.md on branch spec/<issue>-<slug>, pushed, with the spec PR opened
+          Ticket comments: you cannot post on the ticket. Write anything a human must read to /tmp/ticket-outbox/ per the Outbox section; never narrate progress there or anywhere else.
+          End with exactly one RESULT: line (preceded by a SPEC_PATH: line when RESULT is SPEC_PR)." \
             --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
-            --model claude-sonnet-4-6 \
-            --max-turns 80 \
-            --output-format stream-json --verbose > /tmp/spec.stream.jsonl
+            --model claude-opus-5-5 \
+            --max-turns 120
           FINAL=$(jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/spec.stream.jsonl)
           echo "$FINAL"
-          echo "result=$(grep -o '^RESULT: [A-Z_]*' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-          echo "spec_pr=$(grep '^RESULT: SPEC_PR ' <<<"$FINAL" | tail -1 | awk '{print $3}')" >> "$GITHUB_OUTPUT"
-          echo "spec_path=$(grep '^SPEC_PATH: ' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+          # One tested parser for every node's RESULT line (scripts/result-line.sh):
+          # markdown wrappers stripped, the underscore inside SPEC_PR / FAST_PATH /
+          # DEPENDENCY_BLOCKED kept. The previous inline strip deleted it and
+          # every underscore-bearing result read as "No RESULT line".
+          bash scripts/result-line.sh /tmp/spec.stream.jsonl | tee -a "$GITHUB_OUTPUT" > /tmp/spec.result
+          RESULT=$(sed -n 's/^result=//p' /tmp/spec.result)
+          DETAIL=$(sed -n 's/^result_detail=//p' /tmp/spec.result)
+          SPEC_PR=""; [ "$RESULT" = "SPEC_PR" ] && SPEC_PR="${DETAIL%% *}"
+          echo "spec_pr=$SPEC_PR" >> "$GITHUB_OUTPUT"
+          echo "spec_path=$(sed -E 's/[`*]//g' <<<"$FINAL" | grep -E '^[[:space:]]*SPEC_PATH:' | tail -1 | sed -E 's/^[[:space:]]*SPEC_PATH:[[:space:]]*//' | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      # The only path from the model to a new ticket comment. status-card.py
+      # post-outbox posts question-<handle>.md (handle in named-people.yaml,
+      # body @-mentions it), intent-note.md (FAST_PATH only), clarify.md
+      # (CLARIFY_NEEDED only), blocker.md (GROOMING_BLOCKER / DEPENDENCY_BLOCKED
+      # / UNFIT only); drops everything else; defangs unknown @handles; skips a
+      # body already on the ticket (a retry re-asking the same question); and
+      # records each post on the status card's history.
+      - name: Post the drafter's outbox to the ticket
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot-product.outputs.token }}
+          ISSUE: ${{ inputs.issue }}
+          RESULT: ${{ steps.draft.outputs.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/status-card.py post-outbox --repo "$TICKET_REPO" --issue "$ISSUE" --impl-repo "$IMPL_REPO" \
+            --dir /tmp/ticket-outbox --result "$RESULT" --people agents/spec-drafter/named-people.yaml --run-url "$RUN_URL"
+
+      - name: Checkout example-app-docs (public, read-only — changelog for claim-verify)
+        if: steps.draft.outputs.result == 'SPEC_PR'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/example-app-docs
+          path: docs-public
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Claim-verify the spec (fresh context)
+        # Reads the spec exactly as pushed on spec/<issue>-<slug>, runs the
+        # deterministic pre-pass, then the claim-verifier, then aggregates.
+        # continue-on-error: a gate outage must not turn into a spec-draft
+        # retry — the act step reports an empty verdict instead.
+        if: steps.draft.outputs.result == 'SPEC_PR'
+        id: verify
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          SPEC_PATH: ${{ steps.draft.outputs.spec_path }}
+          BRANCH: ${{ inputs.branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -o pipefail
+          [ -n "$SPEC_PATH" ] || { echo "::error::drafter printed SPEC_PR without SPEC_PATH"; exit 1; }
+          SPEC_BRANCH="spec/${BRANCH#agent/}"
+          mkdir -p /tmp/claim-verify
+          git -C internal-docs fetch -q origin "$SPEC_BRANCH" 2>/dev/null || true
+          if ! git -C internal-docs show "origin/$SPEC_BRANCH:$SPEC_PATH" > /tmp/claim-verify/artifact.md 2>/dev/null; then
+            cp "internal-docs/$SPEC_PATH" /tmp/claim-verify/artifact.md
+          fi
+          python3 scripts/verify-claims.py sources \
+            --internal-docs internal-docs --docs-repo docs-public --out /tmp/claim-verify/sources
+          python3 scripts/verify-claims.py extract --kind spec \
+            --artifact /tmp/claim-verify/artifact.md --artifact-ref "$SPEC_PATH" \
+            --sources /tmp/claim-verify/sources --product product --internal-docs internal-docs \
+            --agent-ops . \
+            --out /tmp/claim-verify/claims.json
+          jq -n --arg k spec --arg ref "$SPEC_PATH" --arg url "$RUN_URL" \
+            '{artifact_kind: $k, artifact_ref: $ref, run_url: $url}' > /tmp/claim-verify/run-meta.json
+          bash scripts/run-claude.sh /tmp/claim-verify.stream.jsonl "$(cat agents/claim-verifier/CLAUDE.md)
+
+          Inputs at: /tmp/claim-verify
+          Write verdict to: /tmp/claim-verify/verdict.json" \
+            --allowedTools "Bash,Read,Write,Glob,Grep" \
+            --model claude-opus-5-5 \
+            --max-turns 40 \
+            || echo "::warning::claim-verifier errored — pending claims will aggregate as unverified"
+          jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/claim-verify.stream.jsonl | tail -2
+          python3 scripts/verify-claims.py aggregate \
+            --claims /tmp/claim-verify/claims.json --model-verdict /tmp/claim-verify/verdict.json \
+            --run-url "$RUN_URL" --out /tmp/claim-verify/final.json --md /tmp/claim-verify/final.md
+          echo "verdict=$(jq -r .verdict /tmp/claim-verify/final.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Act on claim verdict
+        # verified  -> verification block appended to the PR body
+        # unverified -> block appended + label claims:unverified
+        # contradicted -> block appended + PR converted to draft + label
+        #                 claims:contradicted + PR comment + Slack. The bot
+        #                 opened the PR so it cannot request-changes on it;
+        #                 draft state is what blocks merge until a human acts.
+        if: steps.draft.outputs.result == 'SPEC_PR'
+        id: act
+        env:
+          GH_TOKEN: ${{ steps.bot-docs.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          VERDICT: ${{ steps.verify.outputs.verdict }}
+          SPEC_PR: ${{ steps.draft.outputs.spec_pr }}
+          ISSUE: ${{ inputs.issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          DOCS_REPO=<YOUR_ORG>/internal-docs
+          PR_NUM="${SPEC_PR##*/}"
+          if [ -z "$VERDICT" ] || [ ! -s /tmp/claim-verify/final.md ]; then
+            echo "::warning::claim-verify did not complete for $SPEC_PR — spec is unverified"
+            bash scripts/slack-alert.sh ":warning: claim-verify errored on spec PR $SPEC_PR ($TICKET_REPO#$ISSUE) — the spec's claims were NOT checked. $RUN_URL"
+            echo "verdict=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh label create -R "$DOCS_REPO" "claims:contradicted" --color B60205 \
+            --description "claim-verifier: a factual claim contradicts a canonical source — resolve before approving" 2>/dev/null || true
+          gh label create -R "$DOCS_REPO" "claims:unverified" --color FBCA04 \
+            --description "claim-verifier: one or more claims could not be confirmed against canonical sources" 2>/dev/null || true
+          gh pr view "$PR_NUM" -R "$DOCS_REPO" --json body --jq .body > /tmp/pr-body.md
+          python3 scripts/verify-claims.py patch-body --body /tmp/pr-body.md --md /tmp/claim-verify/final.md
+          gh pr edit "$PR_NUM" -R "$DOCS_REPO" --body-file /tmp/pr-body.md
+          case "$VERDICT" in
+            contradicted)
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --add-label "claims:contradicted" || true
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --remove-label "claims:unverified" 2>/dev/null || true
+              gh pr ready "$PR_NUM" -R "$DOCS_REPO" --undo || echo "::warning::could not convert $SPEC_PR to draft"
+              { echo "**Claim verification found contradicted claims — this PR was converted to draft.** Resolve each item (fix the spec, or overrule with a source) then mark ready for review."; echo; cat /tmp/claim-verify/final.md; } > /tmp/claim-comment.md
+              gh pr comment "$PR_NUM" -R "$DOCS_REPO" --body-file /tmp/claim-comment.md || true
+              N=$(jq -r .counts.contradicted /tmp/claim-verify/final.json)
+              bash scripts/slack-alert.sh ":no_entry_sign: claim-verify: spec PR $SPEC_PR ($TICKET_REPO#$ISSUE) has $N contradicted claim(s) — converted to draft, labeled claims:contradicted. $RUN_URL"
+              ;;
+            unverified)
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --add-label "claims:unverified" || true
+              ;;
+            verified)
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --remove-label "claims:unverified" 2>/dev/null || true
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --remove-label "claims:contradicted" 2>/dev/null || true
+              ;;
+          esac
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/spec.stream.jsonl /tmp/claim-verify.stream.jsonl
 
       - name: Record claim transition
         if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PRODUCT_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          PRODUCT_TOKEN: ${{ steps.bot-product.outputs.token }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           ISSUE: ${{ inputs.issue }}
           BRANCH: ${{ inputs.branch }}
           RESULT: ${{ steps.draft.outputs.result }}
+          RESULT_DETAIL: ${{ steps.draft.outputs.result_detail }}
           SPEC_PATH: ${{ steps.draft.outputs.spec_path }}
+          SPEC_PR_URL: ${{ steps.draft.outputs.spec_pr }}
+          CLAIM_VERDICT: ${{ steps.act.outputs.verdict }}
+          DRAIN_MODE: ${{ vars.DRAIN_MODE }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          # Product-repo label ops use the App token; gh workflow run below uses GITHUB_TOKEN.
+          dequeue() { GH_TOKEN="$PRODUCT_TOKEN" gh api -X DELETE "repos/$TICKET_REPO/issues/$ISSUE/labels/agent%3Aqueued" >/dev/null || true; }
+          # The ticket's status card mirrors every queue transition below.
+          card() { GH_TOKEN="$PRODUCT_TOKEN" python3 scripts/status-card.py upsert --repo "$TICKET_REPO" --issue "$ISSUE" --impl-repo "$IMPL_REPO" --run-url "$RUN_URL" "$@"; }
           case "$RESULT" in
             FAST_PATH)
-              bash scripts/update-claim.sh "$ISSUE" spec-approved '{"spec_fast_path": true}'
-              gh workflow run implement.yml -f issue="$ISSUE" -f branch="$BRANCH"
+              # During a spec-only drain (vars.DRAIN_MODE=true) we treat the
+              # fast-path intent note as the harvested artifact and stop —
+              # implement.yml stays parked. Outside drain mode this is the
+              # normal fast-path: mark spec-approved and dispatch implement.
+              if [ "${DRAIN_MODE:-false}" = "true" ]; then
+                echo "DRAIN_MODE: fast-path intent note posted on #$ISSUE; skipping implement dispatch."
+                bash scripts/update-claim.sh "$ISSUE" abandoned \
+                  '{"spec_fast_path": true, "abandoned_reason": "drain-mode: fast-path intent note harvested, implement not dispatched"}'
+                card --event fast-path --status abandoned --set spec_fast_path=true \
+                  --set "abandoned_reason=drain-mode: fast-path intent note harvested, implement not dispatched" \
+                  --note "fast path in DRAIN_MODE — intent note harvested, implement not dispatched"
+              else
+                bash scripts/update-claim.sh "$ISSUE" spec-approved '{"spec_fast_path": true}'
+                gh workflow run implement.yml -f issue="$ISSUE" -f branch="$BRANCH" -f repo="${{ inputs.repo }}"
+                card --event fast-path --status spec-approved --set spec_fast_path=true \
+                  --note "fast path — intent note is the comment above; implement dispatched"
+              fi
               ;;
             SPEC_PR)
+              # spec_pr is what spec-pending-reap keys on: a ticket fanned out
+              # across repos has one spec PR per claim and matching by the
+              # spec/<issue>- branch prefix alone would reap them all together.
               bash scripts/update-claim.sh "$ISSUE" spec-pending \
-                "$(jq -n --arg p "$SPEC_PATH" '{spec_path: $p}')"
+                "$(jq -n --arg p "$SPEC_PATH" --arg u "$SPEC_PR_URL" --arg v "$CLAIM_VERDICT" \
+                   '{spec_path: $p}
+                    + (if $u != "" then {spec_pr: $u} else {} end)
+                    + (if $v != "" then {claim_verification: $v} else {} end)')"
+              card --event spec-pr-opened --status spec-pending --set "spec_pr=$SPEC_PR_URL" \
+                --set "spec_path=$SPEC_PATH" --set "claim_verification=$CLAIM_VERDICT" \
+                --note "spec PR open — merging it is the approval${CLAIM_VERDICT:+; claim-verify: $CLAIM_VERDICT}"
               ;;
             UNFIT)
               bash scripts/update-claim.sh "$ISSUE" abandoned '{"abandoned_reason": "spec-drafter: unfit for claude-led work"}'
-              bash scripts/slack-alert.sh ":no_entry: spec-draft marked $PRODUCT_REPO#$ISSUE unfit for claude-led work — needs mode re-triage."
+              card --event unfit --status abandoned --set "abandoned_reason=spec-drafter: unfit for claude-led work — $RESULT_DETAIL" \
+                --note "needs mode re-triage (the drafter's reasoning is in its comment above)"
+              bash scripts/slack-alert.sh ":no_entry: spec-draft marked $TICKET_REPO#$ISSUE unfit for claude-led work — needs mode re-triage."
+              ;;
+            GROOMING_BLOCKER)
+              # Ticket contradicts itself or its cited source. The drafter
+              # already commented the two conflicting statements. Hand it
+              # back to grooming and stop intake from re-claiming it.
+              bash scripts/update-claim.sh "$ISSUE" abandoned \
+                "$(jq -n --arg r "spec-drafter: grooming blocker — $RESULT_DETAIL" '{abandoned_reason: $r}')"
+              card --event grooming-blocker --status abandoned \
+                --set "abandoned_reason=spec-drafter: grooming blocker — $RESULT_DETAIL" \
+                --note "labeled groom:redo and dequeued — the conflicting statements are quoted in the drafter's comment above"
+              GH_TOKEN="$PRODUCT_TOKEN" gh api -X POST "repos/$TICKET_REPO/issues/$ISSUE/labels" \
+                -f "labels[]=groom:redo" >/dev/null || true
+              dequeue
+              bash scripts/slack-alert.sh ":triangular_flag_on_post: spec-draft hit a grooming blocker on $TICKET_REPO#$ISSUE — labeled groom:redo, dequeued. $RESULT_DETAIL"
+              ;;
+            CLARIFY_NEEDED)
+              # One scope question is on the ticket. Park the claim: it
+              # holds no WIP slot and intake skips it. To resume, answer on
+              # the ticket and re-run this workflow with the same inputs.
+              bash scripts/update-claim.sh "$ISSUE" spec-clarify-pending \
+                "$(jq -n --arg r "$RESULT_DETAIL" '{clarify_reason: $r}')"
+              card --event clarify-needed --status spec-clarify-pending --set "clarify_reason=$RESULT_DETAIL" \
+                --note "parked — answer the question above, then: gh workflow run spec-draft.yml -f issue=$ISSUE -f branch=$BRANCH -f repo=${{ inputs.repo }}"
+              bash scripts/slack-alert.sh ":grey_question: spec-draft parked $TICKET_REPO#$ISSUE on one clarifying question — answer on the ticket, then: gh workflow run spec-draft.yml -f issue=$ISSUE -f branch=$BRANCH -f repo=${{ inputs.repo }}"
+              ;;
+            DEPENDENCY_BLOCKED)
+              # A named prerequisite hasn't landed and nothing meaningful is
+              # implementable without it. Abandon with the ref and the
+              # blocker's owner (design note A4: `owner:<handle>` trailer on
+              # the RESULT line, `unassigned` when the drafter could not
+              # resolve one); dequeue so intake doesn't loop on it.
+              OWNER=$(grep -oE 'owner:[A-Za-z0-9_-]+' <<<"$RESULT_DETAIL" | head -1 | cut -d: -f2)
+              BLOCKER=$(sed -E 's/ *owner:[A-Za-z0-9_-]+//' <<<"$RESULT_DETAIL" | sed 's/[[:space:]]*$//')
+              bash scripts/update-claim.sh "$ISSUE" abandoned \
+                "$(jq -n --arg b "$BLOCKER" --arg o "${OWNER:-unassigned}" --arg r "spec-drafter: blocked by $BLOCKER" '{abandoned_reason: $r, blocked_by: $b, blocked_owner: $o}')"
+              card --event dependency-blocked --status abandoned --set "blocked_by=$BLOCKER" \
+                --set "abandoned_reason=spec-drafter: blocked by $BLOCKER (owner: ${OWNER:-unassigned})" \
+                --note "dequeued — re-add agent:queued once $BLOCKER lands"
+              dequeue
+              bash scripts/slack-alert.sh ":hourglass_flowing_sand: spec-draft found $TICKET_REPO#$ISSUE blocked by $BLOCKER (owner: ${OWNER:-unassigned}) — dequeued; re-add agent:queued once it lands."
               ;;
             *)
               echo "::error::No RESULT line from spec-drafter"
@@ -130,23 +502,80 @@ jobs:
           mkdir -p "sessions/$WEEK"
           sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
             /tmp/spec.stream.jsonl > "sessions/$WEEK/spec-${{ inputs.issue }}.stream.jsonl" || true
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          if [ -s /tmp/claim-verify.stream.jsonl ]; then
+            sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+              /tmp/claim-verify.stream.jsonl > "sessions/$WEEK/claim-verify-${{ inputs.issue }}.stream.jsonl" || true
+          fi
           git add "sessions/$WEEK" && git commit -m "sessions: spec-draft #${{ inputs.issue }}" || exit 0
-          for i in 1 2 3; do git push && break || git pull --rebase origin main; done
+          # Parallel drafts push to main at the same time; the files are
+          # per-issue, so rebases are clean — just allow more races.
+          for i in 1 2 3 4 5 6; do
+            if git push; then
+              break
+            else
+              sleep $((i + RANDOM % 3))
+              git pull --rebase origin main
+            fi
+          done
 
-      - name: Abandon claim on failure
-        if: failure() && steps.gate.outputs.go == 'true'
+      - name: Mint product-repo token (failure comment)
+        # Excludes an assert-claim-exists failure: that's a misdispatch (the
+        # claim already moved past "claimed"), not a spec-drafter failure —
+        # retrying it can never succeed and previously caused an unbounded
+        # retry loop (see "Handle claim on failure" below).
+        if: failure() && steps.gate.outputs.go == 'true' && steps.assert.outcome != 'failure'
+        id: bot-fail
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-issues: write
+
+      - name: Handle claim on failure (retry up to MAX_RETRIES, then abandon)
+        if: failure() && steps.gate.outputs.go == 'true' && steps.assert.outcome != 'failure'
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot-fail.outputs.token }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           ISSUE: ${{ inputs.issue }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MAX_RETRIES: "3"
         run: |
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
           git pull --rebase origin main || true
-          bash scripts/update-claim.sh "$ISSUE" abandoned '{"abandoned_reason": "spec-draft run failed"}' || true
-          gh api -X POST "repos/$PRODUCT_REPO/issues/$ISSUE/comments" \
-            -f body="Spec draft failed ([run]($RUN_URL)). Claim abandoned — re-add \`agent:queued\` to retry." || true
-          bash scripts/slack-alert.sh ":x: spec-draft failed for $PRODUCT_REPO#$ISSUE — claim abandoned. $RUN_URL"
+          card() { python3 scripts/status-card.py upsert --repo "$TICKET_REPO" --issue "$ISSUE" --impl-repo "$IMPL_REPO" --run-url "$RUN_URL" "$@"; }
+          # Read current retry_count for this issue's claim
+          CURRENT=$(jq -r --argjson n "$ISSUE" --arg r "$IMPL_REPO" '[.claims[] | select(.issue == $n and .impl_repo == $r)] | last | .retry_count // 0' state/queue.json)
+          NEXT=$((CURRENT + 1))
+          if [ "$NEXT" -ge "$MAX_RETRIES" ]; then
+            # Exhausted retries — abandon, remove agent:queued to prevent intake re-loop.
+            bash scripts/update-claim.sh "$ISSUE" abandoned \
+              "$(jq -n --arg r "spec-draft failed after $NEXT attempts" --argjson n "$NEXT" '{abandoned_reason: $r, retry_count: $n}')" || true
+            gh api -X DELETE "repos/$TICKET_REPO/issues/$ISSUE/labels/agent%3Aqueued" || true
+            card --event spec-draft-failed --status abandoned --set "retry_count=$NEXT" \
+              --set "abandoned_reason=spec-draft failed after $NEXT attempts" \
+              --note "attempt $NEXT failed — retries exhausted; agent:queued removed. Read the run before re-queuing"
+          else
+            # Retry — bump retry_count, status unchanged (still `claimed`; the
+            # orchestrator re-dispatches from that). This is a patch-only call:
+            # `claimed -> claimed` is not an edge in transitions.json, so the
+            # previous `update-claim.sh "$ISSUE" claimed` was rejected as
+            # illegal, swallowed by `|| true`, and the counter never advanced —
+            # the ticket once reported "attempt 1 failed" twelve times.
+            bash scripts/update-claim.sh "$ISSUE" - \
+              "$(jq -n --argjson n "$NEXT" '{retry_count: $n}')" || true
+            card --event spec-draft-failed --set "retry_count=$NEXT" \
+              --note "attempt $NEXT failed — retrying automatically ($NEXT/$MAX_RETRIES retries used)"
+          fi
+          # Route around alert fatigue on systemic failures: if the transcript
+          # shows a known infrastructure-class signature (tier limit, credit
+          # balance, auth error, provider overload), the per-issue Slack is
+          # noise — every ticket in the batch is failing for the same reason.
+          # Log the reason to the workflow and skip Slack. pipeline-heartbeat
+          # will still surface the failure through its scheduled digest.
+          if SYSTEMIC=$(bash scripts/is-systemic-failure.sh /tmp/spec.stream.jsonl); then
+            echo "::warning::Suppressing per-issue Slack alert — systemic failure detected: $SYSTEMIC"
+          else
+            bash scripts/slack-alert.sh ":x: spec-draft failed for $TICKET_REPO#$ISSUE — claim abandoned. $RUN_URL"
+          fi

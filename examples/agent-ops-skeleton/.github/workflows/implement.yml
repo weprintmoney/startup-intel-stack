@@ -2,13 +2,28 @@ name: Implement
 
 # Stages 3–5 of the coding loop, one job per stage so failures localize in
 # the Actions DAG and every reviewer is a genuinely fresh context:
-#   implement      -> code on agent/<issue>-<slug> (branch = checkpoint)
+#   plan           -> plan.md + spec.md on agent/<issue>-<slug> (checklist
+#                     the executor mechanically cannot skip; skipped if
+#                     plan.md already exists on the branch)
+#   implement      -> code on agent/<issue>-<slug> (branch = checkpoint),
+#                     checks off plan.md acceptance criteria in place
 #   review-generic -> fresh claude -p, sees only diff + spec + ticket
-#   review-founder-voice     -> fresh Opus invocation, the founder-voice review, same inputs
+#   review-founder-voice     -> fresh Opus invocation, founder-voice review, same inputs
 #   open-pr        -> implementer addresses/rebuts findings, then the PR
 #                     opens with both reviews + responses attached verbatim
 #   record         -> scrubbed transcripts to sessions/YYYY-WW/
-#   on failure     -> claim abandoned + issue comment + Slack alert
+#   on failure     -> if the implementer never ran (failed at claim-marking,
+#                     checkout, or branch-resume: no cost, no branch commits),
+#                     the claim is left in place and only Slack is told;
+#                     otherwise the claim is abandoned + Slack alert. Either
+#                     way the ticket's status card (scripts/status-card.py,
+#                     the one bot comment per claim) is rewritten — no stage
+#                     here posts a comment of its own
+#   hand-off       -> a .github/workflows/ file the App cannot push
+#                     (Workflows:write withheld by decision, #61) is lifted
+#                     off the branch and attached to the PR for a human to
+#                     add; the PR opens labeled agent:needs-human instead of
+#                     the run failing with the deliverable stranded
 # Dispatching this workflow is the human approval act for a pending spec.
 # Degrades gracefully pre-setup: missing secrets -> no-op with a notice.
 
@@ -21,24 +36,31 @@ on:
       branch:
         description: "Implementation branch (agent/<issue>-<slug>)"
         required: true
+      repo:
+        description: "Implementation repo short name (e.g. example-app-sdk-js). Where the branch, code, and PR land — often not the repo the ticket is filed in."
+        required: false
+        default: example-app-core
 
 permissions:
   contents: read
 
 concurrency:
-  group: implement-${{ inputs.issue }}
+  group: implement-${{ inputs.issue }}-${{ inputs.repo }}
   cancel-in-progress: false
 
 env:
-  PRODUCT_REPO: <YOUR_ORG>/example-app-core
+  # TICKET_REPO = where the issue lives (always example-app-core).
+  # IMPL_REPO   = where the branch, commits, and PR land.
+  TICKET_REPO: <YOUR_ORG>/example-app-core
+  IMPL_REPO: <YOUR_ORG>/${{ inputs.repo }}
 
 jobs:
-  implement:
+  plan:
     if: vars.AGENT_OPS_PAUSED != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     permissions:
-      contents: write   # queue transition
+      contents: read
     outputs:
       go: ${{ steps.gate.outputs.go }}
       result: ${{ steps.run.outputs.result }}
@@ -49,52 +71,78 @@ jobs:
         id: gate
         env:
           A: ${{ secrets.ANTHROPIC_API_KEY }}
-          B: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
-          C: ${{ secrets.PRODUCT_REPOS_PAT }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
         run: |
           MISSING=""
           [ -z "$A" ] && MISSING="$MISSING ANTHROPIC_API_KEY"
-          [ -z "$B" ] && MISSING="$MISSING INTERNAL_DOCS_RO_PAT"
-          [ -z "$C" ] && MISSING="$MISSING PRODUCT_REPOS_PAT"
+          [ -z "$K" ] && MISSING="$MISSING BOT_APP_PRIVATE_KEY"
+          [ -z "$C" ] && MISSING="$MISSING BOT_APP_CLIENT_ID"
           if [ -n "$MISSING" ]; then
-            echo "Missing secrets (issue #1):$MISSING — implement is a no-op."
+            echo "Missing secrets/vars (SETUP.md §2):$MISSING — plan is a no-op."
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Mark claim implementing
+      # Covers example-app-core as well: the plan drafter reads the ticket from
+      # TICKET_REPO with this token, and a token scoped to the implementation
+      # repo alone cannot see a private core issue (the drafter then has to
+      # recover from the spec alone, which it should never need to).
+      - name: Mint product-repo token (write)
         if: steps.gate.outputs.go == 'true'
-        run: |
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
-          bash scripts/update-claim.sh "${{ inputs.issue }}" implementing
+        id: bot-product
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }},example-app-core
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Mint internal-docs token (read)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
 
       - name: Checkout product repo
         if: steps.gate.outputs.go == 'true'
         uses: actions/checkout@v4
         with:
-          repository: <YOUR_ORG>/example-app-core
-          token: ${{ secrets.PRODUCT_REPOS_PAT }}
+          repository: ${{ env.IMPL_REPO }}
+          token: ${{ steps.bot-product.outputs.token }}
           path: product
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Checkout internal-docs (read-only)
         if: steps.gate.outputs.go == 'true'
         uses: actions/checkout@v4
         with:
           repository: <YOUR_ORG>/internal-docs
-          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          token: ${{ steps.bot-docs.outputs.token }}
           path: internal-docs
+          persist-credentials: false
+
+      - uses: ./.github/actions/bot-identity
+        if: steps.gate.outputs.go == 'true'
 
       - name: Resume or create branch
         if: steps.gate.outputs.go == 'true'
         env:
           BRANCH: ${{ inputs.branch }}
+          GH_TOKEN: ${{ steps.bot-product.outputs.token }}
         run: |
           cd product
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${IMPL_REPO}.git"
           if git fetch origin "$BRANCH" 2>/dev/null; then
             git checkout "$BRANCH"
             echo "Resuming from existing branch $BRANCH"
@@ -104,61 +152,360 @@ jobs:
 
       - name: Set up Claude Code
         if: steps.gate.outputs.go == 'true'
-        run: npm install -g @anthropic-ai/claude-code@latest
+        uses: ./.github/actions/setup-claude
 
-      - name: Run implementer
+      - name: Run plan drafter
         if: steps.gate.outputs.go == 'true'
         id: run
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          GH_TOKEN: ${{ steps.bot-product.outputs.token }}
           ISSUE_NUMBER: ${{ inputs.issue }}
           BRANCH: ${{ inputs.branch }}
         run: |
-          SPEC_PATH=$(jq -r --argjson n "${{ inputs.issue }}" \
-            '.claims[] | select(.issue == $n) | .spec_path // ""' state/queue.json)
+          # Claims are keyed by (issue, impl_repo): a ticket fanned across
+          # repos has one claim per repo, so select on both.
+          SPEC_PATH=$(jq -r --argjson n "${{ inputs.issue }}" --arg r "$IMPL_REPO" \
+            '.claims[] | select(.issue == $n and .impl_repo == $r) | .spec_path // ""' state/queue.json)
           export SPEC_PATH
-          claude -p "$(cat agents/implementer/CLAUDE.md)" \
+          if [ -f product/plan.md ]; then
+            echo "resuming existing plan — skipping plan drafter"
+            echo "result=PLANNED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          bash scripts/run-claude.sh /tmp/plan.stream.jsonl "$(cat agents/plan-drafter/CLAUDE.md)
+
+          Task: draft plan.md and spec.md for ticket $TICKET_REPO#$ISSUE_NUMBER, to be implemented in $IMPL_REPO on branch $BRANCH.
+          Inputs at: ./product (implementation checkout, branch checked out); ./internal-docs (read-only); spec at ./internal-docs/${SPEC_PATH:-<none: fast path, the intent note is on the issue>}; guards at ./guards/${{ inputs.repo }}.paths
+          Write output to: ./product/plan.md and ./product/spec.md (nothing else)
+          End with exactly one RESULT: line." \
+            --allowedTools "Bash,Read,Write,Glob,Grep" \
+            --model claude-sonnet-4-6 \
+            --max-turns 60
+          jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/plan.stream.jsonl
+          bash scripts/result-line.sh /tmp/plan.stream.jsonl | tee -a "$GITHUB_OUTPUT" > /tmp/plan.result
+          RESULT=$(sed -n 's/^result=//p' /tmp/plan.result)
+          [ "$RESULT" = "PLANNED" ] || { echo "::error::plan-drafter result: ${RESULT:-none}"; exit 1; }
+
+      - name: Enforce plan-pass write scope
+        if: steps.gate.outputs.go == 'true' && steps.run.outputs.result == 'PLANNED'
+        run: |
+          cd product
+          # Compare working-tree state (tracked + untracked) against origin/DEFAULT.
+          # Allowed paths: plan.md, spec.md, .gitignore (single-line append allowed).
+          CHANGED=$(git status --porcelain | awk '{print $2}' | sort -u)
+          echo "changed paths:"
+          echo "$CHANGED"
+          BAD=$(echo "$CHANGED" | grep -Ev '^(plan\.md|spec\.md|\.gitignore)$' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::plan pass wrote paths outside allowlist: $BAD"
+            exit 1
+          fi
+          [ -f plan.md ] || { echo "::error::plan.md missing after plan pass"; exit 1; }
+          [ -f spec.md ] || { echo "::error::spec.md missing after plan pass"; exit 1; }
+
+      - name: Commit plan artifacts to branch
+        if: steps.gate.outputs.go == 'true' && steps.run.outputs.result == 'PLANNED'
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          cd product
+          # -f: plan.md/spec.md are gitignored per agents/plan-drafter/CLAUDE.md
+          # step 7 (kept out of the review diff via the ':(exclude)' pathspec
+          # in the open-pr job below) — but they still need to be committed
+          # here so every downstream job's fresh checkout of this branch has
+          # them. Plain `git add` silently no-ops on gitignored paths, and so
+          # does `git diff` / `git ls-files --exclude-standard` when deciding
+          # whether there's "anything new" -- both are gitignore-aware and so
+          # can never see plan.md/spec.md, which is exactly what caused this
+          # step to wrongly call a fresh, uncommitted plan.md a "resume" with
+          # nothing to do. Stage first, then decide from the staged diff.
+          git add -f plan.md spec.md .gitignore
+          if git diff --cached --quiet; then
+            echo "no plan changes to commit (resumed existing plan)"
+            exit 0
+          fi
+          git commit -m "plan: draft implementation checklist for #${{ inputs.issue }}"
+          git push -u origin "$BRANCH"
+
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/plan.stream.jsonl || true
+
+      - name: Stage plan artifacts for upload
+        if: steps.gate.outputs.go == 'true' && steps.run.outputs.result == 'PLANNED'
+        run: |
+          mkdir -p /tmp/plan-artifacts
+          cp product/plan.md /tmp/plan-artifacts/plan.md
+          cp product/spec.md /tmp/plan-artifacts/spec.md
+
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.go == 'true' && steps.run.outputs.result == 'PLANNED'
+        with:
+          name: plan-artifacts
+          path: /tmp/plan-artifacts/
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.gate.outputs.go == 'true'
+        with:
+          name: transcript-plan
+          path: /tmp/plan.stream.jsonl
+          if-no-files-found: ignore
+
+  implement:
+    needs: plan
+    if: needs.plan.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write   # queue transition
+    outputs:
+      go: ${{ needs.plan.outputs.go }}
+      result: ${{ steps.run.outputs.result }}
+      result_detail: ${{ steps.run.outputs.result_detail }}
+      handoff: ${{ steps.handoff.outputs.handoff }}
+      handoff_files: ${{ steps.handoff.outputs.handoff_files }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bot-identity
+
+      - name: Mark claim implementing
+        run: bash scripts/update-claim.sh "${{ inputs.issue }}" implementing
+
+      - name: Mint ticket-repo token (status card)
+        id: bot-ticket
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-issues: write
+
+      - name: Update status card (implementing)
+        env:
+          GH_TOKEN: ${{ steps.bot-ticket.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/status-card.py upsert --repo "$TICKET_REPO" --issue "${{ inputs.issue }}" --impl-repo "$IMPL_REPO" \
+            --event implementing --status implementing --run-url "$RUN_URL" \
+            --note "plan → implement → two fresh-context reviews → PR"
+
+      - name: Mint product-repo token (checkout)
+        id: bot-checkout
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }}
+          permission-contents: write
+
+      - name: Checkout product repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IMPL_REPO }}
+          token: ${{ steps.bot-checkout.outputs.token }}
+          path: product
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resume branch (plan artifacts already committed)
+        env:
+          BRANCH: ${{ inputs.branch }}
+          GH_TOKEN: ${{ steps.bot-checkout.outputs.token }}
+        run: |
+          cd product
+          # The checkout dropped its credentials (persist-credentials: false)
+          # and bot-identity only sets the author. Give the implementer a
+          # remote it can push to instead of leaving it to improvise auth.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${IMPL_REPO}.git"
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+
+      - name: Set up Claude Code
+
+        uses: ./.github/actions/setup-claude
+
+      - name: Run implementer
+        id: run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          GH_TOKEN: ${{ steps.bot-checkout.outputs.token }}
+          ISSUE_NUMBER: ${{ inputs.issue }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          bash scripts/run-claude.sh /tmp/implement.stream.jsonl "$(cat agents/implementer/CLAUDE.md)
+
+          Task: implement ./product/plan.md for ticket $TICKET_REPO#$ISSUE_NUMBER in $IMPL_REPO on branch $BRANCH; flip every acceptance-criteria box in plan.md to [x] as you satisfy it; before each commit run the lint and format commands the repo's own CI runs (read ./product/.github/workflows/*.yml) and fix what they report; commit and push the branch.
+          Inputs at: ./product/plan.md; ./product/spec.md; ./product (branch checked out); ./guards/${{ inputs.repo }}.paths
+          Write output to: commits on branch $BRANCH, pushed to origin
+          End with exactly one RESULT: line." \
             --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
             --model claude-sonnet-4-6 \
-            --max-turns 150 \
-            --output-format stream-json --verbose > /tmp/implement.stream.jsonl
-          FINAL=$(jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/implement.stream.jsonl)
-          echo "$FINAL"
-          RESULT=$(grep -o '^RESULT: [A-Z_]*' <<<"$FINAL" | tail -1 | awk '{print $2}')
-          echo "result=$RESULT" >> "$GITHUB_OUTPUT"
-          [ "$RESULT" = "IMPLEMENTED" ] || { echo "::error::implementer result: ${RESULT:-none}"; exit 1; }
+            --max-turns 150
+          jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/implement.stream.jsonl
+          # One tested parser for every node's RESULT line (scripts/result-line.sh).
+          bash scripts/result-line.sh /tmp/implement.stream.jsonl | tee -a "$GITHUB_OUTPUT"
+          # No exit here: the hand-off step decides what a BLOCKED result
+          # means once it has looked at what is on the branch.
+
+      # Fresh token for the hand-off push: the implementer can run for the
+      # better part of an hour and the checkout-time token may be expired.
+      - name: Mint product-repo token (hand-off push)
+        id: bot-handoff
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }}
+          permission-contents: write
+
+      # The example-app-bot App withholds Workflows:write by decision (#61,
+      # option b). A push carrying a .github/workflows/ file is rejected
+      # wholesale, so the implementer's work sat on the runner ahead of
+      # origin and the run ended as a failure with the deliverable stranded
+      # (on a retry). Lift the workflow file(s) off the branch, push the
+      # rest, and hand the file(s) to a human through the PR. Keyed on what
+      # is on the branch, not on how the model phrased its RESULT.
+      - name: Hand off workflow files the App cannot push
+        id: handoff
+        env:
+          BRANCH: ${{ inputs.branch }}
+          GH_TOKEN: ${{ steps.bot-handoff.outputs.token }}
+        run: |
+          cd product
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${IMPL_REPO}.git"
+          git fetch origin "$BRANCH" --quiet
+          COMMITTED=$(git diff --name-only "origin/$BRANCH..HEAD" -- '.github/workflows/' || true)
+          UNCOMMITTED=$(git status --porcelain -- '.github/workflows/' | awk '{print $NF}')
+          FILES=$(printf '%s\n%s\n' "$COMMITTED" "$UNCOMMITTED" | sed '/^$/d' | sort -u)
+          if [ -z "$FILES" ]; then
+            echo "handoff=false" >> "$GITHUB_OUTPUT"
+            echo "no workflow files on the unpushed range; nothing to hand off"
+            exit 0
+          fi
+          mkdir -p /tmp/handoff
+          for f in $FILES; do
+            [ -f "$f" ] || continue   # a deletion has no content to hand off
+            mkdir -p "/tmp/handoff/$(dirname "$f")"
+            cp "$f" "/tmp/handoff/$f"
+          done
+          # Rebuild the unpushed work as one commit without the workflow files.
+          git reset -q --soft "origin/$BRANCH"
+          git reset -q -- .github/workflows/ || true
+          for f in $FILES; do
+            git checkout -q -- "$f" 2>/dev/null || rm -f "$f"
+          done
+          if ! git diff --cached --quiet; then
+            git commit -q -m "implement #${{ inputs.issue }} (workflow file held for a human, see PR)"
+          fi
+          git push -q origin "$BRANCH"
+          printf '%s\n' "$FILES" > /tmp/handoff/FILES
+          echo "handoff=true" >> "$GITHUB_OUTPUT"
+          echo "handoff_files=$(paste -sd, /tmp/handoff/FILES)" >> "$GITHUB_OUTPUT"
+          echo "::notice::held for a human: $(paste -sd, /tmp/handoff/FILES)"
+
+      - name: Gate on implementer result
+        env:
+          RESULT: ${{ steps.run.outputs.result }}
+          DETAIL: ${{ steps.run.outputs.result_detail }}
+          HANDOFF: ${{ steps.handoff.outputs.handoff }}
+        run: |
+          if [ "$RESULT" = "IMPLEMENTED" ]; then exit 0; fi
+          if [ "$HANDOFF" = "true" ] && grep -qi 'workflows.permission' <<<"$DETAIL"; then
+            echo "::warning::implementer stopped on the App's missing workflows permission; continuing as a human hand-off ($DETAIL)"
+            exit 0
+          fi
+          echo "::error::implementer result: ${RESULT:-none} $DETAIL"
+          exit 1
+
+      - name: Enforce acceptance-criteria checklist
+        env:
+          HANDOFF: ${{ steps.handoff.outputs.handoff }}
+        run: |
+          UNCHECKED=$(grep -c '^- \[ \]' product/plan.md || true)
+          if [ "${UNCHECKED:-0}" -gt 0 ]; then
+            if [ "$HANDOFF" = "true" ]; then
+              echo "::warning::$UNCHECKED acceptance-criteria line(s) remain unchecked; expected when the deliverable is a held workflow file. Listed on the PR."
+              grep -n '^- \[ \]' product/plan.md > /tmp/handoff/UNCHECKED || true
+            else
+              echo "::error::$UNCHECKED unchecked acceptance-criteria line(s) remain in plan.md"
+              grep -n '^- \[ \]' product/plan.md || true
+              exit 1
+            fi
+          fi
+
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/implement.stream.jsonl
+
+      # Fresh token: implement can run for the better part of an hour, so the
+      # checkout-time token may be near-expiry. Re-mint before the gh calls.
+      - name: Mint product-repo token (package review inputs)
+        id: bot-review
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }},example-app-core
+          permission-contents: read
+          permission-issues: read
 
       - name: Package review inputs
-        if: steps.gate.outputs.go == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot-review.outputs.token }}
+          HANDOFF: ${{ steps.handoff.outputs.handoff }}
         run: |
           mkdir -p /tmp/review-input
           cd product
           DEFAULT=$(git remote show origin | awk '/HEAD branch/ {print $NF}')
-          git diff "origin/$DEFAULT...HEAD" > /tmp/review-input/diff.patch
-          [ -s /tmp/review-input/diff.patch ] || { echo "::error::empty diff — nothing to review"; exit 1; }
-          cd ..
-          SPEC_PATH=$(jq -r --argjson n "${{ inputs.issue }}" \
-            '.claims[] | select(.issue == $n) | .spec_path // ""' state/queue.json)
-          if [ -n "$SPEC_PATH" ]; then
-            cp "internal-docs/$SPEC_PATH" /tmp/review-input/spec.md
-          else
-            gh issue view "${{ inputs.issue }}" -R "$PRODUCT_REPO" --json comments \
-              --jq '[.comments[].body] | join("\n\n---\n\n")' > /tmp/review-input/intent-note.md
+          # Exclude plan.md and spec.md from the review diff — they are branch
+          # artifacts (gitignored on the product repo), not code under review.
+          git diff "origin/$DEFAULT...HEAD" -- . ':(exclude)plan.md' ':(exclude)spec.md' \
+            > /tmp/review-input/diff.patch
+          if [ ! -s /tmp/review-input/diff.patch ] && [ "$HANDOFF" = "true" ]; then
+            # The whole deliverable was a workflow file the App cannot push:
+            # review the held file(s) so the human still gets two verdicts.
+            while IFS= read -r f; do
+              [ -f "/tmp/handoff/$f" ] || continue
+              git diff --no-index -- /dev/null "/tmp/handoff/$f" >> /tmp/review-input/diff.patch || true
+            done < /tmp/handoff/FILES
           fi
-          gh issue view "${{ inputs.issue }}" -R "$PRODUCT_REPO" \
+          [ -s /tmp/review-input/diff.patch ] || { echo "::error::empty diff — nothing to review"; exit 1; }
+          # spec.md lives at the branch root from the plan pass; copy it forward.
+          if [ -f spec.md ]; then
+            cp spec.md /tmp/review-input/spec.md
+          fi
+          cd ..
+          SPEC_PATH=$(jq -r --argjson n "${{ inputs.issue }}" --arg r "$IMPL_REPO" \
+            '.claims[] | select(.issue == $n and .impl_repo == $r) | .spec_path // ""' state/queue.json)
+          if [ -z "$SPEC_PATH" ]; then
+            # The bot's status card is a comment too — keep it out of the review input.
+            gh issue view "${{ inputs.issue }}" -R "$TICKET_REPO" --json comments \
+              --jq '[.comments[].body | select(contains("<!-- agent-ops:status-card") | not)] | join("\n\n---\n\n")' > /tmp/review-input/intent-note.md
+          fi
+          gh issue view "${{ inputs.issue }}" -R "$TICKET_REPO" \
             --json title,body,labels > /tmp/review-input/ticket.json
 
       - uses: actions/upload-artifact@v4
-        if: steps.gate.outputs.go == 'true'
         with:
           name: review-input
           path: /tmp/review-input/
 
       - uses: actions/upload-artifact@v4
-        if: always() && steps.gate.outputs.go == 'true'
+        if: steps.handoff.outputs.handoff == 'true'
+        with:
+          name: workflow-handoff
+          path: /tmp/handoff/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: transcript-implement
           path: /tmp/implement.stream.jsonl
@@ -169,31 +516,58 @@ jobs:
     if: needs.implement.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      verdict: ${{ steps.review.outputs.verdict }}
     steps:
       - uses: actions/checkout@v4
+      - name: Mint internal-docs token (read)
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
       - uses: actions/checkout@v4
         with:
           repository: <YOUR_ORG>/internal-docs
-          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          token: ${{ steps.bot-docs.outputs.token }}
           path: internal-docs
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: review-input
           path: /tmp/review-input
       - name: Set up Claude Code
-        run: npm install -g @anthropic-ai/claude-code@latest
+        uses: ./.github/actions/setup-claude
       - name: Fresh-context review
+        id: review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
         run: |
           mkdir -p /tmp/review-output
-          claude -p "$(cat agents/pr-reviewer/CLAUDE.md)" \
+          bash scripts/run-claude.sh /tmp/review-generic.stream.jsonl "$(cat agents/pr-reviewer/CLAUDE.md)
+
+          Task: review the diff for ticket $TICKET_REPO#${{ inputs.issue }} (implementation in $IMPL_REPO) against its spec.
+          Inputs at: /tmp/review-input (diff.patch; spec.md or intent-note.md; ticket.json); ./internal-docs (read-only)
+          Write output to: /tmp/review-output/review.md, first line VERDICT: approve or VERDICT: request-changes" \
             --allowedTools "Bash,Read,Write,Glob,Grep" \
             --model claude-sonnet-4-6 \
-            --max-turns 40 \
-            --output-format stream-json --verbose > /tmp/review-generic.stream.jsonl
+            --max-turns 40
           [ -s /tmp/review-output/review.md ] || { echo "::error::reviewer wrote no review"; exit 1; }
+          # The verdict line is the reviewer's contract; until now nothing read
+          # it, so two request-changes verdicts still opened the PR as "ready
+          # for human review".
+          V=$(bash scripts/result-line.sh --text --first /tmp/review-output/review.md VERDICT | sed -n 's/^result=//p' | grep -xE 'approve|comment|request-changes' || true)
+          [ -n "$V" ] || { echo "::error::reviewer wrote no 'VERDICT: approve|comment|request-changes' line"; head -5 /tmp/review-output/review.md; exit 1; }
+          echo "verdict=$V" >> "$GITHUB_OUTPUT"
+          echo "reviewer verdict: $V"
           cp /tmp/review-output/review.md /tmp/review-generic.md
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/review-generic.stream.jsonl
       - uses: actions/upload-artifact@v4
         with:
           name: review-generic
@@ -210,31 +584,58 @@ jobs:
     if: needs.implement.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      verdict: ${{ steps.review.outputs.verdict }}
     steps:
       - uses: actions/checkout@v4
+      - name: Mint internal-docs token (read)
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
       - uses: actions/checkout@v4
         with:
           repository: <YOUR_ORG>/internal-docs
-          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          token: ${{ steps.bot-docs.outputs.token }}
           path: internal-docs
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: review-input
           path: /tmp/review-input
       - name: Set up Claude Code
-        run: npm install -g @anthropic-ai/claude-code@latest
-      - name: the founder-voice review (Opus)
+        uses: ./.github/actions/setup-claude
+      - name: founder-voice review (Opus)
+        id: review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
         run: |
           mkdir -p /tmp/review-output
-          claude -p "$(cat agents/founder-voice-pr-reviewer/CLAUDE.md)" \
+          bash scripts/run-claude.sh /tmp/review-founder-voice.stream.jsonl "$(cat agents/founder-voice-pr-reviewer/CLAUDE.md)
+
+          Task: review the diff for ticket $TICKET_REPO#${{ inputs.issue }} (implementation in $IMPL_REPO) in the founder's voice, against its spec.
+          Inputs at: /tmp/review-input (diff.patch; spec.md or intent-note.md; ticket.json); ./internal-docs (read-only)
+          Write output to: /tmp/review-output/review.md, first line VERDICT: approve or VERDICT: request-changes" \
             --allowedTools "Bash,Read,Write,Glob,Grep" \
             --model claude-opus-4-7 \
-            --max-turns 40 \
-            --output-format stream-json --verbose > /tmp/review-founder-voice.stream.jsonl
+            --max-turns 40
           [ -s /tmp/review-output/review.md ] || { echo "::error::reviewer wrote no review"; exit 1; }
+          # The verdict line is the reviewer's contract; until now nothing read
+          # it, so two request-changes verdicts still opened the PR as "ready
+          # for human review".
+          V=$(bash scripts/result-line.sh --text --first /tmp/review-output/review.md VERDICT | sed -n 's/^result=//p' | grep -xE 'approve|comment|request-changes' || true)
+          [ -n "$V" ] || { echo "::error::reviewer wrote no 'VERDICT: approve|comment|request-changes' line"; head -5 /tmp/review-output/review.md; exit 1; }
+          echo "verdict=$V" >> "$GITHUB_OUTPUT"
+          echo "reviewer verdict: $V"
           cp /tmp/review-output/review.md /tmp/review-founder-voice.md
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/review-founder-voice.stream.jsonl
       - uses: actions/upload-artifact@v4
         with:
           name: review-founder-voice
@@ -254,19 +655,45 @@ jobs:
     permissions:
       contents: write   # queue transition
       actions: write    # dispatch code-judge.yml on the new PR
+    outputs:
+      pr_url: ${{ steps.open.outputs.pr_url }}
+      head_sha: ${{ steps.open.outputs.head_sha }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bot-identity
+
+      - name: Mint product-repo token (respond)
+        id: bot-respond
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }}
+          permission-contents: write
+
       - uses: actions/checkout@v4
         with:
-          repository: <YOUR_ORG>/example-app-core
-          token: ${{ secrets.PRODUCT_REPOS_PAT }}
+          repository: ${{ env.IMPL_REPO }}
+          token: ${{ steps.bot-respond.outputs.token }}
           path: product
           ref: ${{ inputs.branch }}
           fetch-depth: 0
+          persist-credentials: false
+      - name: Give the respond pass a pushable remote
+        env:
+          GH_TOKEN: ${{ steps.bot-respond.outputs.token }}
+        run: git -C product remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${IMPL_REPO}.git"
       - uses: actions/download-artifact@v4
         with:
           name: review-input
           path: /tmp/review-input
+      - uses: actions/download-artifact@v4
+        if: needs.implement.outputs.handoff == 'true'
+        with:
+          name: workflow-handoff
+          path: /tmp/handoff
       - uses: actions/download-artifact@v4
         with:
           name: review-generic
@@ -276,51 +703,181 @@ jobs:
           name: review-founder-voice
           path: /tmp/reviews
       - name: Set up Claude Code
-        run: npm install -g @anthropic-ai/claude-code@latest
+        uses: ./.github/actions/setup-claude
       - name: Address or rebut findings
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          GH_TOKEN: ${{ steps.bot-respond.outputs.token }}
           ISSUE_NUMBER: ${{ inputs.issue }}
           BRANCH: ${{ inputs.branch }}
         run: |
-          git -C product config user.name "example-app-eng-bot"
-          git -C product config user.email "example-app-eng-bot@users.noreply.github.com"
           mkdir -p /tmp/review-output
-          claude -p "$(cat agents/implementer/respond.md)" \
+          bash scripts/run-claude.sh /tmp/respond.stream.jsonl "$(cat agents/implementer/respond.md)
+
+          Task: address or rebut every numbered finding in both reviews for ticket $TICKET_REPO#$ISSUE_NUMBER; commit fixes in ./product on branch $BRANCH (run the repo's CI lint and format commands first) and push.
+          Inputs at: /tmp/review-input; /tmp/reviews/review-generic.md; /tmp/reviews/review-founder-voice.md; ./product (branch checked out); ./guards/${{ inputs.repo }}.paths
+          Write output to: /tmp/review-output/responses.md
+          End with exactly one RESULT: line." \
             --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
             --model claude-sonnet-4-6 \
-            --max-turns 80 \
-            --output-format stream-json --verbose > /tmp/respond.stream.jsonl
+            --max-turns 80
           FINAL=$(jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/respond.stream.jsonl)
           echo "$FINAL"
           grep -q '^RESULT: RESPONDED' <<<"$FINAL" || { echo "::error::respond pass did not complete"; exit 1; }
 
-      - name: Open PR
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/respond.stream.jsonl
+
+      # Fresh token: respond can push the job past the 1h installation-token
+      # lifetime. Mint again immediately before pushing / opening the PR.
+      - name: Mint product-repo token (push + PR)
+        id: bot-push
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write   # labels live on the issues API
+
+      # Expertise firewall, in-band. The product
+      # repos' required check never runs today: reusable-workflow access is
+      # off org-wide and no SDK repo has a caller workflow, so this is the
+      # only deterministic run of the guard. After the respond pass, before
+      # the push. Fails closed on a missing guards file.
+      - name: Expertise-path guard before push
+        run: |
+          cd product
+          git fetch origin main --quiet
+          bash "$GITHUB_WORKSPACE/scripts/expertise-path-guard.sh" \
+            "$GITHUB_WORKSPACE/guards/${{ inputs.repo }}.paths" origin/main HEAD
+
+      # Hard rule 5 (CLAUDE.md), part 1: squash the branch to one bot-authored
+      # commit with attribution markers scrubbed (the strip-attribution
+      # action, wired into nothing until now). Claude Code
+      # appends a Co-Authored-By byline to the commits it makes; run-claude.sh
+      # now turns that off at the source and this is the deterministic
+      # backstop. The plan-pass artifacts (plan.md, spec.md, and the
+      # .gitignore lines that hide them) are branch checkpoints, not product
+      # code: they leave the commit here so the PR never carries them.
+      - name: Build the squashed commit message, drop artifact-only .gitignore edits
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          ISSUE: ${{ inputs.issue }}
+        run: |
+          TITLE=$(jq -r '.title' /tmp/review-input/ticket.json)
+          cd product
+          git fetch origin main --quiet
+          BASE=$(git merge-base HEAD origin/main)
+          {
+            echo "$TITLE (${TICKET_REPO##*/}#$ISSUE)"
+            echo ""
+            git log --reverse --format='%B' "$BASE..HEAD" --invert-grep --grep='^plan: draft implementation checklist' \
+              | grep -viE '(co-authored-by|generated with|generated by).*(claude|anthropic)|claude\.com|anthropic\.com|🤖' \
+              | awk 'NF {blank=0} !NF {blank++} blank<2' \
+              || true
+          } > /tmp/commit-msg.txt
+          # .gitignore: if the branch's only change to it is the plan.md/spec.md
+          # lines, put it back the way base had it (folded into the squash below).
+          if [ -n "$(git diff "$BASE" -- .gitignore)" ] && \
+             [ -z "$(git diff "$BASE" -- .gitignore | grep -E '^[+-][^+-]' | grep -vE '^[+-](plan\.md|spec\.md)$' || true)" ]; then
+            if git cat-file -e "$BASE:.gitignore" 2>/dev/null; then
+              git checkout "$BASE" -- .gitignore
+            else
+              git rm -q --cached .gitignore && rm -f .gitignore
+            fi
+            git commit -q -m "restore .gitignore (plan/spec lines were branch-only)" || true
+          fi
+
+      - uses: ./.github/actions/strip-attribution
+        with:
+          path: product
+          base-ref: main
+          message-file: /tmp/commit-msg.txt
+          exclude-paths: plan.md spec.md
+
+      # Hard rule 5, part 2: the required check in the product repo is the
+      # belt; this is the braces, and it is the only one guaranteed to run —
+      # a product repo without the caller workflow wired would otherwise push
+      # unscanned. Fails closed: the run abandons the claim and alerts rather
+      # than pushing a footprint to a public repo, where it cannot be
+      # unpublished.
+      - name: Footprint scan before push
+        env:
+          GH_TOKEN: ${{ steps.bot-push.outputs.token }}
+        run: |
+          cd product
+          git fetch origin main --quiet
+          bash "$GITHUB_WORKSPACE/scripts/footprint-scan.sh" origin/main HEAD
+
+      - name: Open PR
+        id: open
+        env:
+          GH_TOKEN: ${{ steps.bot-push.outputs.token }}
           ISSUE: ${{ inputs.issue }}
           BRANCH: ${{ inputs.branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VERDICT_GENERIC: ${{ needs.review-generic.outputs.verdict }}
+          VERDICT_NIC: ${{ needs.review-founder-voice.outputs.verdict }}
+          HANDOFF: ${{ needs.implement.outputs.handoff }}
         run: |
           TITLE=$(jq -r '.title' /tmp/review-input/ticket.json)
-          SPEC_PATH=$(jq -r --argjson n "$ISSUE" \
-            '.claims[] | select(.issue == $n) | .spec_path // ""' state/queue.json)
+          SPEC_PATH=$(jq -r --argjson n "$ISSUE" --arg r "$IMPL_REPO" \
+            '.claims[] | select(.issue == $n and .impl_repo == $r) | .spec_path // ""' state/queue.json)
           {
-            echo "Closes #$ISSUE."
+            # Cross-repo reference: the ticket lives in TICKET_REPO, the PR in IMPL_REPO.
+            # A bare #N here would point at IMPL_REPO's issue N (an early agent PR did exactly that).
+            echo "Closes $TICKET_REPO#$ISSUE."
+            echo ""
+            # Verdicts above the fold: the reviews stay collapsed below, but
+            # the two verdict lines are what the human acts on first.
+            echo "**Reviewer verdicts (fresh context, pre-PR):** generic \`$VERDICT_GENERIC\` · founder-voice (Opus) \`$VERDICT_NIC\`"
+            if [ "$VERDICT_GENERIC" = "request-changes" ] || [ "$VERDICT_NIC" = "request-changes" ]; then
+              echo ""
+              echo ":warning: A reviewer requested changes. The response pass below addresses or rebuts each finding; read it before the diff. Labeled \`agent:request-changes\`."
+            fi
             echo ""
             if [ -n "$SPEC_PATH" ]; then
               echo "**Spec:** \`internal-docs/$SPEC_PATH\` (human-approved)"
             else
               echo "**Spec:** fast path — intent note on #$ISSUE"
             fi
+            if [ "$HANDOFF" = "true" ]; then
+              echo ""
+              echo "## Human action required"
+              echo ""
+              echo "The example-app-bot App does not hold \`Workflows: write\` (a deliberate choice, so agents cannot edit CI), so the implementer could not push the file(s) below. Add them to this branch by hand; the content is attached verbatim."
+              echo ""
+              while IFS= read -r f; do
+                echo "- \`$f\`"
+              done < /tmp/handoff/FILES
+              while IFS= read -r f; do
+                [ -f "/tmp/handoff/$f" ] || continue
+                echo ""
+                echo "<details><summary>$f</summary>"
+                echo ""
+                echo '```yaml'
+                cat "/tmp/handoff/$f"
+                echo '```'
+                echo "</details>"
+              done < /tmp/handoff/FILES
+              if [ -s /tmp/handoff/UNCHECKED ]; then
+                echo ""
+                echo "Acceptance criteria still unchecked in plan.md (they wait on the file above):"
+                echo ""
+                sed 's/^/    /' /tmp/handoff/UNCHECKED
+              fi
+            fi
             echo ""
             echo "## Fresh-context reviews (pre-PR)"
             echo ""
-            echo "<details><summary>Reviewer 1 (generic)</summary>"
+            echo "<details><summary>Reviewer 1 (generic) — VERDICT: $VERDICT_GENERIC</summary>"
             echo ""; cat /tmp/reviews/review-generic.md; echo ""
             echo "</details>"
-            echo "<details><summary>Reviewer 2 (the founder-voice, Opus)</summary>"
+            echo "<details><summary>Reviewer 2 (founder-voice, Opus) — VERDICT: $VERDICT_NIC</summary>"
             echo ""; cat /tmp/reviews/review-founder-voice.md; echo ""
             echo "</details>"
             echo ""
@@ -332,28 +889,80 @@ jobs:
             echo "Agent-ops [run]($RUN_URL). Human review required (Phase 2: everything is reviewed)."
           } > /tmp/pr-body.md
           cd product
-          PR_URL=$(gh pr create -R "$PRODUCT_REPO" --head "$BRANCH" \
-            --title "$TITLE (#$ISSUE)" --body-file /tmp/pr-body.md)
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${IMPL_REPO}.git"
+          # History was rewritten by the squash above; the lease is the
+          # remote-tracking ref this job fetched, so a concurrent push loses.
+          git push --force-with-lease origin "$BRANCH"
+          PR_URL=$(gh pr create -R "$IMPL_REPO" --head "$BRANCH" \
+            --title "$TITLE (${TICKET_REPO##*/}#$ISSUE)" --body-file /tmp/pr-body.md)
           echo "PR_URL=$PR_URL" >> "$GITHUB_ENV"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # Labels make the state visible from the PR list. Create-if-missing
+          # is idempotent; --force only refreshes colour/description.
+          if [ "$VERDICT_GENERIC" = "request-changes" ] || [ "$VERDICT_NIC" = "request-changes" ]; then
+            gh label create "agent:request-changes" -R "$IMPL_REPO" --color D93F0B --force \
+              --description "A fresh-context reviewer requested changes before the PR opened" >/dev/null 2>&1 || true
+            gh pr edit "$PR_URL" --add-label "agent:request-changes" || echo "::warning::could not add agent:request-changes label"
+          fi
+          if [ "$HANDOFF" = "true" ]; then
+            gh label create "agent:needs-human" -R "$IMPL_REPO" --color FBCA04 --force \
+              --description "A human must add a file the App cannot push (see PR body)" >/dev/null 2>&1 || true
+            gh pr edit "$PR_URL" --add-label "agent:needs-human" || echo "::warning::could not add agent:needs-human label"
+          fi
 
       - name: Mark claim pr-open and notify
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          VERDICT_GENERIC: ${{ needs.review-generic.outputs.verdict }}
+          VERDICT_NIC: ${{ needs.review-founder-voice.outputs.verdict }}
+          HANDOFF: ${{ needs.implement.outputs.handoff }}
+          HANDOFF_FILES: ${{ needs.implement.outputs.handoff_files }}
         run: |
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
           git pull --rebase origin main || true
           bash scripts/update-claim.sh "${{ inputs.issue }}" pr-open \
             "$(jq -n --arg u "$PR_URL" '{pr_url: $u}')"
-          bash scripts/slack-alert.sh ":package: Agent PR ready for human review: $PR_URL ($PRODUCT_REPO#${{ inputs.issue }})"
+          MSG=":package: Agent PR ready for human review: $PR_URL ($TICKET_REPO#${{ inputs.issue }} -> $IMPL_REPO). Verdicts: generic $VERDICT_GENERIC, founder-voice $VERDICT_NIC."
+          if [ "$HANDOFF" = "true" ]; then
+            MSG=":raised_hand: Agent PR needs a human to add $HANDOFF_FILES (the App lacks Workflows:write, #61): $PR_URL ($TICKET_REPO#${{ inputs.issue }} -> $IMPL_REPO). Verdicts: generic $VERDICT_GENERIC, founder-voice $VERDICT_NIC."
+          fi
+          bash scripts/slack-alert.sh "$MSG"
+
+      - name: Mint ticket-repo token (status card)
+        id: bot-ticket
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-issues: write
+
+      - name: Update status card (pr-open)
+        env:
+          GH_TOKEN: ${{ steps.bot-ticket.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VERDICT_GENERIC: ${{ needs.review-generic.outputs.verdict }}
+          VERDICT_NIC: ${{ needs.review-founder-voice.outputs.verdict }}
+          HANDOFF: ${{ needs.implement.outputs.handoff }}
+          HANDOFF_FILES: ${{ needs.implement.outputs.handoff_files }}
+        run: |
+          NOTE="PR open — awaiting human review; pre-open verdicts: generic $VERDICT_GENERIC, founder-voice $VERDICT_NIC"
+          if [ "$HANDOFF" = "true" ]; then
+            NOTE="$NOTE; a human must add $HANDOFF_FILES (agent:needs-human)"
+          fi
+          python3 scripts/status-card.py upsert --repo "$TICKET_REPO" --issue "${{ inputs.issue }}" --impl-repo "$IMPL_REPO" \
+            --event pr-open --status pr-open --set "pr_url=$PR_URL" --run-url "$RUN_URL" --note "$NOTE"
 
       - name: Dispatch code-judge
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUMBER="${PR_URL##*/}"
-          gh workflow run code-judge.yml -f pr="$PR_NUMBER" -f issue="${{ inputs.issue }}" \
-            || echo "::warning::code-judge dispatch failed — run manually: gh workflow run code-judge.yml -f pr=$PR_NUMBER"
+          # round=1 opens the bounded judge -> revise loop (code-judge.yml header).
+          gh workflow run code-judge.yml -f pr="$PR_NUMBER" -f issue="${{ inputs.issue }}" -f repo="${{ inputs.repo }}" -f round=1 \
+            || echo "::warning::code-judge dispatch failed — run manually: gh workflow run code-judge.yml -f pr=$PR_NUMBER -f repo=${{ inputs.repo }} -f round=1"
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -363,14 +972,15 @@ jobs:
           if-no-files-found: ignore
 
   record:
-    needs: [implement, review-generic, review-founder-voice, open-pr]
-    if: always() && needs.implement.outputs.go == 'true'
+    needs: [plan, implement, review-generic, review-founder-voice, open-pr]
+    if: always() && needs.plan.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/bot-identity
       - uses: actions/download-artifact@v4
         with:
           pattern: transcript-*
@@ -386,31 +996,95 @@ jobs:
             sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
               "$f" > "$DEST/$(basename "$f")"
           done
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
           git add sessions/ && git commit -m "sessions: implement #${{ inputs.issue }}" || exit 0
-          for i in 1 2 3; do git push && break || git pull --rebase origin main; done
+          for _ in 1 2 3; do
+            if git push; then
+              break
+            else
+              git pull --rebase origin main
+            fi
+          done
+
+      # The implement stage is round 0 of the PR's cost ledger, so the
+      # per-ticket ceiling the judge checks covers everything spent on the
+      # ticket, not just the loop. Also the provenance entry for the push
+      # (hard rule 5's private half).
+      - name: Mint product-repo token (round block)
+        if: needs.open-pr.outputs.pr_url != ''
+        id: bot-body
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }}
+          permission-pull-requests: write
+      - name: Record round 0 (implement cost) and provenance
+        if: needs.open-pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ steps.bot-body.outputs.token }}
+          PR_URL: ${{ needs.open-pr.outputs.pr_url }}
+          HEAD_SHA: ${{ needs.open-pr.outputs.head_sha }}
+          BRANCH: ${{ inputs.branch }}
+          ISSUE: ${{ inputs.issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PR="${PR_URL##*/}"
+          COST=$(jq -rs '[.[] | select(.type? == "result") | .total_cost_usd // 0] | add // 0' /tmp/transcripts/*.jsonl 2>/dev/null || echo 0)
+          gh pr view "$PR" -R "$IMPL_REPO" --json body --jq '.body // ""' > /tmp/pr-body.md
+          python3 scripts/round-history.py --body /tmp/pr-body.md append --entry \
+            "$(jq -n --argjson c "${COST:-0}" --arg sha "$HEAD_SHA" --arg url "$RUN_URL" \
+                  '{round: 0, stage: "implement", cost_usd: $c, sha: $sha, run_url: $url, note: "plan + implement + 2 reviews + respond"}')"
+          gh pr edit "$PR" -R "$IMPL_REPO" --body-file /tmp/pr-body.md || echo "::warning::could not write the round block"
+          git pull --rebase origin main || true
+          bash scripts/record-provenance.sh "$IMPL_REPO" "$PR" "$BRANCH" "$HEAD_SHA" "$ISSUE" implement - "$RUN_URL" claude-sonnet-4-6 claude-opus-4-7 \
+            || echo "::warning::provenance entry not recorded"
 
   alert-on-failure:
-    needs: [implement, review-generic, review-founder-voice, open-pr]
-    if: failure() && needs.implement.outputs.go == 'true'
+    needs: [plan, implement, review-generic, review-founder-voice, open-pr]
+    if: failure() && needs.plan.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/bot-identity
+      - name: Mint product-repo token (comment)
+        id: bot-comment
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-issues: write
       - name: Abandon claim, comment, alert
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot-comment.outputs.token }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           ISSUE: ${{ inputs.issue }}
           BRANCH: ${{ inputs.branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Empty when the implement job failed before "Run implementer" ever
+          # executed (claim-marking, checkout, or branch-resume) -- no cost
+          # was spent and no branch commits were made this run. Abandoning in
+          # that case only orphans a resumable claim (a fan-out dispatch collision once failed here and the claim
+          # was abandoned even though nothing had actually been attempted).
+          IMPLEMENTER_RAN: ${{ needs.implement.outputs.result }}
+          IMPLEMENTER_DETAIL: ${{ needs.implement.outputs.result_detail }}
         run: |
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
-          bash scripts/update-claim.sh "$ISSUE" abandoned '{"abandoned_reason": "implement pipeline failed"}' || true
-          gh api -X POST "repos/$PRODUCT_REPO/issues/$ISSUE/comments" \
-            -f body="Implementation pipeline failed ([run]($RUN_URL)). Claim abandoned; branch \`$BRANCH\` kept as checkpoint — re-dispatch implement.yml to resume, or re-queue the ticket." || true
-          bash scripts/slack-alert.sh ":x: implement pipeline failed for $PRODUCT_REPO#$ISSUE — claim abandoned, branch $BRANCH kept. $RUN_URL"
+          card() { python3 scripts/status-card.py upsert --repo "$TICKET_REPO" --issue "$ISSUE" --impl-repo "$IMPL_REPO" --run-url "$RUN_URL" "$@"; }
+          if [ -z "$IMPLEMENTER_RAN" ]; then
+            card --event implement-failed-early \
+              --note "implement pipeline failed before the implementer ran — nothing attempted, claim unchanged; dispatch implement.yml again to retry"
+            bash scripts/slack-alert.sh ":warning: implement pipeline failed before the implementer ran for $TICKET_REPO#$ISSUE ($IMPL_REPO) — claim left in place, re-dispatch implement.yml. $RUN_URL"
+          else
+            bash scripts/update-claim.sh "$ISSUE" abandoned '{"abandoned_reason": "implement pipeline failed"}' || true
+            WHY="implement pipeline failed"
+            [ "$IMPLEMENTER_RAN" = "IMPLEMENTED" ] || WHY="$WHY — implementer result: $IMPLEMENTER_RAN $IMPLEMENTER_DETAIL"
+            card --event implement-failed --status abandoned --set "abandoned_reason=$WHY" \
+              --note "claim abandoned; branch $BRANCH kept as checkpoint — re-queue the ticket to try again"
+            bash scripts/slack-alert.sh ":x: implement pipeline failed for $TICKET_REPO#$ISSUE ($IMPL_REPO) — claim abandoned, branch $BRANCH kept. $RUN_URL"
+          fi

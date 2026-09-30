@@ -1,0 +1,26 @@
+# People the spec-drafter may @-mention on product tickets (step 12).
+# Closed list on purpose: a hallucinated handle pings a stranger or nobody.
+# A name that is not here is written in plain text without an @.
+# Aliases match case-insensitively. Keep roles to what tickets route on.
+# Replace every entry with your real team before enabling the spec-drafter.
+people:
+  - handle: founder-handle
+    name: <FOUNDER_NAME>
+    aliases: []
+    routes: policy, ownership, breaking-change classification, security posture, spec approval
+  - handle: eng-lead-handle
+    name: <ENG_LEAD_NAME>
+    aliases: []
+    routes: architecture, core internals, build questions, spec approval
+  - handle: pm-handle
+    name: <PM_NAME>
+    aliases: []
+    routes: docs, positioning, ticket scope, agent-ops pipeline
+  - handle: devops-handle
+    name: <DEVOPS_NAME>
+    aliases: []
+    routes: service runtime, metrics and observability, deploy, CI
+  - handle: qa-handle
+    name: <QA_NAME>
+    aliases: []
+    routes: QA scope, test plans, product-code quality
