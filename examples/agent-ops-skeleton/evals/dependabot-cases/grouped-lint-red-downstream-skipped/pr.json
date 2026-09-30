@@ -1,0 +1,85 @@
+{
+ "author": {
+  "is_bot": true,
+  "login": "app/dependabot"
+ },
+ "baseRefName": "main",
+ "body": "Bumps the dev-dependencies group with 8 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [@biomejs/biome](https://github.com/biomejs/biome/tree/HEAD/packages/@biomejs/biome) | `2.5.1` | `2.5.12` |\n| [@langchain/core](https://github.com/langchain-ai/langchainjs) | `1.2.1` | `1.2.9` |\n| [@types/node](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/node) | `26.0.1` | `26.5.0` |\n| [axios](https://github.com/axios/axios) | `1.18.1` | `1.20.0` |\n| [esbuild](https://github.com/evanw/esbuild) | `0.28.1` | `0.28.2` |\n| [jest](https://github.com/jestjs/jest/tree/HEAD/packages/jest) | `30.4.2` | `30.5.1` |\n| [ts-jest](https://github.com/kulshekhar/ts-jest) | `29.4.11` | `29.4.12` |\n| [typescript](https://github.com/microsoft/TypeScript) | `6.0.3` | `7.0.2` |\n\nUpdates `@biomejs/biome` from 2.5.1 to 2.5.12\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `@langchain/core` from 1.2.1 to 1.2.9\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `@types/node` from 26.0.1 to 26.5.0\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `axios` from 1.18.1 to 1.20.0\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `esbuild` from 0.28.1 to 0.28.2\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `jest` from 30.4.2 to 30.5.1\n<details>(release notes stripped for fixture)</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a href=\"https://github.com/jestjs/jest/blob/main/CHANGELOG.md\">jest's changelog</a>.</em></p>\n<blockquote>\n<h2>30.5.1</h2>\n<h3>Fixes</h3>\n<ul>\n<li><code>[jest-config]</code> Don't warn about global-only options in the config that supplies the global config - the root config a project resolves to, or the first entry of <code>--projects</code> when no root config is passed (<a href=\"https://redirect.github.com/jestjs/jest/pull/16411\">#16411</a>)</li>\n<li><code>[jest-config, jest-types]</code> Stop accepting <code>reporters</code>, <code>coverageReporters</code>, <code>workerIdleMemoryLimit</code>, <code>cwd</code> and <code>runnerOptions</code> in a project config - they were silently ignored, and now warn like the other global-only options (<a href=\"https://redirect.github.com/jestjs/jest/pull/16411\">#16411</a>)</li>\n<li><code>[jest-config, jest-validate]</code> Warn about <code>maxWorkers</code> and <code>coverageThreshold</code> in a project config instead of dropping them without a word (<a href=\"https://redirect.github.com/jestjs/jest/pull/16411\">#16411</a>)</li>\n<li><code>[jest-resolve]</code> Match <code>moduleNameMapper</code> patterns against the specifier as written again (reverting <a href=\"https://redirect.github.com/jestjs/jest/pull/16390\">#16390</a>) (<a href=\"https://redirect.github.com/jestjs/jest/pull/16417\">#16417</a>)</li>\n<li><code>[jest-runtime]</code> Resolve package <code>imports</code> specifiers like <code>#dep</code> under ESM again (<a href=\"https://redirect.github.com/jestjs/jest/pull/16413\">#16413</a>)</li>\n</ul>\n<h3>Chore &amp; Maintenance</h3>\n<ul>\n<li><code>[jest-util]</code> Name the <code>testEnvironmentOptions.globalsCleanup</code> option and link the docs from the <code>JEST-01</code> deprecation warning, and document the option's modes (<a href=\"https://redirect.github.com/jestjs/jest/pull/16404\">#16404</a>)</li>\n</ul>\n<h2>30.5.0</h2>\n<h3>Features</h3>\n<ul>\n<li><code>[@jest/expect-utils, jest-mock]</code> Add <code>mockFn.whenCalledWith(...args)</code> for configuring return values per argument list, with first-class asymmetric-matcher support (<a href=\"https://redirect.github.com/jestjs/jest/pull/16053\">#16053</a>)</li>\n<li><code>[@jest/expect-utils]</code> Export <code>AsymmetricMatcher</code> and <code>FunctionParameters</code> types (previously private to <code>expect</code>) (<a href=\"https://redirect.github.com/jestjs/jest/pull/16053\">#16053</a>)</li>\n<li><code>[jest-circus, jest-core, jest-jasmine2, jest-test-result, jest-types]</code> <code>--collectTests</code> now expands <code>test.each</code>/<code>describe.each</code> cases and reports per-status counts (skipped/todo via the new <code>wouldRun</code> flag for selected tests) plus a summary line that match a real run, including under <code>--testNamePattern</code> and <code>.only</code>/<code>fdescribe</code> focus on both the circus and jasmine2 runners (<a href=\"https://redirect.github.com/jestjs/jest/pull/16259\">#16259</a>)</li>\n<li><code>[jest-circus, jest-environment, jest-runtime, jest-types]</code> Add describe-level retries via <code>jest.retryTimes(..., {entireDescribe: true})</code> (<a href=\"https://redirect.github.com/jestjs/jest/pull/16322\">#16322</a>)</li>\n<li><code>[jest-circus, jest-message-util, jest-reporters, jest-types]</code> Add <code>retryMessages</code> to <code>AssertionResult</code> and export <code>formatErrorStack</code>, so the retry log renders nested <code>cause</code> and <code>AggregateError</code> sections with code frames instead of serialized <code>[cause]:</code>/<code>[errors]:</code> markers (<a href=\"https://redirect.github.com/jestjs/jest/pull/16316\">#16316</a>)</li>\n<li><code>[jest-circus, jest-types]</code> Add <code>unhandledErrorsDetailed</code> to <code>Circus.RunResult</code>, so an unhandled rejection reports its <code>cause</code> chain and <code>AggregateError</code> entries with code frames instead of a pre-serialized stack (<a href=\"https://redirect.github.com/jestjs/jest/pull/16316\">#16316</a>)</li>\n<li><code>[jest-haste-map]</code> Replace <code>NodeWatcher</code> and <code>FSEventsWatcher</code> with <code>@parcel/watcher</code> for the non-watchman watch path (<a href=\"https://redirect.github.com/jestjs/jest/pull/16188\">#16188</a>)</li>\n<li><code>[jest-resolve]</code> Bump <code>unrs-resolver</code> to 1.12.1, remove <code>jest-pnp-resolver</code> and unnecessary checks (<a href=\"https://redirect.github.com/jestjs/jest/pull/15721\">#15721</a>)</li>\n<li><code>[jest-resolve]</code> Honor Node's <code>--preserve-symlinks</code> / <code>NODE_PRESERVE_SYMLINKS</code> in the default resolver by passing <code>symlinks: false</code> to <code>unrs-resolver</code> (<a href=\"https://redirect.github.com/jestjs/jest/pull/16260\">#16260</a>)</li>\n<li><code>[jest-runtime]</code> Apply automocking and manual <code>__mocks__</code> files to synchronously evaluable ESM graphs on Node 24.9+ - static imports, dynamic <code>import()</code> and <code>require()</code> of an ESM file now generate an automock from the real module's namespace instead of failing with &quot;Attempting to import a mock without a factory&quot;. Graphs that need async evaluation (top-level await) or an async-only resolver or transformer still throw (<a href=\"https://redirect.github.com/jestjs/jest/pull/16391\">#16391</a>)</li>\n<li><code>[jest-runtime]</code> Route <code>process.getBuiltinModule</code> through the sandbox, so it returns the sandbox <code>process</code> and the hooked <code>node:module</code> instead of the host's (<a href=\"https://redirect.github.com/jestjs/jest/pull/16391\">#16391</a>)</li>\n<li><code>[jest-runtime]</code> Throw an actionable error from <code>module.register()</code> and <code>module.registerHooks()</code> inside a test - the hooks attached to the loader running Jest itself, never saw the sandboxed requires they were meant for, and stayed registered for every later test file in the worker (<a href=\"https://redirect.github.com/jestjs/jest/pull/16391\">#16391</a>)</li>\n<li><code>[jest-runtime]</code> Surface resolution and import-attribute errors in an ESM graph before executing any of its CJS dependencies on Node 24.9+, matching Node's run-nothing-on-a-broken-graph behavior; the legacy loader on older versions keeps its linking-time execution order (<a href=\"https://redirect.github.com/jestjs/jest/pull/16391\">#16391</a>)</li>\n<li><code>[jest-runtime]</code> Throw <code>ERR_SOURCE_PHASE_NOT_DEFINED</code> with an actionable message for <code>import source</code> and <code>import.source()</code>, instead of failing at instantiation with V8's bare &quot;Source phase import object is not defined&quot; (<a href=\"https://redirect.github.com/jestjs/jest/pull/16391\">#16391</a>)</li>\n<li><code>[jest-runtime]</code> Emit the JSON-without-import-attribute deprecation warning once per test file instead of once per worker, so it is no longer silently swallowed for every file after the first (<a href=\"https://redirect.github.com/jestjs/jest/pull/16391\">#16391</a>)</li>\n<li><code>[jest-runtime]</code> Set <code>import.meta.main</code> to <code>true</code> in the test file and <...\n\n_Description has been truncated_",
+ "headRefOid": "036c41d466b80aa4ef31de759c4f1046a3b31b86",
+ "isDraft": false,
+ "labels": [
+  {
+   "id": "LA_fixture300007",
+   "name": "dependencies",
+   "description": "Pull requests that update a dependency file",
+   "color": "0366d6"
+  },
+  {
+   "id": "LA_fixture300008",
+   "name": "javascript",
+   "description": "Pull requests that update javascript code",
+   "color": "168700"
+  }
+ ],
+ "latestReviews": [],
+ "mergeStateStatus": "BLOCKED",
+ "mergeable": "MERGEABLE",
+ "number": 128,
+ "reviewRequests": [],
+ "state": "OPEN",
+ "statusCheckRollup": [
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T16:16:12Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-sdk-js/actions/runs/3000000009/job/2000000007",
+   "name": "lint",
+   "startedAt": "2026-09-10T16:16:04Z",
+   "status": "COMPLETED",
+   "workflowName": "Test example-app JavaScript SDK"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T16:16:12Z",
+   "conclusion": "SUCCESS",
+   "detailsUrl": "https://github.com/example-org/example-app-sdk-js/actions/runs/3000000010/job/2000000008",
+   "name": "check-contract",
+   "startedAt": "2026-09-10T16:16:04Z",
+   "status": "COMPLETED",
+   "workflowName": "API Contract Test"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T16:16:12Z",
+   "conclusion": "SUCCESS",
+   "detailsUrl": "https://github.com/example-org/example-app-sdk-js/actions/runs/3000000009/job/2000000009",
+   "name": "compute_version",
+   "startedAt": "2026-09-10T16:16:04Z",
+   "status": "COMPLETED",
+   "workflowName": "Test example-app JavaScript SDK"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T16:16:13Z",
+   "conclusion": "SKIPPED",
+   "detailsUrl": "https://github.com/example-org/example-app-sdk-js/actions/runs/3000000009/job/2000000010",
+   "name": "test",
+   "startedAt": "2026-09-10T16:16:13Z",
+   "status": "COMPLETED",
+   "workflowName": "Test example-app JavaScript SDK"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T16:16:00Z",
+   "conclusion": "NEUTRAL",
+   "detailsUrl": "https://github.com/example-org/example-app-sdk-js/runs/3000000011",
+   "name": "CodeQL",
+   "startedAt": "2026-09-10T16:15:59Z",
+   "status": "COMPLETED",
+   "workflowName": ""
+  }
+ ],
+ "title": "Bump the dev-dependencies group across 1 directory with 9 updates",
+ "url": "https://github.com/example-org/example-app-sdk-js/pull/128",
+ "repo": "example-app-sdk-js"
+}

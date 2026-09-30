@@ -1,0 +1,45 @@
+{
+ "author": {
+  "is_bot": true,
+  "login": "app/dependabot"
+ },
+ "baseRefName": "dev",
+ "body": "Bumps [qs](https://github.com/ljharb/qs) to 6.16.0 and updates ancestor dependency [express](https://github.com/expressjs/express). These dependencies need to be updated together.\n\nUpdates `qs` from 6.15.2 to 6.16.0\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `express` from 4.22.2 to 5.2.1\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nDependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>(release notes stripped for fixture)</details>",
+ "headRefOid": "bfc626f349b30c317814f3fa7e97e49eb15965c7",
+ "isDraft": false,
+ "labels": [
+  {
+   "id": "LA_fixture300012",
+   "name": "dependencies",
+   "description": "Pull requests that update a dependency file",
+   "color": "0366d6"
+  },
+  {
+   "id": "LA_fixture300013",
+   "name": "javascript",
+   "description": "Pull requests that update javascript code",
+   "color": "168700"
+  }
+ ],
+ "latestReviews": [],
+ "mergeStateStatus": "CLEAN",
+ "mergeable": "MERGEABLE",
+ "number": 461,
+ "reviewRequests": [],
+ "state": "OPEN",
+ "statusCheckRollup": [
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-03T06:15:21Z",
+   "conclusion": "NEUTRAL",
+   "detailsUrl": "https://github.com/example-org/other-web/runs/3000000020",
+   "name": "CodeQL",
+   "startedAt": "2026-09-03T06:15:20Z",
+   "status": "COMPLETED",
+   "workflowName": ""
+  }
+ ],
+ "title": "Bump qs and express",
+ "url": "https://github.com/example-org/other-web/pull/461",
+ "repo": "other-web"
+}

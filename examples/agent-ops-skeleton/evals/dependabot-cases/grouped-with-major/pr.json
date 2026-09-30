@@ -1,0 +1,105 @@
+{
+ "author": {
+  "is_bot": true,
+  "login": "app/dependabot"
+ },
+ "baseRefName": "main",
+ "body": "Bumps the dev-dependencies group with 6 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [@biomejs/biome](https://github.com/biomejs/biome/tree/HEAD/packages/@biomejs/biome) | `2.5.8` | `2.5.12` |\n| [@playwright/test](https://github.com/microsoft/playwright) | `1.62.1` | `1.63.0` |\n| [@types/node](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/node) | `22.20.1` | `26.4.1` |\n| [@types/react-dom](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/react-dom) | `19.2.4` | `19.2.7` |\n| [postcss](https://github.com/postcss/postcss) | `8.5.26` | `8.5.28` |\n| [typescript](https://github.com/microsoft/TypeScript) | `5.9.3` | `7.0.2` |\n\nUpdates `@biomejs/biome` from 2.5.8 to 2.5.12\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `@playwright/test` from 1.62.1 to 1.63.0\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `@types/node` from 22.20.1 to 26.4.1\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `@types/react-dom` from 19.2.4 to 19.2.7\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `postcss` from 8.5.26 to 8.5.28\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `typescript` from 5.9.3 to 7.0.2\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nDependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>(release notes stripped for fixture)</details>",
+ "headRefOid": "bf8e6e76437384c99ce7c2e0c375984c9b0065c9",
+ "isDraft": false,
+ "labels": [
+  {
+   "id": "LA_fixture300003",
+   "name": "dependencies",
+   "description": "Pull requests that update a dependency file",
+   "color": "0366d6"
+  },
+  {
+   "id": "LA_fixture300009",
+   "name": "javascript",
+   "description": "Pull requests that update javascript code",
+   "color": "168700"
+  }
+ ],
+ "latestReviews": [],
+ "mergeStateStatus": "BLOCKED",
+ "mergeable": "MERGEABLE",
+ "number": 179,
+ "reviewRequests": [],
+ "state": "OPEN",
+ "statusCheckRollup": [
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T05:17:13Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000012/job/2000000011",
+   "name": "deploy",
+   "startedAt": "2026-09-10T05:16:42Z",
+   "status": "COMPLETED",
+   "workflowName": "Deploy Dashboard to Vercel"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T05:17:22Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000013/job/2000000012",
+   "name": "E2E (chromium) — Dev",
+   "startedAt": "2026-09-10T05:16:41Z",
+   "status": "COMPLETED",
+   "workflowName": "E2E Tests"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T05:17:24Z",
+   "conclusion": "SUCCESS",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000014/job/2000000013",
+   "name": "Lint & Build",
+   "startedAt": "2026-09-10T05:16:42Z",
+   "status": "COMPLETED",
+   "workflowName": "PR Check"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T05:17:35Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000013/job/2000000014",
+   "name": "E2E (firefox) — Dev",
+   "startedAt": "2026-09-10T05:16:46Z",
+   "status": "COMPLETED",
+   "workflowName": "E2E Tests"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T05:17:43Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000013/job/2000000015",
+   "name": "E2E (webkit) — Dev",
+   "startedAt": "2026-09-10T05:16:41Z",
+   "status": "COMPLETED",
+   "workflowName": "E2E Tests"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T05:17:49Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000013/job/2000000016",
+   "name": "E2E Tests",
+   "startedAt": "2026-09-10T05:17:46Z",
+   "status": "COMPLETED",
+   "workflowName": "E2E Tests"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-10T05:16:38Z",
+   "conclusion": "NEUTRAL",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/runs/3000000015",
+   "name": "CodeQL",
+   "startedAt": "2026-09-10T05:16:37Z",
+   "status": "COMPLETED",
+   "workflowName": ""
+  }
+ ],
+ "title": "Bump the dev-dependencies group across 1 directory with 6 updates",
+ "url": "https://github.com/example-org/example-app-dashboard/pull/179",
+ "repo": "example-app-dashboard"
+}

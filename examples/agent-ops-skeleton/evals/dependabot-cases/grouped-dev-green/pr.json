@@ -1,0 +1,55 @@
+{
+ "author": {
+  "is_bot": true,
+  "login": "app/dependabot"
+ },
+ "baseRefName": "main",
+ "body": "Bumps the dev-dependencies group with 6 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [@biomejs/biome](https://github.com/biomejs/biome/tree/HEAD/packages/@biomejs/biome) | `2.5.8` | `2.5.12` |\n| [@types/node](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/node) | `26.2.0` | `26.5.0` |\n| [axios](https://github.com/axios/axios) | `1.19.0` | `1.20.0` |\n| [@types/aws-lambda](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/aws-lambda) | `8.10.162` | `8.10.163` |\n| [aws-cdk](https://github.com/aws/aws-cdk-cli/tree/HEAD/packages/aws-cdk) | `2.1136.0` | `2.1140.0` |\n| [tsx](https://github.com/privatenumber/tsx) | `4.23.12` | `4.23.13` |\n\nUpdates `@biomejs/biome` from 2.5.8 to 2.5.12\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `@types/node` from 26.2.0 to 26.5.0\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `axios` from 1.19.0 to 1.20.0\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `@types/aws-lambda` from 8.10.162 to 8.10.163\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `aws-cdk` from 2.1136.0 to 2.1140.0\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `tsx` from 4.23.12 to 4.23.13\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nDependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>(release notes stripped for fixture)</details>",
+ "headRefOid": "d8cf123a71cc84d0aa66b17ca6dc598d7b246475",
+ "isDraft": false,
+ "labels": [
+  {
+   "id": "LA_fixture300005",
+   "name": "dependencies",
+   "description": "Pull requests that update a dependency file",
+   "color": "0366d6"
+  },
+  {
+   "id": "LA_fixture300006",
+   "name": "javascript",
+   "description": "Pull requests that update javascript code",
+   "color": "168700"
+  }
+ ],
+ "latestReviews": [],
+ "mergeStateStatus": "BLOCKED",
+ "mergeable": "MERGEABLE",
+ "number": 387,
+ "reviewRequests": [],
+ "state": "OPEN",
+ "statusCheckRollup": [
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T18:50:16Z",
+   "conclusion": "SUCCESS",
+   "detailsUrl": "https://github.com/example-org/example-app-backend/actions/runs/3000000007/job/2000000006",
+   "name": "lint-and-test",
+   "startedAt": "2026-09-11T18:49:29Z",
+   "status": "COMPLETED",
+   "workflowName": "PR Checks"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T18:49:24Z",
+   "conclusion": "NEUTRAL",
+   "detailsUrl": "https://github.com/example-org/example-app-backend/runs/3000000008",
+   "name": "CodeQL",
+   "startedAt": "2026-09-11T18:49:24Z",
+   "status": "COMPLETED",
+   "workflowName": ""
+  }
+ ],
+ "title": "Bump the dev-dependencies group across 1 directory with 6 updates",
+ "url": "https://github.com/example-org/example-app-backend/pull/387",
+ "repo": "example-app-backend"
+}

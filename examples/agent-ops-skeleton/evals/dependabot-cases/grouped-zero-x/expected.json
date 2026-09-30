@@ -1,0 +1,7 @@
+{
+ "outcome": "needs-human",
+ "class": "major",
+ "bumps": 6,
+ "verify": {},
+ "note": "captured from a sample repo; outcome hand-checked"
+}

@@ -1,0 +1,11 @@
+{
+ "outcome": "blocked:regression",
+ "class": "minor",
+ "bumps": 6,
+ "verify": {
+  "lint": "red",
+  "check-contract": "green",
+  "test": "skipped"
+ },
+ "note": "captured from a sample repo; lint red (ts-jest 29.4.12 peer-caps typescript <7, ERESOLVE) with test skipped downstream; main-checks.json says lint is green on main -> regression"
+}

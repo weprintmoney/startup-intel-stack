@@ -1,0 +1,10 @@
+{
+ "outcome": "needs-human",
+ "class": "major",
+ "bumps": 2,
+ "verify": {},
+ "note": "captured from a sample repo (repo since removed from the policy as out of scope); kept for the multi-dep 'Bump qs and express' body shape and the no-verify-checks path via policy_override",
+ "policy_override": {
+  "verify_checks": []
+ }
+}

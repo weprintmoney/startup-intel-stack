@@ -1,0 +1,9 @@
+{
+ "outcome": "merge",
+ "class": "minor",
+ "bumps": 2,
+ "verify": {
+  "ci": "green"
+ },
+ "note": "captured from a sample repo; outcome hand-checked"
+}

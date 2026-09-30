@@ -1,0 +1,105 @@
+{
+ "author": {
+  "is_bot": true,
+  "login": "app/dependabot"
+ },
+ "baseRefName": "main",
+ "body": "Bumps [next](https://github.com/vercel/next.js) from 16.3.1 to 16.3.4.\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\n[![Dependabot compatibility score](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=next&package-manager=npm_and_yarn&previous-version=16.3.1&new-version=16.3.4)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>(release notes stripped for fixture)</details>",
+ "headRefOid": "1eb34e2a3a1cef0e9ee7a68f849e1d51c7caf561",
+ "isDraft": false,
+ "labels": [
+  {
+   "id": "LA_fixture300003",
+   "name": "dependencies",
+   "description": "Pull requests that update a dependency file",
+   "color": "0366d6"
+  },
+  {
+   "id": "LA_fixture300009",
+   "name": "javascript",
+   "description": "Pull requests that update javascript code",
+   "color": "168700"
+  }
+ ],
+ "latestReviews": [],
+ "mergeStateStatus": "BLOCKED",
+ "mergeable": "MERGEABLE",
+ "number": 182,
+ "reviewRequests": [],
+ "state": "OPEN",
+ "statusCheckRollup": [
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T06:50:07Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000025/job/2000000027",
+   "name": "deploy",
+   "startedAt": "2026-09-11T06:49:41Z",
+   "status": "COMPLETED",
+   "workflowName": "Deploy Dashboard to Vercel"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T06:50:22Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000026/job/2000000028",
+   "name": "E2E (chromium) — Dev",
+   "startedAt": "2026-09-11T06:49:40Z",
+   "status": "COMPLETED",
+   "workflowName": "E2E Tests"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T06:50:40Z",
+   "conclusion": "SUCCESS",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000027/job/2000000029",
+   "name": "Lint & Build",
+   "startedAt": "2026-09-11T06:49:40Z",
+   "status": "COMPLETED",
+   "workflowName": "PR Check"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T06:50:40Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000026/job/2000000030",
+   "name": "E2E (firefox) — Dev",
+   "startedAt": "2026-09-11T06:49:40Z",
+   "status": "COMPLETED",
+   "workflowName": "E2E Tests"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T06:50:54Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000026/job/2000000031",
+   "name": "E2E (webkit) — Dev",
+   "startedAt": "2026-09-11T06:49:40Z",
+   "status": "COMPLETED",
+   "workflowName": "E2E Tests"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T06:51:37Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/actions/runs/3000000026/job/2000000032",
+   "name": "E2E Tests",
+   "startedAt": "2026-09-11T06:51:33Z",
+   "status": "COMPLETED",
+   "workflowName": "E2E Tests"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T06:49:36Z",
+   "conclusion": "NEUTRAL",
+   "detailsUrl": "https://github.com/example-org/example-app-dashboard/runs/3000000028",
+   "name": "CodeQL",
+   "startedAt": "2026-09-11T06:49:35Z",
+   "status": "COMPLETED",
+   "workflowName": ""
+  }
+ ],
+ "title": "Bump next from 16.3.1 to 16.3.4",
+ "url": "https://github.com/example-org/example-app-dashboard/pull/182",
+ "repo": "example-app-dashboard"
+}
