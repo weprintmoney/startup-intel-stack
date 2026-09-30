@@ -1,0 +1,22 @@
+{
+  "case": "retries-without-idempotency",
+  "pattern_id": "retries-without-idempotency",
+  "kind": "buggy",
+  "book_ref": "DDIA §8 exactly-once",
+  "class": "messaging",
+  "expected": {
+    "code-judge": "fail",
+    "founder-voice-pr-reviewer": "request-changes"
+  },
+  "should_flag": [
+    "retry on 5xx / ReadTimeout without idempotency key",
+    "5xx after commit → duplicate side effect on retry",
+    "client-generated idempotency key + server-side dedupe"
+  ],
+  "flag_terms": [
+    ["idempotency", "idempotent", "readtimeout", "at-least-once"],
+    ["duplicate", "double write", "twice", "committed but"],
+    ["dedup", "uuid", "request id", "unique key"]
+  ],
+  "runtime_evidence": ["scenario replay: force retry after commit"]
+}

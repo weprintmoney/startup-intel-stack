@@ -1,0 +1,9 @@
+{
+ "outcome": "merge",
+ "class": "minor",
+ "bumps": 6,
+ "verify": {
+  "lint-and-test": "green"
+ },
+ "note": "captured from a sample repo; outcome hand-checked"
+}

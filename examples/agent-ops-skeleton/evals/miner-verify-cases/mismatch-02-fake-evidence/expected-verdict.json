@@ -1,0 +1,9 @@
+{
+  "case": "mismatch-02-fake-evidence",
+  "miner": "review-delta-miner",
+  "expected_verdict": "unsupported",
+  "expected_claims": [
+    { "claim": "summary claims reviewer requested changes on PR #999", "expected_supported": false },
+    { "claim": "summary claims agent addressed feedback by adding 3 unit tests", "expected_supported": false }
+  ]
+}

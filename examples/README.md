@@ -19,7 +19,7 @@ your own Claude adapt them against your stack.
 | Path | Level | What it shows |
 |---|---|---|
 | [`sales-ops-skeleton/`](sales-ops-skeleton/) | L2 · Outbound loop | Mature version of the Level 2 rubric-gated outbound pipeline: 23 workflows, 12 agent prompts, 6 shared Python libs, kill switch, EU router, deliverability monitor, monthly feedback-loop, judge-evals regression harness. |
-| [`agent-ops-skeleton/`](agent-ops-skeleton/) | L3 · Coding harness | Full Phase 0-6 build: ticket intake, spec-drafter, implementer, two fresh-context reviewers, code-judge, autonomy ledger, dream loop, release intelligence. |
+| [`agent-ops-skeleton/`](agent-ops-skeleton/) | L3 · Coding harness | Full Phase 0-6 build: ticket intake, parallel spec drafting, claim-verify gate, plan + implement, two fresh-context reviewers, code-judge with a bounded revise loop, a claim state machine and per-ticket status card, autonomy ledger, dream loop, release intelligence, an enforcing cost ceiling, and Dependabot triage. |
 
 ## How these relate to the template's own live code
 
@@ -57,13 +57,13 @@ of the skeletons. Screenshot-ready for talks.
 
 | Phase | Paper says | Files to open |
 |---|---|---|
-| **L3-0** · Plumbing and safety floor | Repo skeleton, attribution strip, footprint scan, heartbeat, cost ceiling, input scanner, narrow-PAT matrix | `.github/actions/strip-attribution/action.yml`, `.github/workflows/footprint-scan.yml`, `.github/workflows/pipeline-heartbeat.yml`, `.github/workflows/cost-digest.yml`, `.env.example`, `SETUP.md` (PAT matrix section) |
+| **L3-0** · Plumbing and safety floor | Repo skeleton, attribution strip, footprint scan, heartbeat, cost ceiling, input scanner, narrow credentials (GitHub App or PAT matrix), pinned CLI | `.github/actions/strip-attribution/action.yml`, `.github/actions/setup-claude/action.yml`, `.github/workflows/footprint-scan.yml`, `.github/workflows/pipeline-heartbeat.yml`, `.github/workflows/cost-digest.yml`, `.github/workflows/budget-guard.yml`, `.github/workflows/lint.yml`, `.env.example`, `SETUP.md`, `docs/github-app-setup.md` |
 | **L3-1** · Knowledge graph bootstrap | Frontmatter schema extension, mining agents, `graph.json` compilation, staleness propagation, staleness digest | `agents/dream-orchestrator/CLAUDE.md` (miner sub-prompts), `schemas/miner-findings.schema.json` |
-| **L3-2** · Coding loop v1 (humans review everything) | Six-stage pipeline: intake → spec → implement → self-review (×2 fresh context) → open PR → guards | `.github/workflows/ticket-intake.yml`, `.github/workflows/spec-draft.yml`, `.github/workflows/implement.yml` (largest — carries both reviewers as separate jobs), `.github/workflows/expertise-path-guard.yml`, `agents/spec-drafter/CLAUDE.md`, `agents/implementer/CLAUDE.md`, `agents/pr-reviewer/CLAUDE.md`, `agents/founder-voice-pr-reviewer/CLAUDE.md`, `agents/ticket-drafter/CLAUDE.md`, `guards/example-app-core.paths`, `guards/example-app-service.paths` |
-| **L3-3** · Quality gates and judges | Code-judge (Opus) scoring 0-2 across 8 categories, golden set of 20-30 historical PRs, judge-evals regression | `.github/workflows/code-judge.yml`, `.github/workflows/judge-evals.yml`, `agents/code-judge/CLAUDE.md`, `schemas/judge-verdict.schema.json`, `evals/pr-cases/toy-fixture/`, `evals/run_eval.py` |
+| **L3-2** · Coding loop v1 (humans review everything) | Six-stage pipeline: intake → spec → implement → self-review (×2 fresh context) → open PR → guards | `.github/workflows/ticket-intake.yml`, `.github/workflows/spec-draft-orchestrator.yml`, `.github/workflows/spec-draft.yml`, `.github/workflows/implement.yml` (largest — carries both reviewers as separate jobs), `.github/workflows/expertise-path-guard.yml`, `state/transitions.json` + `state/README.md` (the claim state machine), `scripts/status-card.py`, `agents/plan-drafter/CLAUDE.md`, `agents/spec-drafter/CLAUDE.md`, `agents/implementer/CLAUDE.md`, `agents/pr-reviewer/CLAUDE.md`, `agents/founder-voice-pr-reviewer/CLAUDE.md`, `agents/ticket-drafter/CLAUDE.md`, `guards/example-app-core.paths`, `guards/example-app-service.paths` |
+| **L3-3** · Quality gates and judges | Code-judge (Opus) scoring 0-2 across 8 categories, golden set of 20-30 historical PRs, judge-evals regression | `.github/workflows/code-judge.yml`, `.github/workflows/revise.yml` + `agents/reviser/CLAUDE.md` (the bounded loop), `.github/workflows/claim-verify.yml` + `scripts/verify-claims.py` + `agents/claim-verifier/CLAUDE.md`, `.github/workflows/judge-evals.yml`, `agents/code-judge/CLAUDE.md`, `schemas/judge-verdict.schema.json`, `evals/pr-cases/toy-fixture/`, `evals/claim-verify-cases/`, `evals/run_eval.py` |
 | **L3-4** · Release intelligence | Score every released PR against ICP + messaging house, propose marketing/docs tickets, 5-dimension rubric | `.github/workflows/release-intelligence.yml`, `agents/release-intelligence-miner/CLAUDE.md`, `agents/ticket-drafter/CLAUDE.md`, `schemas/release-findings.schema.json` |
 | **L3-5** · The dreaming loop | Orchestrator + three miners (transcript-failure, review-delta, doc-drift), 3× evidence bar, memory-poisoning firewall | `.github/workflows/dream.yml`, `agents/dream-orchestrator/CLAUDE.md` + miner sub-prompts, `schemas/miner-findings.schema.json` |
-| **L3-6** · Earned autonomy | Autonomy ledger (L0 → L4), promotion/demotion criteria, self-improvement channel | `.github/workflows/ledger-update.yml`, `.github/workflows/metrics-digest.yml`, `schemas/autonomy-ledger.schema.json`, `state/autonomy-ledger.json` (empty seed) |
+| **L3-6** · Earned autonomy | Autonomy ledger (L0 → L4), promotion/demotion criteria, self-improvement channel | `.github/workflows/ledger-update.yml`, `.github/workflows/metrics-digest.yml`, `schemas/autonomy-ledger.schema.json`, `state/autonomy-ledger.json` (empty seed), `.github/workflows/dependabot-triage.yml` (observe-mode maintenance loop) |
 
 ## What each skeleton ships empty
 
@@ -75,7 +75,7 @@ real data:
 - `sales-ops-skeleton/sends/queue/`, `.../log/`, `.../warmup/log/` — empty
 - `sales-ops-skeleton/suppression/list.jsonl` — empty; schema documented in `suppression/README.md`
 - `sales-ops-skeleton/evals/*/golden-*.json` — one hand-written toy fixture per judge; replace with your real history before enabling as a required check
-- `agent-ops-skeleton/state/*.json` — empty seeds
+- `agent-ops-skeleton/state/*.json` — empty seeds (plus small example registries: `impl-repos.json`, `dependabot-repos.json`, `failure-modes.json`)
 - `agent-ops-skeleton/sessions/` — empty
 - `agent-ops-skeleton/evals/pr-cases/toy-fixture/` — one hand-written toy PR; the real build wants 20-30
 

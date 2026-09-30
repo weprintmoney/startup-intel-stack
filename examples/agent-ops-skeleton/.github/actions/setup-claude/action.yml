@@ -1,0 +1,19 @@
+name: Set up Claude Code
+description: >
+  Install the pinned Claude Code CLI. The version lives in
+  .claude-code-version at the repo root — one place to bump, one PR to review
+  the bump. The stream-json fields every node parses (`type: result`,
+  `total_cost_usd`, `usage.*`, `modelUsage`) are an unversioned contract, so
+  `@latest` across 16 install sites meant a CLI release could change what the
+  pipeline reads without any diff in this repo.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        V=$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/.claude-code-version")
+        [ -n "$V" ] || { echo "::error::.claude-code-version is empty"; exit 1; }
+        npm install -g "@anthropic-ai/claude-code@$V"
+        echo "claude $(claude --version) (pinned $V)"

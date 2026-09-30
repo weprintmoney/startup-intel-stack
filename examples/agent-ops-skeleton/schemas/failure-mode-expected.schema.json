@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://github.com/example-org/agent-ops/schemas/failure-mode-expected.schema.json",
+  "title": "failure-mode-expected",
+  "description": "Per-fixture expected verdicts + reviewer signal for the failure-mode eval set.",
+  "type": "object",
+  "required": ["case", "pattern_id", "kind", "book_ref", "class", "expected", "should_flag", "flag_terms"],
+  "properties": {
+    "case": {"type": "string", "description": "Fixture slug — matches directory name."},
+    "pattern_id": {"type": "string", "description": "ID in state/failure-modes.json."},
+    "kind": {"enum": ["buggy", "control"], "description": "Whether the diff exhibits the pattern (buggy) or is a clean control that must not flag."},
+    "book_ref": {"type": "string", "description": "Human-readable chapter ref, e.g. 'DDIA §8'."},
+    "class": {"type": "string", "description": "Failure class from the catalog (front-end, back-end-memory, coherence, ...)."},
+    "expected": {
+      "type": "object",
+      "required": ["code-judge", "founder-voice-pr-reviewer"],
+      "properties": {
+        "code-judge": {"enum": ["pass", "fail"]},
+        "founder-voice-pr-reviewer": {"enum": ["approve", "request-changes"]}
+      },
+      "additionalProperties": false
+    },
+    "should_flag": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 0,
+      "description": "For kind=buggy: one line per expected reviewer callout. For kind=control: empty — the reviewer must not flag anything."
+    },
+    "flag_terms": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 1
+      },
+      "description": "Parallel to should_flag (same length, same order). Each element is a list of 2-4 lowercase alternative terms or short phrases a reviewer who caught that callout would plausibly write; the runner grades should_flag coverage by case-insensitive substring match of these against the reviewer's findings. Terms must not echo the PR description or Intent in context.md. Empty for kind=control."
+    },
+    "runtime_evidence": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional. Runtime detectors (TMA, perf c2c, PEBS) that would confirm the finding, per catalog entry."
+    }
+  },
+  "additionalProperties": false
+}

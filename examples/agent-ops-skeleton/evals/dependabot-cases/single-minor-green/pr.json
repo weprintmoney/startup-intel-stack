@@ -1,0 +1,75 @@
+{
+ "author": {
+  "is_bot": true,
+  "login": "app/dependabot"
+ },
+ "baseRefName": "main",
+ "body": "Bumps [svgo](https://github.com/svg/svgo) from 4.0.2 to 4.1.0.\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\n[![Dependabot compatibility score](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=svgo&package-manager=npm_and_yarn&previous-version=4.0.2&new-version=4.1.0)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>(release notes stripped for fixture)</details>",
+ "headRefOid": "05ce2f9e6cc98d7db13d477732bfef471738e54e",
+ "isDraft": false,
+ "labels": [
+  {
+   "id": "LA_fixture300010",
+   "name": "dependencies",
+   "description": "Pull requests that update a dependency file",
+   "color": "0366d6"
+  },
+  {
+   "id": "LA_fixture300011",
+   "name": "javascript",
+   "description": "Pull requests that update javascript code",
+   "color": "168700"
+  }
+ ],
+ "latestReviews": [],
+ "mergeStateStatus": "BLOCKED",
+ "mergeable": "MERGEABLE",
+ "number": 73,
+ "reviewRequests": [],
+ "state": "OPEN",
+ "statusCheckRollup": [
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-09T08:14:01Z",
+   "conclusion": "SUCCESS",
+   "detailsUrl": "https://github.com/example-org/example-app-web/actions/runs/3000000029/job/2000000033",
+   "name": "ci",
+   "startedAt": "2026-09-09T08:12:45Z",
+   "status": "COMPLETED",
+   "workflowName": "Deploy to Cloudflare Pages"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-09T08:13:41Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-web/actions/runs/3000000029/job/2000000034",
+   "name": "preview",
+   "startedAt": "2026-09-09T08:12:45Z",
+   "status": "COMPLETED",
+   "workflowName": "Deploy to Cloudflare Pages"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-09T08:12:43Z",
+   "conclusion": "SKIPPED",
+   "detailsUrl": "https://github.com/example-org/example-app-web/actions/runs/3000000029/job/2000000035",
+   "name": "production",
+   "startedAt": "2026-09-09T08:12:43Z",
+   "status": "COMPLETED",
+   "workflowName": "Deploy to Cloudflare Pages"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-09T08:12:39Z",
+   "conclusion": "NEUTRAL",
+   "detailsUrl": "https://github.com/example-org/example-app-web/runs/3000000030",
+   "name": "CodeQL",
+   "startedAt": "2026-09-09T08:12:39Z",
+   "status": "COMPLETED",
+   "workflowName": ""
+  }
+ ],
+ "title": "Bump svgo from 4.0.2 to 4.1.0",
+ "url": "https://github.com/example-org/example-app-web/pull/73",
+ "repo": "example-app-web"
+}

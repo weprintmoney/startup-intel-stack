@@ -1,0 +1,159 @@
+name: Spec Draft Orchestrator
+
+# The drain's dispatcher. Ticket-intake claims tickets into state/queue.json
+# and stops; this workflow dispatches one spec-draft per claimed ticket, all
+# in parallel, and re-runs on every completion:
+#
+#   Ticket Intake completes --workflow_run--> orchestrator --> dispatch every undrafted claim
+#   Spec Draft completes    --workflow_run--> orchestrator --> dispatch any new/retrying claim
+#
+# The dispatch uses an App token scoped to this repo, never GITHUB_TOKEN. A
+# GITHUB_TOKEN dispatch starts the run, but GitHub's anti-recursion rule
+# means that run's completion never fires workflow_run, so the chain dies
+# after one hop.
+#
+# This used to dispatch one claim at a time behind a global
+# spec-draft concurrency group (a low API rate-limit tier couldn't hold
+# ~5 concurrent sessions). spec-draft now runs under a per-claim group on a
+# high-throughput tier, so the only bound on parallel drafts is wip_cap:
+# intake never holds more active claims than that. Concurrent drafts writing
+# queue.json rely on scripts/state-retry.sh to re-apply a
+# transition that loses the race instead of dropping it.
+#
+# In-flight runs are matched to claims by spec-draft.yml's run-name,
+# "Spec Draft #<issue> (<repo>)". Keep the two in sync.
+#
+# The 30-min cron is the safety net for a dropped or missed workflow_run
+# event. Manual workflow_dispatch force-restarts a stalled chain.
+#
+# Rules:
+# - Dispatch every `claimed` claim with retry_count < MAX_RETRIES that has
+#   no spec-draft requested/queued/pending/waiting/in_progress for it
+# - Never two spec-drafts for one claim (run-name match + per-claim group)
+# - An in-flight run with no claim in its title (an unlabelled legacy "Spec Draft") ->
+#   dispatch nothing this round; it can't be matched to a claim
+# - No-op if no claimed entries remain — logs "drain complete"
+
+on:
+  workflow_run:
+    workflows: ["Spec Draft", "Ticket Intake"]
+    types: [completed]
+  workflow_dispatch:
+  schedule:
+    # Safety net only — the workflow_run trigger above does the real chaining.
+    # Was */5.
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spec-draft-orchestrator
+  cancel-in-progress: false
+
+env:
+  MAX_RETRIES: "3"
+
+jobs:
+  dispatch:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # Not GITHUB_TOKEN — see the header. actions:write on this one repo is
+      # the only grant; the token lists spec-draft runs and dispatches one.
+      - name: Mint App token (dispatch spec-draft so its completion fires workflow_run)
+        id: bot
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: agent-ops
+          permission-actions: write
+
+      - name: Dispatch every claimed ticket without an in-flight spec-draft
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: |
+          # The checkout is pinned to the event's SHA, and the spec-draft that
+          # just completed committed its queue transition moments before.
+          # Read the latest queue.json, not the snapshot.
+          git pull -q --ff-only origin main || true
+
+          inflight_titles() {
+            for st in requested queued pending waiting in_progress; do
+              gh run list --repo "${{ github.repository }}" --workflow=spec-draft.yml \
+                --status "$st" --limit 100 --json displayTitle --jq '.[].displayTitle'
+            done
+          }
+          INFLIGHT=$(inflight_titles)
+          echo "in-flight spec-draft runs: $(grep -c . <<<"$INFLIGHT" || true)"
+          [ -z "$INFLIGHT" ] || while read -r t; do echo "  $t"; done <<<"$INFLIGHT"
+          # A title without a claim is a run dispatched before run-name
+          # existed: we can't tell which claim it holds, so don't risk a
+          # duplicate draft. Its completion re-fires this workflow.
+          if grep -qx 'Spec Draft' <<<"$INFLIGHT"; then
+            echo "An unlabelled (legacy) spec-draft is in flight — dispatching nothing until it completes."
+            exit 0
+          fi
+
+          CANDIDATES=$(jq -c --argjson max "$MAX_RETRIES" \
+            '.claims[] | select(.status == "claimed" and ((.retry_count // 0) < $max))' \
+            state/queue.json)
+          if [ -z "$CANDIDATES" ]; then
+            REMAINING=$(jq '[.claims[] | select(.status == "claimed")] | length' state/queue.json)
+            PENDING=$(jq '[.claims[] | select(.status == "spec-pending")] | length' state/queue.json)
+            ABANDONED=$(jq '[.claims[] | select(.status == "abandoned")] | length' state/queue.json)
+            echo "Drain complete — no more claimed entries with retries < $MAX_RETRIES."
+            echo "Terminal counts: spec-pending=$PENDING abandoned=$ABANDONED claimed(exhausted)=$REMAINING"
+            exit 0
+          fi
+
+          DISPATCHED=()
+          while read -r NEXT; do
+            ISSUE=$(jq -r '.issue' <<<"$NEXT")
+            BRANCH=$(jq -r '.branch' <<<"$NEXT")
+            RETRY=$(jq -r '.retry_count // 0' <<<"$NEXT")
+            # Claims are keyed by (issue, impl_repo); the stage workflows take
+            # the short repo name as their `repo` input. Omitting it silently
+            # falls back to the input default (example-app-core) and the drafter
+            # reads the wrong repo for ground truth.
+            IMPL_REPO=$(jq -r '.impl_repo' <<<"$NEXT")
+            TITLE="Spec Draft #$ISSUE (${IMPL_REPO##*/})"
+            if grep -qxF "$TITLE" <<<"$INFLIGHT"; then
+              echo "Skip #$ISSUE -> $IMPL_REPO: already in flight"
+              continue
+            fi
+            echo "Dispatching spec-draft for #$ISSUE -> $IMPL_REPO (branch=$BRANCH retry=$RETRY)"
+            # --ref is required here: the dispatch token only requests
+            # actions:write (see the App-token step above), which drops the
+            # metadata:read permission `gh workflow run` needs to resolve the
+            # default branch via GraphQL when no --ref is given. Without this,
+            # every dispatch 403s with "Resource not accessible by integration"
+            # and the claim sits at `claimed` forever.
+            gh workflow run spec-draft.yml \
+              --repo "${{ github.repository }}" \
+              --ref main \
+              -f issue="$ISSUE" -f branch="$BRANCH" -f repo="${IMPL_REPO##*/}" </dev/null
+            DISPATCHED+=("$TITLE")
+          done <<<"$CANDIDATES"
+
+          # gh workflow run returns before the run exists. Wait until every
+          # dispatched run is listed, so the next orchestrator run (this
+          # workflow is serialized) sees them in flight and doesn't dispatch
+          # them again.
+          [ "${#DISPATCHED[@]}" -gt 0 ] || { echo "Nothing new to dispatch."; exit 0; }
+          for _ in $(seq 1 12); do
+            SEEN=$(inflight_titles; gh run list --repo "${{ github.repository }}" --workflow=spec-draft.yml \
+              --status completed --limit 20 --json displayTitle --jq '.[].displayTitle')
+            MISSING=0
+            for t in "${DISPATCHED[@]}"; do grep -qxF "$t" <<<"$SEEN" || MISSING=$((MISSING + 1)); done
+            [ "$MISSING" -eq 0 ] && { echo "Dispatched ${#DISPATCHED[@]} spec-draft(s); all registered."; exit 0; }
+            sleep 5
+          done
+          echo "::warning::$MISSING dispatched spec-draft run(s) not listed after 60s — the per-claim concurrency group still prevents two running at once."

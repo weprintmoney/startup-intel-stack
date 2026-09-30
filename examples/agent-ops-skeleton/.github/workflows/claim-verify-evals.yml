@@ -1,0 +1,200 @@
+name: Claim-Verify Golden-Set Evals
+
+# Regression-tests the claim-verify gate — scripts/verify-claims.py (the
+# deterministic pre-pass) and agents/claim-verifier/CLAUDE.md (the fresh-
+# context model check) — against 7 hand-curated cases in
+# evals/claim-verify-cases/: 5 clean (one per known citation root) + 2
+# planted (a spec asserting Postgres storage; a release finding using
+# retired positioning phrases). Contract: expected verdict on every case,
+# every planted claim caught, zero false positives on the clean cases.
+#
+# Two jobs:
+#   deterministic — unit tests + pre-pass-only eval. No secrets, runs on
+#                   every PR touching the gate. This is the cheap signal.
+#   eval          — the full model loop. Gated on ANTHROPIC_API_KEY; weekly
+#                   Monday cron (drift canary), dispatch (`cases` subset,
+#                   `verifier_ref` for pre-merge proposal evals — same shape
+#                   as verifier-evals.yml), and PRs touching the gate.
+#
+# Cost note: 7 cases x 1 verifier on Sonnet, sequential, --max-turns 30.
+#
+# The `deterministic` job also runs
+# scripts/check-citation-root-coverage.py, which fails the build if
+# verify-claims.py's CITATION_ROOTS gains (or loses) a root with no matching
+# golden-set case — the gap that let the `agent-ops` root ship with
+# nothing exercising it end to end.
+
+on:
+  pull_request:
+    paths:
+      - "agents/claim-verifier/CLAUDE.md"
+      - "evals/claim-verify-cases/**"
+      - "scripts/verify-claims.py"
+      - "scripts/verify-claims_test.py"
+      - "scripts/run-claim-verify-evals.py"
+      - "scripts/check-citation-root-coverage.py"
+      - "scripts/check-citation-root-coverage_test.py"
+      - ".github/workflows/claim-verify-evals.yml"
+  schedule:
+    # Mondays 7 AM ET (11:00 UTC) — same slot as judge-evals / verifier-evals
+    - cron: "0 11 * * 1"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "Comma-separated case subset (default: all)"
+        required: false
+        default: ""
+      verifier_ref:
+        description: "agent-ops ref for the gate — model-eval a PROPOSED branch pre-merge (a fail then blocks that proposal, not this workflow). The deterministic job ignores it; open a PR for that layer."
+        required: false
+        default: ""
+
+concurrency:
+  # See judge-evals.yml — same rationale. Cancels the whole workflow
+  # (including `deterministic`) on a new push; that's fine, a stale run's
+  # results are superseded either way.
+  group: claim-verify-evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    # Deliberately ignores `verifier_ref`: a proposed branch gets its
+    # deterministic check from this job's pull_request run on the PR itself.
+    # Checking out an arbitrary input ref here and then executing its scripts
+    # is what CodeQL flags as a default-branch cache-poisoning vector
+    # (actions/cache-poisoning/poisonable-step); only the key-gated `eval`
+    # job takes the proposed ref. No setup-python either — the runner's
+    # python3 covers stdlib + one pip install.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jsonschema (schema-conformance test)
+        run: python3 -m pip install --quiet "jsonschema[format]"
+      - name: Unit tests — verify-claims.py
+        run: python3 scripts/verify-claims_test.py
+      - name: Unit tests — check-citation-root-coverage.py
+        run: python3 scripts/check-citation-root-coverage_test.py
+      - name: Pre-pass eval on the golden set (no model)
+        env:
+          ONLY: ${{ inputs.cases }}
+        run: |
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          python3 scripts/run-claim-verify-evals.py deterministic "${ONLY_FLAG[@]}"
+      - name: Citation-root golden-set coverage
+        run: python3 scripts/check-citation-root-coverage.py
+
+  eval:
+    # See judge-evals.yml — skip the expensive model-loop run on draft PRs.
+    # `deterministic` above still runs regardless — it's the cheap, no-model
+    # signal and costs nothing.
+    if: vars.AGENT_OPS_PAUSED != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    needs: deterministic
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.verifier_ref }}
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$A" ]; then
+            echo "Missing ANTHROPIC_API_KEY (SETUP.md §4) — model eval is a no-op; the deterministic job already ran."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Same reasoning as the deterministic job: no setup-python after an
+      # untrusted-ref checkout. The runner + verify-claims.py are stdlib-only.
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true'
+        uses: ./.github/actions/setup-claude
+
+      - name: Run claim-verifier on golden set
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          ONLY: ${{ inputs.cases }}
+        run: |
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          mkdir -p /tmp/streams /tmp/results
+          for case in $(python3 scripts/run-claim-verify-evals.py cases "${ONLY_FLAG[@]}"); do
+            echo "::group::claim-verifier / $case"
+            python3 scripts/run-claim-verify-evals.py setup --case "$case"
+            bash scripts/run-claude.sh "/tmp/streams/${case}.stream.jsonl" "$(cat agents/claim-verifier/CLAUDE.md)
+
+          Inputs at: /tmp/claim-verify
+          Write verdict to: /tmp/claim-verify/verdict.json" \
+              --allowedTools "Bash,Read,Write,Glob,Grep" \
+              --model claude-sonnet-4-6 \
+              --max-turns 30 \
+              || echo "::warning::claim-verifier errored on $case (recorded as MISSING)"
+            jq -rs '[.[] | select(.type == "result")] | last | .result // ""' "/tmp/streams/${case}.stream.jsonl" | tail -3
+            python3 scripts/run-claim-verify-evals.py collect --case "$case" --results /tmp/results
+            echo "::endgroup::"
+          done
+
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/streams/*.stream.jsonl || true
+
+      - name: Compare verdicts against golden set
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ONLY: ${{ inputs.cases }}
+        run: |
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          python3 scripts/run-claim-verify-evals.py compare --results /tmp/results "${ONLY_FLAG[@]}"
+
+  freeze-on-drift:
+    # A fail on schedule/dispatch means the gate drifted on main (model drift
+    # or fixture rot), not that a proposed change failed review — freeze
+    # auto-merge, same policy as verifier-evals. A dispatch with verifier_ref
+    # evaluates a PROPOSED change; a fail there blocks that proposal only.
+    needs: eval
+    if: failure() && github.event_name != 'pull_request' && inputs.verifier_ref == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set AUTO_MERGE_FROZEN and alert
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Alert first: humans must hear about the drift even if the variable
+          # write below fails. Then fail the step (D-item: a failed write must
+          # fail, not just log) so an unguarded freeze is as visible as the
+          # drift itself, not a quiet ::error:: buried in a green run.
+          FROZE=ok
+          gh api -X PATCH "repos/${{ github.repository }}/actions/variables/AUTO_MERGE_FROZEN" \
+            -f name=AUTO_MERGE_FROZEN -f value=true \
+          || gh api -X POST "repos/${{ github.repository }}/actions/variables" \
+            -f name=AUTO_MERGE_FROZEN -f value=true \
+          || FROZE=failed
+          if [ "$FROZE" = ok ]; then
+            STATUS="\`AUTO_MERGE_FROZEN=true\` set; auto-merge stays frozen until evals are green and the variable is cleared."
+          else
+            STATUS="*could not set \`AUTO_MERGE_FROZEN\`* — auto-merge is NOT frozen; set it manually NOW."
+          fi
+          bash scripts/slack-alert.sh ":rotating_light: *Claim-verify eval fail* on a non-PR run — the gate drifted without a prompt change (model drift or fixture rot). Spec PRs and release-intelligence tickets are gated on this verifier, so a drifted gate = wrong facts reaching reviewers. $STATUS $RUN_URL"
+          [ "$FROZE" = ok ] || exit 1

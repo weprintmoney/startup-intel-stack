@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "generated_by": "starter catalog — replace with the failure patterns your team actually reviews for",
+  "consumers": [
+    "agents/founder-voice-pr-reviewer/CLAUDE.md",
+    "agents/code-judge/CLAUDE.md",
+    ".github/workflows/failure-mode-evals.yml"
+  ],
+  "entries": [
+    {
+      "id": "retries-without-idempotency",
+      "source": "ddia",
+      "chapter_ref": "DDIA §8 exactly-once",
+      "class": "messaging",
+      "surface": ["example-app-service", "example-app-sdk-py"],
+      "signature": "Client or server retries on transient error without an idempotency key; a duplicated side effect (double insert, double charge, duplicate index entry) is possible.",
+      "detection": {
+        "static": ["founder-voice-pr-reviewer: retry helper without idempotency-key arg"],
+        "runtime": ["scenario replay: force retry after side effect committed"],
+        "fixture": "evals/failure-mode-cases/retries-without-idempotency/"
+      }
+    }
+  ]
+}

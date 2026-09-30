@@ -1,0 +1,75 @@
+{
+ "author": {
+  "is_bot": true,
+  "login": "app/dependabot"
+ },
+ "baseRefName": "main",
+ "body": "Bumps [1password/load-secrets-action](https://github.com/1password/load-secrets-action) from 4 to 5.\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\n[![Dependabot compatibility score](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=1password/load-secrets-action&package-manager=github_actions&previous-version=4&new-version=5)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>(release notes stripped for fixture)</details>",
+ "headRefOid": "aa5a697fe374057a64f4aa95143485e0a7884650",
+ "isDraft": false,
+ "labels": [
+  {
+   "id": "LA_fixture300001",
+   "name": "dependencies",
+   "description": "Pull requests that update a dependency file",
+   "color": "0366d6"
+  },
+  {
+   "id": "LA_fixture300002",
+   "name": "github_actions",
+   "description": "Pull requests that update GitHub Actions code",
+   "color": "000000"
+  }
+ ],
+ "latestReviews": [],
+ "mergeStateStatus": "BLOCKED",
+ "mergeable": "MERGEABLE",
+ "number": 121,
+ "reviewRequests": [],
+ "state": "OPEN",
+ "statusCheckRollup": [
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-08-13T20:44:25Z",
+   "conclusion": "SUCCESS",
+   "detailsUrl": "https://github.com/example-org/example-app-sdk-py/actions/runs/3000000001/job/2000000001",
+   "name": "check-contract",
+   "startedAt": "2026-08-13T20:44:17Z",
+   "status": "COMPLETED",
+   "workflowName": "API Contract Test"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-08-13T20:44:30Z",
+   "conclusion": "SUCCESS",
+   "detailsUrl": "https://github.com/example-org/example-app-sdk-py/actions/runs/3000000002/job/2000000002",
+   "name": "lint",
+   "startedAt": "2026-08-13T20:44:17Z",
+   "status": "COMPLETED",
+   "workflowName": "Test example-app Python SDK"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-08-13T20:44:24Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-sdk-py/actions/runs/3000000002/job/2000000003",
+   "name": "test",
+   "startedAt": "2026-08-13T20:44:16Z",
+   "status": "COMPLETED",
+   "workflowName": "Test example-app Python SDK"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-08-13T20:44:06Z",
+   "conclusion": "NEUTRAL",
+   "detailsUrl": "https://github.com/example-org/example-app-sdk-py/runs/3000000003",
+   "name": "CodeQL",
+   "startedAt": "2026-08-13T20:44:05Z",
+   "status": "COMPLETED",
+   "workflowName": ""
+  }
+ ],
+ "title": "Bump 1password/load-secrets-action from 4 to 5",
+ "url": "https://github.com/example-org/example-app-sdk-py/pull/121",
+ "repo": "example-app-sdk-py"
+}

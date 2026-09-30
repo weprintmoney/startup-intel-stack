@@ -1,0 +1,14 @@
+{
+  "case": "clean-03-spec-historical",
+  "kind": "spec",
+  "artifact": "artifact.md",
+  "artifact_ref": "07-engineering-docs/specs/features/9002-connection-string-migration-check.md",
+  "expected_verdict": "verified",
+  "expected_claims": [
+    { "claim": "point it at Postgres historical mention", "expected_verdict": "verified" },
+    { "claim": "MySQL never supported", "expected_verdict": "verified" },
+    { "claim": "postgres and redis removed in v0.17.0", "expected_verdict": "verified" }
+  ],
+  "expected_deterministic": [],
+  "point": "Calibration case. The spec quotes retired positioning phrases historically and negates them (removed in v0.17.0; never supported). The deterministic pass hands these to the model as pending; the model must NOT flag them. Zero false positives."
+}

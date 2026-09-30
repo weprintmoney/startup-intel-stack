@@ -10,6 +10,13 @@
 # enforces that; this script requires the file to exist).
 #
 # Usage: expertise-path-guard.sh <guards-file> <base-ref> [head-ref]
+#
+# Diffs against merge-base(base, head), not base's current tip: a two-dot
+# `git diff base..head` is a raw tree comparison with no ancestry, so once
+# base has moved on since the branch forked, every file base changed in the
+# meantime reads as "touched by this branch" too (found live: a
+# sandbox-verification PR, forked before four unrelated merges landed on
+# guarded paths, failed on files it never touched).
 set -euo pipefail
 
 GUARDS="${1:?usage: expertise-path-guard.sh <guards-file> <base-ref> [head-ref]}"
@@ -30,7 +37,7 @@ while IFS= read -r f; do
         break ;;
     esac
   done < "$GUARDS"
-done < <(git diff --name-only "$BASE..$HEAD_REF")
+done < <(git diff --name-only "$BASE...$HEAD_REF")
 
 if [ "$FAILED" -ne 0 ]; then
   echo ""
@@ -38,4 +45,4 @@ if [ "$FAILED" -ne 0 ]; then
   echo "Route the ticket as mode:requires-expertise instead (08-team-culture/coding-agents.md)."
   exit 1
 fi
-echo "Expertise-path guard clean: $BASE..$HEAD_REF ($GUARDS)"
+echo "Expertise-path guard clean: $BASE...$HEAD_REF ($GUARDS)"

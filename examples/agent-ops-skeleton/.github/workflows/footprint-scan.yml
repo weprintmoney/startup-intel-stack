@@ -3,12 +3,23 @@ name: Footprint Scan
 # Reusable check: fails when a PR carries any Claude/AI footprint (identity,
 # trailers, config files, attribution strings). Public product repos call
 # this as a required check on agent/* branches; the pull_request trigger
-# here self-tests the scanner on this repo's own PRs.
+# here runs scripts/footprint-scan-test.sh — a fixture self-test — on this
+# repo's own PRs. (Scanning agent-ops' own range with production rules can
+# never pass: this repo is made of CLAUDE.md persona files, and its private
+# commits legitimately carry attribution. The fixtures prove the scanner.)
+#
+# A caller outside this repo needs read access to fetch the scanner, since
+# agent-ops is private and the caller's GITHUB_TOKEN is scoped to the caller.
+# Pass AGENT_OPS_READ_TOKEN, same as expertise-path-guard. Fails closed when
+# the fetch is refused, so a footprint can never pass unscanned.
 
 on:
   workflow_call:
+    secrets:
+      AGENT_OPS_READ_TOKEN:
+        required: false
   pull_request:
-    paths: ["scripts/footprint-scan.sh", ".github/workflows/footprint-scan.yml", ".github/actions/strip-attribution/**"]
+    paths: ["scripts/footprint-scan.sh", "scripts/footprint-scan-test.sh", ".github/workflows/footprint-scan.yml", ".github/actions/strip-attribution/**"]
 
 permissions:
   contents: read
@@ -25,14 +36,24 @@ jobs:
       - name: Fetch scanner
         if: github.event.pull_request.base.repo.full_name != '<YOUR_ORG>/agent-ops'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AGENT_OPS_READ_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p scripts
-          gh api repos/<YOUR_ORG>/agent-ops/contents/scripts/footprint-scan.sh \
-            -H "Accept: application/vnd.github.raw" > scripts/footprint-scan.sh
+          if ! gh api repos/<YOUR_ORG>/agent-ops/contents/scripts/footprint-scan.sh \
+            -H "Accept: application/vnd.github.raw" > scripts/footprint-scan.sh; then
+            echo "::error::Could not read the scanner from agent-ops." \
+                 "That repo is private, so a caller's GITHUB_TOKEN cannot read it —" \
+                 "pass AGENT_OPS_READ_TOKEN from the calling repo (see agent-ops SETUP.md §6)."
+            exit 1
+          fi
           chmod +x scripts/footprint-scan.sh
 
       - name: Scan PR range
+        if: github.event.pull_request.base.repo.full_name != '<YOUR_ORG>/agent-ops'
         run: |
           git fetch origin "${{ github.base_ref }}" --quiet
           bash scripts/footprint-scan.sh "origin/${{ github.base_ref }}" HEAD
+
+      - name: Self-test the scanner (fixtures)
+        if: github.event.pull_request.base.repo.full_name == '<YOUR_ORG>/agent-ops'
+        run: bash scripts/footprint-scan-test.sh

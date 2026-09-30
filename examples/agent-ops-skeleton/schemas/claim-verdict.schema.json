@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/example-org/agent-ops/schemas/claim-verdict.schema.json",
+  "title": "Claim verdict",
+  "description": "Output of the claim-verify gate (scripts/verify-claims.py aggregate): every factual claim an agent artifact (spec, release findings) makes about the product, checked against canonical sources by a deterministic pre-pass and a fresh-context claim-verifier. Overall verdict: a material contradiction blocks (spec PR -> draft + label; finding excluded from ticket drafting); an immaterial contradiction (material: false) or any unverified claim flags; verified passes. Persisted at state/releases/<tag>/claim-verdict.json for release findings.",
+  "type": "object",
+  "required": ["artifact_kind", "artifact_ref", "run_url", "verified_at", "verdict", "counts", "sources", "claims"],
+  "additionalProperties": false,
+  "properties": {
+    "artifact_kind": { "enum": ["spec", "release-findings"] },
+    "artifact_ref": { "type": "string", "minLength": 1, "description": "Spec path in internal-docs, or the release tag" },
+    "run_url": { "type": "string", "format": "uri" },
+    "verified_at": { "type": "string", "format": "date-time" },
+    "verdict": { "enum": ["verified", "unverified", "contradicted"] },
+    "counts": {
+      "type": "object",
+      "required": ["verified", "unverified", "contradicted"],
+      "additionalProperties": false,
+      "properties": {
+        "verified": { "type": "integer", "minimum": 0 },
+        "unverified": { "type": "integer", "minimum": 0 },
+        "contradicted": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "description": "Which canonical sources were available this run, with content hashes / checkout refs for reproducibility",
+      "items": {
+        "type": "object",
+        "required": ["name", "present"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "present": { "type": "boolean" },
+          "ref": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "claim", "verdict", "checked_by"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[dm]-[0-9]{2,}$", "description": "d-NN = deterministic pre-pass claim; m-NN = model-enumerated claim" },
+          "kind": { "enum": ["retired-phrase", "path-citation", "graph-node", "version", "evidence-source", "feature-status", "product-behavior", "doc-statement", "other"] },
+          "claim": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "location": { "type": ["string", "null"], "description": "L<line> in a spec; evidence[i] or line within a finding's text" },
+          "verdict": { "enum": ["verified", "unverified", "contradicted"] },
+          "material": {
+            "type": ["boolean", "null"],
+            "description": "Contradicted claims only (null otherwise). false = the model judged the contradiction a measurement off by a little (line count, line number, size) with the artifact's argument intact at the corrected value; listed for a follow-up fix, does not block. Deterministic contradictions are always true."
+          },
+          "checked_by": { "enum": ["deterministic", "model"] },
+          "source": { "type": ["string", "null"], "description": "Which canonical source or checkout path decided it" },
+          "evidence": { "type": ["string", "null"] },
+          "note": { "type": ["string", "null"] },
+          "finding_pr": { "type": ["integer", "null"], "description": "Release findings only: the pr_number of the finding the claim belongs to" }
+        }
+      }
+    }
+  }
+}

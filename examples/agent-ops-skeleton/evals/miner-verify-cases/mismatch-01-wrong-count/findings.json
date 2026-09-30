@@ -1,0 +1,62 @@
+{
+  "miner": "doc-drift-miner",
+  "run_url": "https://github.com/example-org/agent-ops/actions/runs/00000000003",
+  "lookback_days": 9,
+  "created_at": "2026-08-31T12:00:00Z",
+  "findings": [
+    {
+      "id": "f-01-adr-postgres-store",
+      "kind": "staleness",
+      "summary": "adr-postgres-store flagged by digest; last_verified > 60d.",
+      "evidence": [
+        {
+          "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/adr/postgres-store.md",
+          "note": "last_verified: 2026-05-01."
+        }
+      ],
+      "prevalence": { "occurrences": 1, "distinct_sources": 1 },
+      "proposed_change": {
+        "change_type": "frontmatter-edit",
+        "target_path": "07-engineering-docs/adr/postgres-store.md",
+        "detail": "confidence: verified -> assumed.",
+        "risk_if_wrong": "False downgrade if ADR is still accurate."
+      }
+    },
+    {
+      "id": "f-02-adr-redis-store",
+      "kind": "staleness",
+      "summary": "adr-redis-store flagged by digest; last_verified > 60d.",
+      "evidence": [
+        {
+          "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/adr/redis-store.md",
+          "note": "last_verified: 2026-04-15."
+        }
+      ],
+      "prevalence": { "occurrences": 1, "distinct_sources": 1 },
+      "proposed_change": {
+        "change_type": "frontmatter-edit",
+        "target_path": "07-engineering-docs/adr/redis-store.md",
+        "detail": "confidence: verified -> assumed.",
+        "risk_if_wrong": "False downgrade if ADR is still accurate."
+      }
+    },
+    {
+      "id": "f-03-adr-index-format",
+      "kind": "staleness",
+      "summary": "adr-index-format flagged by digest; last_verified > 60d.",
+      "evidence": [
+        {
+          "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/adr/index-format.md",
+          "note": "last_verified: 2026-04-30."
+        }
+      ],
+      "prevalence": { "occurrences": 1, "distinct_sources": 1 },
+      "proposed_change": {
+        "change_type": "frontmatter-edit",
+        "target_path": "07-engineering-docs/adr/index-format.md",
+        "detail": "confidence: verified -> assumed.",
+        "risk_if_wrong": "False downgrade if ADR is still accurate."
+      }
+    }
+  ]
+}

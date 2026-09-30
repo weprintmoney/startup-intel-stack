@@ -8,7 +8,14 @@ set -euo pipefail
 
 BASE="${1:?usage: footprint-scan.sh <base-ref> [head-ref]}"
 HEAD_REF="${2:-HEAD}"
+# git log A..B is reachability (commits in B not in A) and stays correct even
+# once A has moved on; git diff A..B is a raw tree comparison with no
+# ancestry, so it must be three-dot (against merge-base) or a base that has
+# advanced since the branch forked makes every file base touched read as
+# "touched by this branch" too (same bug as expertise-path-guard.sh, found
+# live via a sandbox-verification PR).
 RANGE="$BASE..$HEAD_REF"
+DIFF_RANGE="$BASE...$HEAD_REF"
 MARKERS='claude|anthropic'
 FAILED=0
 
@@ -34,12 +41,12 @@ while read -r f; do
     CLAUDE.md|*/CLAUDE.md|.claude/*|*/.claude/*|.claude.json|*/.claude.json)
       fail "file '$f' is Claude configuration" ;;
   esac
-done < <(git diff --name-only --diff-filter=ACMR "$RANGE")
+done < <(git diff --name-only --diff-filter=ACMR "$DIFF_RANGE")
 
 # 4. Added lines carrying attribution strings
-if git diff "$RANGE" | grep -E '^\+' | grep -qiE "(co-authored-by|generated (with|by)).*($MARKERS)|claude\.com/claude-code"; then
+if git diff "$DIFF_RANGE" | grep -E '^\+' | grep -qiE "(co-authored-by|generated (with|by)).*($MARKERS)|claude\.com/claude-code"; then
   fail "diff adds attribution string(s):"
-  git diff "$RANGE" | grep -E '^\+' | grep -iE "(co-authored-by|generated (with|by)).*($MARKERS)|claude\.com/claude-code" | head -5
+  git diff "$DIFF_RANGE" | grep -E '^\+' | grep -iE "(co-authored-by|generated (with|by)).*($MARKERS)|claude\.com/claude-code" | head -5
 fi
 
 if [ "$FAILED" -ne 0 ]; then

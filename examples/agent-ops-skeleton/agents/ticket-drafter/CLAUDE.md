@@ -17,7 +17,7 @@ For each finding, write one file `/tmp/draft-output/ticket-<pr_number>.md` (crea
 TITLE: [Release Intelligence] <feature name> — <one-line value statement>
 
 **Problem**
-<What gap exists for our target customer. 2–3 sentences. No prospect names — paying customers (Miriel, Austin AI) only when directly relevant.>
+<What gap exists for our target customer. 2–3 sentences. No prospect names — paying customers only when directly relevant.>
 
 **What to create**
 <Specific deliverable — template update, docs change, example. One paragraph.>

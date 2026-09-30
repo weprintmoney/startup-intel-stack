@@ -1,0 +1,194 @@
+name: Failure-Mode Evals
+
+# Runs both PR judges (code-judge, founder-voice-pr-reviewer) against the curated
+# failure-mode fixtures at evals/failure-mode-cases/ — patterns the founder teaches
+# in your team's reference material.
+#
+# A verdict flip = the reviewer regressed on a class of bugs no historical
+# PR happens to exhibit. Unlike judge-evals.yml this workflow does NOT set
+# AUTO_MERGE_FROZEN on drift — instead it Slack-alerts and lets a human
+# decide whether to escalate. Rationale: the failure-mode fixtures are
+# synthetic and evolving; a flip may mean "update the fixture" as often
+# as "the reviewer regressed."
+
+on:
+  pull_request:
+    paths:
+      - "agents/code-judge/CLAUDE.md"
+      - "agents/founder-voice-pr-reviewer/CLAUDE.md"
+      - "evals/failure-mode-cases/**"
+      - "evals/run_failure_mode_eval.py"
+      - "state/failure-modes.json"
+      - "schemas/failure-mode-expected.schema.json"
+      - ".github/workflows/failure-mode-evals.yml"
+  schedule:
+    # Wednesdays 7 AM ET (11:00 UTC) — staggered from judge-evals (Mon)
+    - cron: "0 11 * * 3"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "Comma-separated case subset (default: all)"
+        required: false
+        default: ""
+      rubric_ref:
+        description: "internal-docs ref for the rubric — eval a PROPOSED rubric branch pre-merge"
+        required: false
+        default: ""
+
+concurrency:
+  # See judge-evals.yml — same rationale. Without it a PR under active
+  # iteration can burn a day of runner minutes on stacked, uncancelled runs.
+  group: failure-mode-evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    # See judge-evals.yml — skip the expensive run on draft PRs.
+    if: vars.AGENT_OPS_PAUSED != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - judge: code-judge
+            model: claude-opus-4-7
+          - judge: founder-voice-pr-reviewer
+            model: claude-opus-4-7
+
+    outputs:
+      secrets_missing: ${{ steps.gate.outputs.missing }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
+        run: |
+          if [ -z "$A" ] || [ -z "$K" ] || [ -z "$C" ]; then
+            echo "::error::Missing ANTHROPIC_API_KEY and/or BOT_APP_* (SETUP.md §2) — failure-mode-evals cannot run its golden set. Failing loud instead of a silent no-op that would otherwise report green with zero cases run."
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "missing=false" >> "$GITHUB_OUTPUT"
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
+      - name: Mint internal-docs token (rubric read)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
+
+      - name: Checkout internal-docs (rubric)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ steps.bot-docs.outputs.token }}
+          path: internal-docs
+          ref: ${{ inputs.rubric_ref }}
+          persist-credentials: false
+          sparse-checkout: |
+            07-engineering-docs
+
+      - name: Set up Python
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate fixtures against schema
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          pip install jsonschema
+          python - <<'PY'
+          import json, sys, pathlib
+          from jsonschema import Draft7Validator
+          schema = json.loads(pathlib.Path("schemas/failure-mode-expected.schema.json").read_text())
+          v = Draft7Validator(schema)
+          errors = 0
+          for exp in sorted(pathlib.Path("evals/failure-mode-cases").glob("*/expected.json")):
+              data = json.loads(exp.read_text())
+              for err in v.iter_errors(data):
+                  print(f"::error file={exp}::{err.message}")
+                  errors += 1
+          sys.exit(1 if errors else 0)
+          PY
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true'
+        uses: ./.github/actions/setup-claude
+
+      - name: Run ${{ matrix.judge }} on failure-mode set
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          ONLY: ${{ inputs.cases }}
+        run: |
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          mkdir -p /tmp/streams
+          for case in $(python evals/run_failure_mode_eval.py cases "${ONLY_FLAG[@]}"); do
+            echo "::group::${{ matrix.judge }} / $case"
+            python evals/run_failure_mode_eval.py setup --case "$case" --judge ${{ matrix.judge }}
+            bash scripts/run-claude.sh "/tmp/streams/${case}.stream.jsonl" "$(cat agents/${{ matrix.judge }}/CLAUDE.md)
+
+          Task: evaluate the case staged at /tmp/review-input exactly as you would a production PR.
+          Inputs at: /tmp/review-input
+          Write output to: /tmp/review-output/ (the files your instructions name: verdict.json + findings.md for code-judge; review.md for founder-voice-pr-reviewer)" \
+              --allowedTools "Bash,Read,Write,Glob,Grep" \
+              --model ${{ matrix.model }} \
+              --max-turns 40 \
+              || echo "::warning::judge run errored on $case (recorded as MISSING)"
+            jq -rs '[.[] | select(.type == "result")] | last | .result // ""' "/tmp/streams/${case}.stream.jsonl" | tail -3
+            python evals/run_failure_mode_eval.py collect --judge ${{ matrix.judge }} --case "$case" --results /tmp/results
+            echo "::endgroup::"
+          done
+
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/streams/*.stream.jsonl
+
+      - name: Compare verdicts against expected
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ONLY: ${{ inputs.cases }}
+        run: |
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          python evals/run_failure_mode_eval.py compare --judge ${{ matrix.judge }} --results /tmp/results "${ONLY_FLAG[@]}"
+
+  alert-on-drift:
+    # Slack-alert on schedule/dispatch drift. Unlike judge-evals we do NOT
+    # set AUTO_MERGE_FROZEN — the failure-mode fixtures are opinionated and
+    # a flip may mean "update the fixture." Human decides whether to
+    # escalate to auto-merge freeze.
+    needs: eval
+    if: failure() && needs.eval.outputs.secrets_missing != 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Alert
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/slack-alert.sh ":large_yellow_circle: *Failure-mode eval verdict flip* on a non-PR run. Either a reviewer regressed on a catalogued failure pattern or the fixture needs updating. Not auto-freezing — human decides. $RUN_URL"

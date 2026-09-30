@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/example-org/agent-ops/schemas/dependabot-repos.schema.json",
+  "title": "Dependabot triage policy",
+  "description": "state/dependabot-repos.json — the repos dependabot-triage.yml may act on and how. Keys under repos are short names under the example-org org. A repo absent here is never touched. verify_checks is an allowlist of check-run names that vouch for a bump; [] means label-only, never merge.",
+  "type": "object",
+  "required": ["defaults", "reviewers", "repos"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": {"type": "string"},
+    "defaults": {
+      "type": "object",
+      "required": ["automerge", "merge_method", "max_merges_per_repo_per_run", "max_merges_per_run", "zero_x_minor_is_major"],
+      "additionalProperties": false,
+      "properties": {
+        "automerge": {"type": "boolean", "description": "default per-repo automerge when the repo does not say"},
+        "merge_method": {"enum": ["squash", "merge", "rebase"]},
+        "max_merges_per_repo_per_run": {"type": "integer", "minimum": 0},
+        "max_merges_per_run": {"type": "integer", "minimum": 0},
+        "zero_x_minor_is_major": {"type": "boolean", "description": "0.y.z minor bumps (and any 0.0.z change) classify as major"}
+      }
+    },
+    "reviewers": {
+      "type": "object",
+      "required": ["pool"],
+      "additionalProperties": false,
+      "properties": {
+        "pool": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[A-Za-z0-9-]+$"}, "description": "GitHub handles rotated through for needs-human PRs (pr_number mod active pool)"},
+        "out": {"type": "array", "items": {"type": "string"}, "description": "pool members currently unavailable"},
+        "exclude": {"type": "array", "items": {"type": "string"}, "description": "handles whose existing review request does NOT count as 'already has a reviewer'"}
+      }
+    },
+    "repos": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[A-Za-z0-9._-]+$"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["verify_checks"],
+        "additionalProperties": false,
+        "properties": {
+          "verify_checks": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "check-run names that must all be SUCCESS on the PR head before a minor/patch bump may merge"},
+          "automerge": {"type": "boolean"},
+          "merge_method": {"enum": ["squash", "merge", "rebase"]},
+          "note": {"type": "string"}
+        }
+      }
+    }
+  }
+}

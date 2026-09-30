@@ -1,0 +1,75 @@
+{
+ "author": {
+  "is_bot": true,
+  "login": "app/dependabot"
+ },
+ "baseRefName": "main",
+ "body": "Bumps [sharp](https://github.com/lovell/sharp) to 0.35.4 and updates ancestor dependency [wrangler](https://github.com/cloudflare/workers-sdk/tree/HEAD/packages/wrangler). These dependencies need to be updated together.\n\nUpdates `sharp` from 0.35.3 to 0.35.4\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nUpdates `wrangler` from 4.125.0 to 4.131.0\n<details>(release notes stripped for fixture)</details>\n<details>(release notes stripped for fixture)</details>\n<br />\n\nDependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>(release notes stripped for fixture)</details>",
+ "headRefOid": "8e2255b51a7487a4425e931c8ac134318932694d",
+ "isDraft": false,
+ "labels": [
+  {
+   "id": "LA_fixture300010",
+   "name": "dependencies",
+   "description": "Pull requests that update a dependency file",
+   "color": "0366d6"
+  },
+  {
+   "id": "LA_fixture300011",
+   "name": "javascript",
+   "description": "Pull requests that update javascript code",
+   "color": "168700"
+  }
+ ],
+ "latestReviews": [],
+ "mergeStateStatus": "BLOCKED",
+ "mergeable": "MERGEABLE",
+ "number": 78,
+ "reviewRequests": [],
+ "state": "OPEN",
+ "statusCheckRollup": [
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T04:15:27Z",
+   "conclusion": "SUCCESS",
+   "detailsUrl": "https://github.com/example-org/example-app-web/actions/runs/3000000018/job/2000000020",
+   "name": "ci",
+   "startedAt": "2026-09-11T04:14:03Z",
+   "status": "COMPLETED",
+   "workflowName": "Deploy to Cloudflare Pages"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T04:15:04Z",
+   "conclusion": "FAILURE",
+   "detailsUrl": "https://github.com/example-org/example-app-web/actions/runs/3000000018/job/2000000021",
+   "name": "preview",
+   "startedAt": "2026-09-11T04:14:03Z",
+   "status": "COMPLETED",
+   "workflowName": "Deploy to Cloudflare Pages"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T04:14:01Z",
+   "conclusion": "SKIPPED",
+   "detailsUrl": "https://github.com/example-org/example-app-web/actions/runs/3000000018/job/2000000022",
+   "name": "production",
+   "startedAt": "2026-09-11T04:14:01Z",
+   "status": "COMPLETED",
+   "workflowName": "Deploy to Cloudflare Pages"
+  },
+  {
+   "__typename": "CheckRun",
+   "completedAt": "2026-09-11T04:13:58Z",
+   "conclusion": "NEUTRAL",
+   "detailsUrl": "https://github.com/example-org/example-app-web/runs/3000000019",
+   "name": "CodeQL",
+   "startedAt": "2026-09-11T04:13:57Z",
+   "status": "COMPLETED",
+   "workflowName": ""
+  }
+ ],
+ "title": "Bump sharp and wrangler",
+ "url": "https://github.com/example-org/example-app-web/pull/78",
+ "repo": "example-app-web"
+}

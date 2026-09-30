@@ -1,0 +1,13 @@
+{
+  "case": "clean-04-spec-internal-docs-cited",
+  "kind": "spec",
+  "artifact": "artifact.md",
+  "artifact_ref": "07-engineering-docs/specs/features/9004-metadata-filter-allowlist.md",
+  "expected_verdict": "verified",
+  "expected_claims": [
+    { "claim": "07-engineering-docs/terminus/invariants.md:17 INV-01", "expected_verdict": "verified" },
+    { "claim": "terminus/invariants graph node", "expected_verdict": "verified" }
+  ],
+  "expected_deterministic": [],
+  "point": "Exercises scan_path_citations resolving a path-citation against the internal-docs root end to end (clean-01/03 only ever cite product paths). Zero false positives."
+}

@@ -1,16 +1,22 @@
 name: Ticket Intake
 
-# Stage 1 of the coding loop — deterministic policy, no LLM (D4: humans
+# Stage 1 of the coding loop — deterministic policy, no LLM (humans
 # select tickets by labeling them agent:queued; the agent never self-selects
-# until L4). Every 2h: refuse non-claude-led tickets, claim eligible ones up
-# to the WIP cap into state/queue.json (race-safe via commit-state.sh), and
-# dispatch spec-draft per claim.
-# Degrades gracefully pre-setup: no PRODUCT_REPOS_PAT -> no-op with a notice.
+# until L4). Every 10 minutes: refuse non-claude-led tickets and claim
+# eligible ones up to the WIP cap into state/queue.json (race-safe via
+# commit-state.sh). Polling this often does not multiply spend: intake only
+# claims into open WIP slots, so the cap still bounds concurrent work. It
+# does not dispatch: this workflow's completion fires
+# spec-draft-orchestrator.yml (workflow_run), which dispatches spec-draft one
+# claim at a time with an App token so the chain keeps firing.
+# Degrades gracefully pre-setup: no BOT_APP_PRIVATE_KEY -> no-op with a notice.
 # Exempt from nothing: AGENT_OPS_PAUSED stops intake first.
 
 on:
   schedule:
-    - cron: "23 */2 * * *"
+    # Every 10 min, offset off the hour so intake does not land on the same
+    # minutes as the reapers and the spec-draft orchestrator.
+    - cron: "3,13,23,33,43,53 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -27,40 +33,76 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write   # state/queue.json commits
-      actions: write    # dispatch spec-draft.yml
     env:
-      PRODUCT_REPO: <YOUR_ORG>/example-app-core
+      TICKET_REPO: <YOUR_ORG>/example-app-core
     steps:
       - uses: actions/checkout@v4
 
-      - name: Gate on product-repo token
+      - name: Gate on App credentials
         id: gate
         env:
-          PAT: ${{ secrets.PRODUCT_REPOS_PAT }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
         run: |
-          if [ -z "$PAT" ]; then
-            echo "PRODUCT_REPOS_PAT not configured (issue #1) — intake is a no-op."
+          if [ -z "$K" ] || [ -z "$C" ]; then
+            echo "BOT_APP_* not configured (SETUP.md §2) — intake is a no-op."
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Resolve routable implementation repos
+        id: impl
+        run: |
+          # state/impl-repos.json is the human allowlist; intake refuses any
+          # repo: label outside it (and any without guards/<repo>.paths).
+          LIST=$(jq -r '[.repos | to_entries[] | select(.value.routable) | .key] | join(",")' state/impl-repos.json)
+          echo "repos=$LIST" >> "$GITHUB_OUTPUT"
+          echo "Routable implementation repos: $LIST"
+
+      - name: Mint ticket-repo token (issues write)
+        if: steps.gate.outputs.go == 'true'
+        id: bot
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: read
+
+      # Separate, narrower token: intake only reads refs on the impl repos to
+      # spot an orphaned agent/<n>-* branch. The ticket repo's issues:write
+      # must never reach a public SDK repo.
+      - name: Mint impl-repo token (contents read)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-impl
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ steps.impl.outputs.repos }}
+          permission-contents: read
+
+      - uses: ./.github/actions/bot-identity
+        if: steps.gate.outputs.go == 'true'
+
       - name: Claim eligible tickets
         if: steps.gate.outputs.go == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          IMPL_GH_TOKEN: ${{ steps.bot-impl.outputs.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          STATE_RETRY_CONTEXT: "intake claim commit"
+        # state-retry.sh re-runs intake against fresh state when its queue.json
+        # commit loses a race; refusals already applied are
+        # idempotent (the ticket no longer carries agent:queued). pipefail so a
+        # failed intake fails the job instead of being masked by tee.
         run: |
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
-          bash scripts/ticket-intake.sh | tee /tmp/intake.log
-
-      - name: Dispatch spec-draft per claim
-        if: steps.gate.outputs.go == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          grep '^CLAIM ' /tmp/intake.log | while read -r _ issue branch; do
-            gh workflow run spec-draft.yml -f issue="$issue" -f branch="$branch" ||
-              echo "::warning::spec-draft dispatch failed for #$issue"
-          done
+          set -o pipefail
+          bash scripts/state-retry.sh state/queue.json bash scripts/ticket-intake.sh | tee /tmp/intake.log

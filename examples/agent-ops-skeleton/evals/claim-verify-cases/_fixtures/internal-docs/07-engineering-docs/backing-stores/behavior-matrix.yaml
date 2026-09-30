@@ -1,0 +1,35 @@
+# Backing-store behavior matrix — FIXTURE (condensed, synthetic).
+# Canonical rows for what each backing store is and since/until which version.
+schema_version: 1
+last_updated: 2026-08-20
+
+backing_stores:
+  memory:
+    status: supported
+    since_version: "0.10.0"
+    deprecated_in: null
+    removed_in: null
+    persistence: none
+  disk:
+    status: supported
+    since_version: "0.17.0"
+    deprecated_in: null
+    removed_in: null
+    notes: "Embedded RocksDB. Default for the service (EXAMPLE_APP_DB_TYPE=disk). Renamed from `standalone` in 0.17.0."
+  s3:
+    status: supported
+    since_version: "0.15.0"
+    deprecated_in: null
+    removed_in: null
+    notes: "AWS S3 and S3-compatible stores (MinIO, R2)."
+  postgres:
+    status: removed
+    since_version: "0.10.0"
+    deprecated_in: "0.16.0"
+    removed_in: "0.17.0"
+    notes: "Removed with the v0.17.0 storage refactor; EXAMPLE_APP_CONNECTION_STRING is gone."
+  redis:
+    status: removed
+    since_version: "0.11.0"
+    deprecated_in: "0.16.0"
+    removed_in: "0.17.0"

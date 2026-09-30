@@ -1,0 +1,65 @@
+name: Install Preflight
+
+# Answers one question a laptop cannot: is the example-app-bot App actually
+# installed on the repos the pipeline is about to write to? Every mint in
+# ticket-intake / spec-draft / implement / code-judge 404s on an uninstalled
+# repo, and the failure surfaces as an opaque token error deep in a run.
+#
+# Checks every repo in state/impl-repos.json (plus any extra repos passed in)
+# and every repo in state/dependabot-repos.json, and reports installation
+# state and the granted permissions per repo. Logic lives in
+# scripts/app-installed-repos.py, shared with dependabot-triage.yml.
+#
+# Diagnostic only — no agent work, no model calls, no writes to product
+# repos — so it is deliberately NOT gated on AGENT_OPS_PAUSED. Run it after
+# anyone installs the App somewhere new.
+
+on:
+  workflow_dispatch:
+    inputs:
+      extra_repos:
+        description: "Extra repos to check beyond state/impl-repos.json (comma-separated short names)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyJWT
+        run: pip install --quiet "pyjwt[crypto]"
+
+      - name: Check App installation — pipeline repos (state/impl-repos.json + extra)
+        env:
+          CLIENT_ID: ${{ vars.BOT_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          EXTRA_REPOS: ${{ inputs.extra_repos }}
+        run: |
+          # Permissions the pipeline mints: implement needs contents+PRs+issues
+          # write on the routed repo; intake needs contents read across all.
+          python scripts/app-installed-repos.py --impl-repos state/impl-repos.json --repos "$EXTRA_REPOS" \
+            --needed contents:write,pull_requests:write,issues:write --strict \
+            --title "example-app-bot install preflight — pipeline repos"
+
+      - name: Check App installation — Dependabot triage repos (state/dependabot-repos.json)
+        if: always()
+        env:
+          CLIENT_ID: ${{ vars.BOT_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+        run: |
+          # dependabot-triage mints contents+PRs write (approve, merge, label)
+          # and needs Checks: read to see check-run conclusions on private repos.
+          python scripts/app-installed-repos.py --policy state/dependabot-repos.json \
+            --needed contents:write,pull_requests:write,checks:read --strict \
+            --title "example-app-bot install preflight — Dependabot triage repos"

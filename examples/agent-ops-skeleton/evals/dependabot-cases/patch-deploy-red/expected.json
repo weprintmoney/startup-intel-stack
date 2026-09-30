@@ -1,0 +1,9 @@
+{
+ "outcome": "merge",
+ "class": "patch",
+ "bumps": 1,
+ "verify": {
+  "Lint & Build": "green"
+ },
+ "note": "captured from a sample repo; outcome hand-checked"
+}

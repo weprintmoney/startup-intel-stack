@@ -1,0 +1,80 @@
+{
+  "$comment": "Policy for dependabot-triage.yml. A repo absent here is never touched. verify_checks is an allowlist: only these check names vouch for a bump \u2014 deploy/preview/E2E jobs that cannot pass on Dependabot PRs (no repo secrets) are simply not listed. verify_checks [] = label-only, never merge. automerge stays false per repo until the repo has soaked in observe mode and, for production-deploying repos, a decision-log entry exists.",
+  "defaults": {
+    "automerge": false,
+    "merge_method": "squash",
+    "max_merges_per_repo_per_run": 3,
+    "max_merges_per_run": 10,
+    "zero_x_minor_is_major": true
+  },
+  "reviewers": {
+    "pool": [
+      "reviewer-a-handle",
+      "reviewer-b-handle",
+      "other-eng-handle",
+      "reviewer-c-handle"
+    ],
+    "out": [
+      "reviewer-c-handle"
+    ],
+    "exclude": [
+      "eng-lead-handle",
+      "founder-handle"
+    ]
+  },
+  "repos": {
+    "example-app-sdk-py": {
+      "verify_checks": [
+        "lint",
+        "check-contract"
+      ],
+      "note": "a repo-wide flaky check is deliberately not listed \u2014 add it back when fixed"
+    },
+    "example-app-sdk-js": {
+      "verify_checks": [
+        "lint",
+        "check-contract",
+        "test"
+      ]
+    },
+    "example-app-sdk-go": {
+      "verify_checks": [
+        "lint",
+        "check-contract"
+      ],
+      "note": "a check that is red on recent Dependabot PRs \u2014 confirm it is red on main too, then add it"
+    },
+    "internal-docs": {
+      "verify_checks": [
+        "lint",
+        "graph"
+      ],
+      "note": "preview/production are secrets-gated deploys, not verification"
+    },
+    "example-app-web": {
+      "verify_checks": [
+        "ci"
+      ],
+      "note": "production website \u2014 decision-log entry before automerge; preview/production are deploys"
+    },
+    "example-app-dashboard": {
+      "verify_checks": [
+        "Lint & Build"
+      ],
+      "note": "deploy + E2E need secrets that Dependabot PRs do not get"
+    },
+    "example-app-backend": {
+      "verify_checks": [
+        "lint-and-test"
+      ]
+    },
+    "example-app-service": {
+      "verify_checks": [
+        "lint",
+        "download_core_wheel",
+        "test-amd64"
+      ],
+      "note": "test matrix flakes on recent PRs; deploys on merge; .github/** is expertise-guarded"
+    }
+  }
+}

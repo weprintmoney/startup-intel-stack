@@ -1,0 +1,439 @@
+name: Revise
+
+# One revision round of the bounded judge -> revise -> re-judge loop (CLAUDE.md hard rule 8 names this as its only counted exception).
+#
+# Dispatched by code-judge.yml when a verdict is `fail`, the round is below
+# the cap, and the ticket is under its cost ceiling. Runs agents/reviser in
+# a fresh context on (judge findings, PR review threads, current diff, spec),
+# squashes the round into one bot-authored commit, runs the expertise and
+# footprint guards, pushes, records the round in the PR body's round block
+# and the push in state/provenance.json, then re-dispatches code-judge with
+# round+1. A reviser that finds nothing fixable in scope (RESULT: BLOCKED),
+# or any failure in this workflow, labels the PR agent:needs-human and posts
+# the round history to Slack — every exit lands on a human.
+#
+# Round state lives in the PR body (scripts/round-history.py), never here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number on the implementation repo"
+        required: true
+      issue:
+        description: "example-app-core ticket number (optional; used for the spec and the ticket context)"
+        required: false
+        default: ""
+      repo:
+        description: "Implementation repo short name (e.g. example-app-sdk-py)"
+        required: true
+      round:
+        description: "The judge round that failed (this revision answers it; the next judge runs as round+1)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revise-${{ inputs.repo }}-${{ inputs.pr }}
+  cancel-in-progress: false
+
+env:
+  TICKET_REPO: <YOUR_ORG>/example-app-core
+  IMPL_REPO: <YOUR_ORG>/${{ inputs.repo }}
+  ROUND_CAP: "3"
+
+jobs:
+  revise:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write   # sessions/ transcript + state/provenance.json
+      actions: write    # dispatch code-judge.yml for the next round
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bot-identity
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
+        run: |
+          MISSING=""
+          [ -z "$A" ] && MISSING="$MISSING ANTHROPIC_API_KEY"
+          [ -z "$K" ] && MISSING="$MISSING BOT_APP_PRIVATE_KEY"
+          [ -z "$C" ] && MISSING="$MISSING BOT_APP_CLIENT_ID"
+          if [ -n "$MISSING" ]; then
+            echo "Missing secrets/vars (SETUP.md §2):$MISSING — revise is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint product-repo token (read PR, checkout)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-read
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }},example-app-core
+          permission-contents: write
+          permission-pull-requests: read
+          permission-issues: read
+
+      - name: Mint internal-docs token (spec read)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
+
+      # Fresh-context rule 10: the reviser gets artifacts, never a transcript.
+      # The judge's findings are its last `## code-judge:` comment on the PR;
+      # the review threads are the PR's reviews + review comments.
+      - name: Assemble reviser inputs
+        if: steps.gate.outputs.go == 'true'
+        id: inputs
+        env:
+          GH_TOKEN: ${{ steps.bot-read.outputs.token }}
+          DOCS_TOKEN: ${{ steps.bot-docs.outputs.token }}
+          PR: ${{ inputs.pr }}
+          ISSUE: ${{ inputs.issue }}
+          ROUND: ${{ inputs.round }}
+        run: |
+          mkdir -p /tmp/review-input /tmp/review-output
+          gh pr view "$PR" -R "$IMPL_REPO" --json headRefName,headRefOid,body,title,state,labels > /tmp/pr.json
+          STATE=$(jq -r .state /tmp/pr.json)
+          [ "$STATE" = "OPEN" ] || { echo "::error::PR #$PR is $STATE — nothing to revise"; exit 1; }
+          BRANCH=$(jq -r .headRefName /tmp/pr.json)
+          case "$BRANCH" in agent/*) ;; *) echo "::error::PR #$PR head '$BRANCH' is not an agent/* branch — the reviser only works agent branches"; exit 1 ;; esac
+          [ "$ROUND" -ge 1 ] 2>/dev/null || { echo "::error::round must be a positive integer, got '$ROUND'"; exit 1; }
+          [ "$ROUND" -lt "$ROUND_CAP" ] || { echo "::error::round $ROUND is at the cap ($ROUND_CAP) — code-judge should have handed this to a human"; exit 1; }
+          jq -r '.body // ""' /tmp/pr.json > /tmp/pr-body.md
+          jq -r '"# PR: " + .title + "\n\n" + (.body // "")' /tmp/pr.json > /tmp/review-input/context.md
+          python3 scripts/round-history.py --body /tmp/pr-body.md read > /tmp/review-input/rounds.json
+          gh pr diff "$PR" -R "$IMPL_REPO" > /tmp/review-input/diff.patch
+          [ -s /tmp/review-input/diff.patch ] || { echo "::error::empty diff for PR #$PR"; exit 1; }
+          # Judge findings: the most recent code-judge comment on the PR.
+          gh api --paginate "repos/$IMPL_REPO/issues/$PR/comments" \
+            --jq '[.[] | select(.body | startswith("## code-judge:"))] | last | .body // empty' \
+            > /tmp/review-input/findings.md
+          [ -s /tmp/review-input/findings.md ] || { echo "::error::no code-judge findings comment on PR #$PR — run code-judge first"; exit 1; }
+          # Review threads: reviews with a body + inline review comments, path:line cited.
+          {
+            gh api --paginate "repos/$IMPL_REPO/pulls/$PR/reviews" \
+              --jq '.[] | select((.body // "") != "") | "### Review by \(.user.login) — \(.state)\n\n\(.body)\n"'
+            echo "### Inline review comments"
+            echo
+            # shellcheck disable=SC2016  # literal backticks are jq/markdown formatting, not shell command substitution
+            gh api --paginate "repos/$IMPL_REPO/pulls/$PR/comments" \
+              --jq '.[] | "- `\(.path):\(.line // .original_line // "?")` (\(.user.login)): \(.body | gsub("\r?\n"; " "))"'
+          } > /tmp/review-input/reviews.md || true
+          if [ -n "$ISSUE" ]; then
+            gh api "repos/$TICKET_REPO/issues/$ISSUE" --jq '{title, body, labels: [.labels[].name]}' > /tmp/review-input/ticket.json || true
+            SPEC_PATH=$(jq -r --argjson n "$ISSUE" --arg r "$IMPL_REPO" \
+              '[.claims[] | select(.issue == $n and .impl_repo == $r)] | last | .spec_path // ""' state/queue.json)
+            if [ -n "$SPEC_PATH" ]; then
+              GH_TOKEN="$DOCS_TOKEN" gh api "repos/<YOUR_ORG>/internal-docs/contents/$SPEC_PATH" \
+                -H "Accept: application/vnd.github.raw" > /tmp/review-input/spec.md || rm -f /tmp/review-input/spec.md
+            fi
+          fi
+          {
+            echo "branch=$BRANCH"
+            echo "base_sha=$(jq -r .headRefOid /tmp/pr.json)"
+          } >> "$GITHUB_OUTPUT"
+          ls -la /tmp/review-input
+
+      - name: Checkout product repo (PR branch)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IMPL_REPO }}
+          token: ${{ steps.bot-read.outputs.token }}
+          path: product
+          ref: ${{ steps.inputs.outputs.branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true'
+        uses: ./.github/actions/setup-claude
+
+      - name: Run reviser (fresh context)
+        if: steps.gate.outputs.go == 'true'
+        id: run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          ISSUE_NUMBER: ${{ inputs.issue }}
+          PR_NUMBER: ${{ inputs.pr }}
+          BRANCH: ${{ steps.inputs.outputs.branch }}
+          ROUND: ${{ inputs.round }}
+        run: |
+          bash scripts/run-claude.sh /tmp/revise.stream.jsonl "$(cat agents/reviser/CLAUDE.md)
+
+          Task: revise $IMPL_REPO PR #$PR_NUMBER (branch $BRANCH, ticket $TICKET_REPO#${ISSUE_NUMBER:-unknown}) so the judge's findings in findings.md no longer hold; this is round $ROUND of $ROUND_CAP. Fix every finding you can within the spec and outside the guarded paths; list the rest under Not fixed with one reason each. Run the repo's CI lint/format commands before each commit. Commit; do not push.
+          Inputs at: /tmp/review-input (findings.md, reviews.md, diff.patch, rounds.json, context.md; spec.md and ticket.json when present); ./product (branch checked out); ./guards/${{ inputs.repo }}.paths
+          Write output to: commits in ./product on branch $BRANCH (not pushed) and /tmp/review-output/changes.md
+          End with exactly one RESULT: line." \
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
+            --model claude-sonnet-4-6 \
+            --max-turns 80
+          jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/revise.stream.jsonl | tail -5
+          bash scripts/result-line.sh /tmp/revise.stream.jsonl | tee -a "$GITHUB_OUTPUT"
+          echo "cost=$(jq -rs '[.[] | select(.type == "result")] | last | .total_cost_usd // 0' /tmp/revise.stream.jsonl)" >> "$GITHUB_OUTPUT"
+
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/revise.stream.jsonl || true
+
+      # A BLOCKED result, or a REVISED result with no commit behind it, is a
+      # legitimate terminal state: the human gets the reviser's "Not fixed"
+      # list. It is not a workflow failure.
+      - name: Classify the reviser result
+        if: steps.gate.outputs.go == 'true'
+        id: classify
+        env:
+          RESULT: ${{ steps.run.outputs.result }}
+          DETAIL: ${{ steps.run.outputs.result_detail }}
+          BASE_SHA: ${{ steps.inputs.outputs.base_sha }}
+        run: |
+          NEW=$(git -C product rev-list --count "$BASE_SHA..HEAD")
+          if [ "$RESULT" = "REVISED" ] && [ "$NEW" -gt 0 ]; then
+            echo "outcome=revised" >> "$GITHUB_OUTPUT"; echo "reviser: REVISED ($DETAIL), $NEW new commit(s)"
+          elif [ "$RESULT" = "REVISED" ]; then
+            echo "outcome=blocked" >> "$GITHUB_OUTPUT"
+            echo "reason=reviser reported REVISED but committed nothing" >> "$GITHUB_OUTPUT"
+            echo "::warning::REVISED with no commits — treated as BLOCKED"
+          elif [ "$RESULT" = "BLOCKED" ]; then
+            echo "outcome=blocked" >> "$GITHUB_OUTPUT"
+            echo "reason=$DETAIL" >> "$GITHUB_OUTPUT"
+            echo "reviser: BLOCKED $DETAIL"
+          else
+            echo "::error::reviser result: ${RESULT:-none} $DETAIL"
+            exit 1
+          fi
+
+      # Fresh token before writes: the reviser can run most of the hour.
+      - name: Mint product-repo token (push + PR)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-push
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      # The checkout above used persist-credentials: false, so origin carries no
+      # credential until the push step re-authenticates it. That's silent on a
+      # public product repo (anonymous fetch works) but the guard and scan
+      # fetches below hard-fail with "could not read Username" on a private one
+      # (found via a sandbox verification run). Authenticate here so both fetches work regardless of visibility.
+      - name: Authenticate product-repo origin
+        if: steps.gate.outputs.go == 'true' && steps.classify.outputs.outcome == 'revised'
+        env:
+          GH_TOKEN: ${{ steps.bot-push.outputs.token }}
+        run: git -C product remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${IMPL_REPO}.git"
+
+      - name: Expertise-path guard before push
+        if: steps.gate.outputs.go == 'true' && steps.classify.outputs.outcome == 'revised'
+        run: |
+          cd product
+          DEFAULT=$(git remote show origin | awk '/HEAD branch/ {print $NF}')
+          git fetch origin "$DEFAULT" --quiet
+          bash "$GITHUB_WORKSPACE/scripts/expertise-path-guard.sh" \
+            "$GITHUB_WORKSPACE/guards/${{ inputs.repo }}.paths" "origin/$DEFAULT" HEAD
+
+      - name: Build the round commit message
+        if: steps.gate.outputs.go == 'true' && steps.classify.outputs.outcome == 'revised'
+        env:
+          ROUND: ${{ inputs.round }}
+        run: |
+          {
+            echo "Revision round $ROUND: address code-judge findings"
+            echo ""
+            if [ -s /tmp/review-output/changes.md ]; then
+              sed -n '/^### Fixed/,/^### Not fixed/p' /tmp/review-output/changes.md | grep '^- ' | cut -c1-200 || true
+            fi
+          } > /tmp/commit-msg.txt
+
+      # Hard rule 5: one bot-authored commit per round, attribution scrubbed.
+      # base-ref is the PR head this round started from, so only this round
+      # is squashed and the branch stays fast-forwardable.
+      - uses: ./.github/actions/strip-attribution
+        if: steps.gate.outputs.go == 'true' && steps.classify.outputs.outcome == 'revised'
+        with:
+          path: product
+          base-ref: ${{ steps.inputs.outputs.base_sha }}
+          message-file: /tmp/commit-msg.txt
+
+      - name: Footprint scan before push
+        if: steps.gate.outputs.go == 'true' && steps.classify.outputs.outcome == 'revised'
+        run: |
+          cd product
+          DEFAULT=$(git remote show origin | awk '/HEAD branch/ {print $NF}')
+          git fetch origin "$DEFAULT" --quiet
+          bash "$GITHUB_WORKSPACE/scripts/footprint-scan.sh" "origin/$DEFAULT" HEAD
+
+      - name: Push the round
+        if: steps.gate.outputs.go == 'true' && steps.classify.outputs.outcome == 'revised'
+        id: push
+        env:
+          GH_TOKEN: ${{ steps.bot-push.outputs.token }}
+          BRANCH: ${{ steps.inputs.outputs.branch }}
+          BASE_SHA: ${{ steps.inputs.outputs.base_sha }}
+        run: |
+          cd product
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${IMPL_REPO}.git"
+          # The lease is the head this round started from: a human push in the
+          # meantime wins and this round is dropped rather than clobbering it.
+          git push --force-with-lease="$BRANCH:$BASE_SHA" origin "$BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Comment the round on the PR
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot-push.outputs.token }}
+          PR: ${{ inputs.pr }}
+          ROUND: ${{ inputs.round }}
+          OUTCOME: ${{ steps.classify.outputs.outcome }}
+          REASON: ${{ steps.classify.outputs.reason }}
+          SHA: ${{ steps.push.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            if [ -s /tmp/review-output/changes.md ]; then
+              cat /tmp/review-output/changes.md
+            else
+              echo "## Revision round $ROUND"
+              echo
+              echo "The reviser wrote no changes.md."
+            fi
+            echo
+            if [ "$OUTCOME" = "revised" ]; then
+              echo "<sub>pushed \`${SHA:0:7}\` · re-judging as round $((ROUND + 1)) · [run]($RUN_URL)</sub>"
+            else
+              echo "<sub>nothing fixable in scope (${REASON:-no reason given}) — handed to a human · [run]($RUN_URL)</sub>"
+            fi
+          } > /tmp/round-comment.md
+          gh api -X POST "repos/$IMPL_REPO/issues/$PR/comments" -F body=@/tmp/round-comment.md \
+            || echo "::warning::could not post the round comment"
+
+      - name: Record the round in the PR body
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot-push.outputs.token }}
+          PR: ${{ inputs.pr }}
+          ROUND: ${{ inputs.round }}
+          COST: ${{ steps.run.outputs.cost }}
+          SHA: ${{ steps.push.outputs.sha }}
+          OUTCOME: ${{ steps.classify.outputs.outcome }}
+          REASON: ${{ steps.classify.outputs.reason }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr view "$PR" -R "$IMPL_REPO" --json body --jq '.body // ""' > /tmp/pr-body.md
+          NOTE="revised"; [ "$OUTCOME" = "revised" ] || NOTE="blocked: ${REASON:-no reason}"
+          python3 scripts/round-history.py --body /tmp/pr-body.md append --cap "$ROUND_CAP" --entry \
+            "$(jq -n --argjson r "$ROUND" --argjson c "${COST:-0}" --arg sha "${SHA:-}" --arg url "$RUN_URL" --arg n "$NOTE" \
+                '{round: $r, stage: "revise", cost_usd: $c, sha: $sha, run_url: $url, note: $n}')"
+          gh pr edit "$PR" -R "$IMPL_REPO" --body-file /tmp/pr-body.md
+
+      - name: Record provenance
+        if: steps.gate.outputs.go == 'true' && steps.classify.outputs.outcome == 'revised'
+        env:
+          PR: ${{ inputs.pr }}
+          ISSUE: ${{ inputs.issue }}
+          ROUND: ${{ inputs.round }}
+          BRANCH: ${{ steps.inputs.outputs.branch }}
+          SHA: ${{ steps.push.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git pull --rebase origin main || true
+          bash scripts/record-provenance.sh "$IMPL_REPO" "$PR" "$BRANCH" "$SHA" "${ISSUE:--}" revise "$ROUND" "$RUN_URL" claude-sonnet-4-6
+
+      - name: Dispatch code-judge (next round)
+        if: steps.gate.outputs.go == 'true' && steps.classify.outputs.outcome == 'revised'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ inputs.pr }}
+          ISSUE: ${{ inputs.issue }}
+          ROUND: ${{ inputs.round }}
+        run: |
+          gh workflow run code-judge.yml -f pr="$PR" -f issue="$ISSUE" -f repo="${{ inputs.repo }}" -f round="$((ROUND + 1))" \
+            || { echo "::error::could not dispatch code-judge for round $((ROUND + 1)) — run: gh workflow run code-judge.yml -f pr=$PR -f repo=${{ inputs.repo }} -f round=$((ROUND + 1))"; exit 1; }
+
+      # Terminal: nothing fixable in scope. Label + Slack with the round history.
+      - name: Hand to a human (reviser blocked)
+        if: steps.gate.outputs.go == 'true' && steps.classify.outputs.outcome == 'blocked'
+        env:
+          GH_TOKEN: ${{ steps.bot-push.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          PR: ${{ inputs.pr }}
+          ROUND: ${{ inputs.round }}
+          REASON: ${{ steps.classify.outputs.reason }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create "agent:needs-human" -R "$IMPL_REPO" --color FBCA04 --force \
+            --description "The bounded judge/revise loop ended without a pass — a human decides (see the PR's round block)" >/dev/null 2>&1 || true
+          gh pr edit "$PR" -R "$IMPL_REPO" --add-label "agent:needs-human" || echo "::warning::could not add label"
+          PR_URL="https://github.com/$IMPL_REPO/pull/$PR"
+          HISTORY=$(python3 scripts/round-history.py --body /tmp/pr-body.md summary)
+          bash scripts/slack-alert.sh ":raised_hand: Revise round $ROUND could not fix the judge's findings in scope on $PR_URL ($TICKET_REPO#${{ inputs.issue }}) — ${REASON:-no reason given}. Labeled agent:needs-human; the reviser's Not-fixed list is on the PR.
+          $HISTORY
+          $RUN_URL"
+
+      - name: Save transcript to sessions/
+        if: always() && steps.gate.outputs.go == 'true'
+        run: |
+          [ -s /tmp/revise.stream.jsonl ] || exit 0
+          WEEK=$(date -u +%G-W%V)
+          mkdir -p "sessions/$WEEK"
+          sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+            /tmp/revise.stream.jsonl > "sessions/$WEEK/revise-${{ inputs.repo }}-pr${{ inputs.pr }}-r${{ inputs.round }}.stream.jsonl" || true
+          git add "sessions/$WEEK" && git commit -m "sessions: revise ${{ inputs.repo }} PR #${{ inputs.pr }} round ${{ inputs.round }}" || exit 0
+          for _ in 1 2 3; do
+            if git push; then
+              break
+            else
+              git pull --rebase origin main
+            fi
+          done
+
+      # A crashed revision must still end at a human: label the PR and post the
+      # round history. The claim stays pr-open — the PR exists and is theirs now.
+      - name: Alert on failure
+        if: failure() && steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot-push.outputs.token || steps.bot-read.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          PR: ${{ inputs.pr }}
+          ROUND: ${{ inputs.round }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create "agent:needs-human" -R "$IMPL_REPO" --color FBCA04 --force \
+            --description "The bounded judge/revise loop ended without a pass — a human decides (see the PR's round block)" >/dev/null 2>&1 || true
+          gh pr edit "$PR" -R "$IMPL_REPO" --add-label "agent:needs-human" 2>/dev/null || true
+          HISTORY=$( [ -s /tmp/pr-body.md ] && python3 scripts/round-history.py --body /tmp/pr-body.md summary || echo "(round history unavailable)")
+          if SYSTEMIC=$(bash scripts/is-systemic-failure.sh /tmp/revise.stream.jsonl); then
+            echo "::warning::Suppressing Slack alert — systemic failure detected: $SYSTEMIC"
+          else
+            bash scripts/slack-alert.sh ":x: revise round $ROUND failed on https://github.com/$IMPL_REPO/pull/$PR ($TICKET_REPO#${{ inputs.issue }}) — labeled agent:needs-human, nothing was pushed unless the log says so.
+          $HISTORY
+          $RUN_URL"
+          fi

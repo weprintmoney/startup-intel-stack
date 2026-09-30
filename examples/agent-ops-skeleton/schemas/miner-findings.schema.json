@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/<YOUR_ORG>/agent-ops/schemas/miner-findings.schema.json",
+  "$id": "https://github.com/example-org/agent-ops/schemas/miner-findings.schema.json",
   "title": "Miner findings",
   "description": "Output of one mining subagent (dream-loop miners and Phase-1 graph-seeding miners). The orchestrator synthesizes findings and applies the 3x evidence bar before proposing changes.",
   "type": "object",

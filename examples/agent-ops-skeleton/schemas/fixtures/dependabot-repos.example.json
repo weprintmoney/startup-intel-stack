@@ -1,0 +1,25 @@
+{
+  "$comment": "Example policy: one repo that may auto-merge on green lint+test, one label-only repo.",
+  "defaults": {
+    "automerge": false,
+    "merge_method": "squash",
+    "max_merges_per_repo_per_run": 3,
+    "max_merges_per_run": 10,
+    "zero_x_minor_is_major": true
+  },
+  "reviewers": {
+    "pool": ["alice-handle", "bob-handle"],
+    "out": [],
+    "exclude": ["lead-handle"]
+  },
+  "repos": {
+    "example-sdk": {
+      "verify_checks": ["lint", "test"],
+      "automerge": true
+    },
+    "example-legacy": {
+      "verify_checks": [],
+      "note": "no CI — label + reviewer only"
+    }
+  }
+}

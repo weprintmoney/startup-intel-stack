@@ -1,0 +1,274 @@
+name: Dependabot Triage
+
+# Dependabot PRs tend to concentrate on the engineering lead. This run
+# classifies every open Dependabot PR on the repos in
+# state/dependabot-repos.json and, in `act` mode, does the boring part:
+#
+#   minor/patch bump, verification checks green  -> approve + squash merge
+#                                                   (only if the repo's automerge is on)
+#   major / 0.x-minor / unparseable bump           -> deps:needs-human + round-robin reviewer
+#   verification red here, green on main          -> deps:blocked + one diagnosis comment
+#   verification red on main too / missing        -> deps:blocked or summary-only
+#
+# Everything a regex or a check-run lookup can decide lives in
+# scripts/dependabot-triage.py (unit-tested against evals/dependabot-cases).
+# The one model node (dependabot-diagnoser) runs only on a regression and only
+# writes the "why it broke" paragraph -- it never gates a decision.
+#
+# Fail-closed everywhere: repo not in the policy -> untouched; App not
+# installed on a repo -> that repo is skipped and listed, the run stays green;
+# DEPENDABOT_MODE anything but the literal `act` -> observe (zero PR writes).
+# Verification is an allowlist per repo because deploy/preview/E2E jobs can
+# never pass on a Dependabot PR (no repo secrets) -- "all checks green" would
+# merge nothing, ever. The target repos require one approving review and no
+# status checks, so the App's approval is the merge gate; the checks are ours.
+#
+# Slack: only `Alert on failure`. Needs-human PRs surface through the
+# internal-docs PR digest (#engineering), not from here.
+
+on:
+  schedule:
+    - cron: "52 */6 * * *"   # every 6h at :52 (offset from the other pollers)
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Comma-separated short repo names (default: every repo in state/dependabot-repos.json)"
+        required: false
+        type: string
+      pr:
+        description: "Only this PR number (use with a single repo)"
+        required: false
+        type: string
+      mode:
+        description: "observe | act (default: repo variable DEPENDABOT_MODE, else observe)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependabot-triage
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write   # sessions/ transcript when the diagnoser ran
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on App credentials
+        id: gate
+        env:
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
+        run: |
+          if [ -z "$K" ] || [ -z "$C" ]; then
+            echo "BOT_APP_* not configured (SETUP.md §2) — triage is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve mode (only the literal `act` writes)
+        id: mode
+        env:
+          IN: ${{ inputs.mode }}
+          VAR: ${{ vars.DEPENDABOT_MODE }}
+        run: |
+          MODE="$IN"; [ -n "$MODE" ] || MODE="$VAR"
+          [ "$MODE" = "act" ] || MODE=observe
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE"
+
+      - uses: ./.github/actions/bot-identity
+        if: steps.gate.outputs.go == 'true'
+
+      - name: Set up Python
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyJWT
+        if: steps.gate.outputs.go == 'true'
+        run: pip install --quiet "pyjwt[crypto]"
+
+      # Installation is per repo and invisible to any user token; check with
+      # the App JWT and mint only for the installed subset (fail closed per
+      # repo). Also learns whether the App has `checks` at all — without it
+      # we cannot request permission-checks at mint time (SETUP.md §1).
+      - name: Resolve repos the App is installed on
+        if: steps.gate.outputs.go == 'true'
+        id: installed
+        env:
+          CLIENT_ID: ${{ vars.BOT_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          REPOS: ${{ inputs.repos }}
+        run: |
+          if [ -n "$REPOS" ]; then
+            python scripts/app-installed-repos.py --repos "$REPOS" --needed pull_requests:read --github-output --title "Dependabot triage — App install check"
+          else
+            python scripts/app-installed-repos.py --policy state/dependabot-repos.json --needed pull_requests:read --github-output --title "Dependabot triage — App install check"
+          fi
+
+      - name: Mint read token (PRs, checks, statuses, job logs)
+        if: steps.gate.outputs.go == 'true' && steps.installed.outputs.installed != ''
+        id: bot-read
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ steps.installed.outputs.installed }}
+          permission-pull-requests: read
+          permission-statuses: read
+          permission-actions: read
+          permission-checks: ${{ steps.installed.outputs.checks != 'none' && 'read' || '' }}
+
+      - name: Mint write token (act mode — labels, reviews, merges, comments)
+        if: steps.gate.outputs.go == 'true' && steps.installed.outputs.installed != '' && steps.mode.outputs.mode == 'act'
+        id: bot-write
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ steps.installed.outputs.installed }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-statuses: read
+          permission-actions: read
+          permission-checks: ${{ steps.installed.outputs.checks != 'none' && 'read' || '' }}
+
+      - name: Triage
+        if: steps.gate.outputs.go == 'true' && steps.installed.outputs.installed != ''
+        id: triage
+        env:
+          GH_TOKEN: ${{ steps.mode.outputs.mode == 'act' && steps.bot-write.outputs.token || steps.bot-read.outputs.token }}
+          MODE: ${{ steps.mode.outputs.mode }}
+          REPOS: ${{ steps.installed.outputs.installed }}
+          PR: ${{ inputs.pr }}
+          AUTO_MERGE_FROZEN: ${{ vars.AUTO_MERGE_FROZEN }}
+          CHECKS_PERM: ${{ steps.installed.outputs.checks }}
+        run: |
+          mkdir -p /tmp/dt
+          if [ "$CHECKS_PERM" = "none" ]; then
+            echo "::warning::example-app-bot has no Checks permission — check results on private/internal repos are unreadable; majors still route, minor/patch bumps wait (SETUP.md §1)."
+            echo "> ⚠️ App lacks \`Checks: read\` — on private/internal repos check results are unreadable, so minor/patch bumps sit at \`wait\` until it is granted (SETUP.md §1). Majors are still classified and routed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          python scripts/dependabot-triage.py run \
+            --policy state/dependabot-repos.json --mode "$MODE" --repos "$REPOS" ${PR:+--pr "$PR"} \
+            --summary "$GITHUB_STEP_SUMMARY" --report /tmp/dt/report.json
+          python scripts/dependabot-triage.py diagnose-targets --report /tmp/dt/report.json > /tmp/dt/targets.json
+          echo "targets=$(jq length /tmp/dt/targets.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Skipped repos (App not installed)
+        if: steps.gate.outputs.go == 'true' && steps.installed.outputs.missing != ''
+        env:
+          MISSING: ${{ steps.installed.outputs.missing }}
+        run: |
+          echo "::warning::App not installed on: $MISSING — those repos were not triaged"
+
+      # One bounded, read-only node per regression: the failing job's log tail
+      # in, three lines out. Posted into the marker comment only in act mode
+      # and only when the diagnoser says DIAGNOSED; the decision was already
+      # made by the script above and does not depend on anything said here.
+      # In observe mode nothing is posted, so the cron does not pay for it —
+      # a manual dispatch still runs it so the output can be inspected.
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true' && steps.triage.outputs.targets != '0' && steps.triage.outputs.targets != '' && (steps.mode.outputs.mode == 'act' || github.event_name == 'workflow_dispatch')
+        uses: ./.github/actions/setup-claude
+
+      - name: Diagnose regressions (fresh context, read-only)
+        if: steps.gate.outputs.go == 'true' && steps.triage.outputs.targets != '0' && steps.triage.outputs.targets != '' && (steps.mode.outputs.mode == 'act' || github.event_name == 'workflow_dispatch')
+        id: diagnose
+        env:
+          GH_TOKEN: ${{ steps.mode.outputs.mode == 'act' && steps.bot-write.outputs.token || steps.bot-read.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::warning::ANTHROPIC_API_KEY not set — regressions are labeled but not explained"
+            exit 0
+          fi
+          RAN=0
+          while IFS= read -r t; do
+            [ -n "$t" ] || continue
+            REPO=$(jq -r .repo <<<"$t"); NUM=$(jq -r .number <<<"$t"); URL=$(jq -r .url <<<"$t"); CHECK=$(jq -r .check <<<"$t")
+            CASE="/tmp/diag/$REPO-$NUM"; mkdir -p "$CASE"
+            jq '{repo, number, check, workflow, head}' <<<"$t" > "$CASE/meta.json"
+            jq '.bumps' <<<"$t" > "$CASE/bumps.json"
+            JOB=$(grep -oE '/job/[0-9]+' <<<"$URL" | grep -oE '[0-9]+' | head -1 || true)
+            RUNID=$(grep -oE '/runs/[0-9]+' <<<"$URL" | grep -oE '[0-9]+' | head -1 || true)
+            : > "$CASE/log.txt"
+            if [ -n "$JOB" ]; then
+              gh api "repos/<YOUR_ORG>/$REPO/actions/jobs/$JOB/logs" 2>/dev/null | tail -n 400 > "$CASE/log.txt" || true
+            fi
+            if [ ! -s "$CASE/log.txt" ] && [ -n "$RUNID" ]; then
+              gh run view "$RUNID" -R "<YOUR_ORG>/$REPO" --log-failed 2>/dev/null | tail -n 400 > "$CASE/log.txt" || true
+            fi
+            if [ ! -s "$CASE/log.txt" ]; then
+              echo "$REPO#$NUM: no log retrievable for $CHECK — skipped"
+              continue
+            fi
+            bash scripts/run-claude.sh "/tmp/diag/$REPO-$NUM.stream.jsonl" "$(cat agents/dependabot-diagnoser/CLAUDE.md)
+
+          Task: explain why verification check '$CHECK' went red on Dependabot PR $REPO#$NUM (log tail, bumps and meta are in the case directory).
+          Inputs at: $CASE
+          Write output to: $CASE/diagnosis.md" \
+              --allowedTools "Read,Grep,Write" \
+              --model claude-sonnet-4-6 \
+              --max-turns 12 \
+              || echo "::warning::dependabot-diagnoser errored for $REPO#$NUM — labeled without a diagnosis"
+            RAN=$((RAN + 1))
+            TOKEN=$(bash scripts/result-line.sh --text "$CASE/diagnosis.md" RESULT 2>/dev/null | sed -n 's/^result=//p')
+            echo "$REPO#$NUM: diagnoser said '${TOKEN:-<none>}'"
+            if [ "$TOKEN" = "DIAGNOSED" ]; then
+              python scripts/dependabot-triage.py post-diagnosis --repo "$REPO" --pr "$NUM" --file "$CASE/diagnosis.md" --mode "$MODE"
+            fi
+          done < <(jq -c '.[]' /tmp/dt/targets.json)
+          echo "ran=$RAN" >> "$GITHUB_OUTPUT"
+
+      - name: Log token usage
+        if: always() && steps.diagnose.outputs.ran != '' && steps.diagnose.outputs.ran != '0'
+        run: bash scripts/log-token-usage.sh /tmp/diag/*.stream.jsonl
+
+      - name: Save transcripts to sessions/
+        if: always() && steps.diagnose.outputs.ran != '' && steps.diagnose.outputs.ran != '0'
+        run: |
+          WEEK=$(date -u +%G-W%V)
+          mkdir -p "sessions/$WEEK"
+          for f in /tmp/diag/*.stream.jsonl; do
+            [ -s "$f" ] || continue
+            sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+              "$f" > "sessions/$WEEK/dependabot-diagnoser-$(basename "$f")" || true
+          done
+          # An early run lost its transcript: `git commit` died on a
+          # missing identity and `|| exit 0` hid it. Nothing-to-commit is the
+          # only quiet exit; a failing commit or push fails the step.
+          git add "sessions/$WEEK"
+          if git diff --cached --quiet; then echo "no new transcripts"; exit 0; fi
+          git commit -m "sessions: dependabot-diagnoser $(date -u +%Y-%m-%d)"
+          for _ in 1 2 3; do
+            if git push; then
+              exit 0
+            else
+              git pull --rebase origin main
+            fi
+          done
+          echo "::error::could not push sessions/ after 3 attempts"; exit 1
+
+      - name: Alert on failure
+        if: failure() && steps.gate.outputs.go == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/slack-alert.sh ":x: dependabot-triage failed — Dependabot PRs are unattended until the next run (6h). $RUN_URL"

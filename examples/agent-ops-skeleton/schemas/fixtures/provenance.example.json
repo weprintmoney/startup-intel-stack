@@ -1,0 +1,16 @@
+{
+  "entries": [
+    {
+      "repo": "example-org/example-app-sdk-py",
+      "pr": 126,
+      "branch": "agent/1075-sdk-missing-custom-exception-classes-for",
+      "sha": "0af550f0af550f0af550f0af550f0af550f0af55",
+      "issue": 1075,
+      "stage": "implement",
+      "round": null,
+      "models": ["claude-sonnet-4-6"],
+      "run_url": "https://github.com/example-org/agent-ops/actions/runs/1234567890",
+      "at": "2026-09-12T03:02:11Z"
+    }
+  ]
+}

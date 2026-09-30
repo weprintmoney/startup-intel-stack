@@ -1,0 +1,222 @@
+name: PR Merged Reap
+
+# Closes the state machine. Nothing observed
+# a product-PR merge: a claim stayed `pr-open` forever, the WIP slot never
+# freed, and with wip_cap 2 two merged PRs would have deadlocked intake. Same
+# shape as spec-pending-reap: poll the PRs the `pr-open` claims name.
+#
+#   PR MERGED         -> claim `merged`, `agent:queued` removed from the ticket
+#                        once no other claim for that ticket is still active
+#                        (a fanned-out ticket keeps it until its last repo lands),
+#                        Slack, ticket-intake dispatched so the slot refills
+#   PR CLOSED unmerged -> claim `abandoned` (reason: PR closed unmerged), same
+#                        label rule, Slack
+#   PR OPEN           -> skip
+#
+# Also the retention sweep (decision 5, 30 days): terminal claims (merged /
+# abandoned) older than RETENTION_DAYS leave state/queue.json — git history
+# keeps them — and sessions/YYYY-Www/ directories older than RETENTION_DAYS
+# are removed (unpruned, they grow without bound).
+#
+# Cron every 30 min, offset from spec-pending-reap. No-op without App creds.
+
+on:
+  schedule:
+    - cron: "15,45 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-merged-reap
+  cancel-in-progress: false
+
+env:
+  TICKET_REPO: <YOUR_ORG>/example-app-core
+  RETENTION_DAYS: "30"
+
+jobs:
+  reap:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # queue.json transitions, sessions/ sweep
+      actions: write    # dispatch ticket-intake
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on App credentials
+        id: gate
+        env:
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
+        run: |
+          if [ -z "$K" ] || [ -z "$C" ]; then
+            echo "BOT_APP_* not configured (SETUP.md §2) — reap is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve product repos from the registry
+        id: repos
+        run: |
+          LIST=$(jq -r '[.repos | to_entries[] | .key] | join(",")' state/impl-repos.json)
+          echo "list=$LIST" >> "$GITHUB_OUTPUT"
+          echo "Product repos: $LIST"
+
+      - name: Mint token (PR read on product repos, issues write on the ticket repo)
+        if: steps.gate.outputs.go == 'true'
+        id: bot
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ steps.repos.outputs.list }},example-app-core
+          permission-contents: read
+          permission-pull-requests: read
+          permission-issues: write
+
+      - uses: ./.github/actions/bot-identity
+        if: steps.gate.outputs.go == 'true'
+
+      - name: Reap pr-open claims
+        if: steps.gate.outputs.go == 'true'
+        id: reap
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          open_claims=$(jq -c '.claims[] | select(.status == "pr-open")' state/queue.json)
+          if [ -z "$open_claims" ]; then
+            echo "No pr-open claims."
+            echo "transitioned=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TRANSITIONED=0
+          # Each transition is mirrored on the ticket's status card (the one bot comment per claim).
+          card() { # <issue> <impl_repo> <status-card args...>
+            local issue="$1" impl="$2"; shift 2
+            python3 scripts/status-card.py upsert --repo "$TICKET_REPO" --issue "$issue" --impl-repo "$impl" --run-url "$RUN_URL" "$@"
+          }
+          # Drop agent:queued only when no claim for the ticket is still active.
+          drop_label_if_done() { # <issue>
+            if jq -e --argjson n "$1" \
+                 'any(.claims[]; .issue == $n and (.status | IN("merged","abandoned","spec-clarify-pending") | not))' \
+                 state/queue.json >/dev/null; then
+              echo "  #$1 still has an active claim — agent:queued stays"
+            else
+              gh api -X DELETE "repos/$TICKET_REPO/issues/$1/labels/agent%3Aqueued" >/dev/null 2>&1 \
+                && echo "  #$1: agent:queued removed" || echo "  #$1: agent:queued already absent"
+            fi
+          }
+          while IFS= read -r claim; do
+            [ -z "$claim" ] && continue
+            issue=$(jq -r '.issue' <<<"$claim")
+            IMPL_REPO=$(jq -r '.impl_repo' <<<"$claim"); export IMPL_REPO
+            pr_url=$(jq -r '.pr_url // ""' <<<"$claim")
+            if [ -z "$pr_url" ]; then
+              echo "::warning::SKIP #$issue ($IMPL_REPO): pr-open with no pr_url — record it by hand"
+              continue
+            fi
+            num="${pr_url##*/}"
+            if ! pr=$(gh pr view "$num" -R "$IMPL_REPO" --json state,mergedAt,mergeCommit,url 2>/dev/null); then
+              echo "::warning::SKIP #$issue ($IMPL_REPO): cannot read $pr_url"
+              continue
+            fi
+            state=$(jq -r '.state' <<<"$pr")
+            case "$state" in
+              OPEN)
+                echo "SKIP #$issue ($IMPL_REPO): PR #$num still open" ;;
+              MERGED)
+                merged_at=$(jq -r '.mergedAt' <<<"$pr")
+                sha=$(jq -r '.mergeCommit.oid // ""' <<<"$pr")
+                echo "REAP #$issue ($IMPL_REPO): PR #$num merged at $merged_at -> merged"
+                git pull -q --rebase origin main || true
+                bash scripts/update-claim.sh "$issue" merged \
+                  "$(jq -n --arg at "$merged_at" --arg sha "$sha" '{closed_at: $at} + (if $sha != "" then {merge_sha: $sha} else {} end)')"
+                card "$issue" "$IMPL_REPO" --event merged --status merged --set "merge_sha=$sha" \
+                  --note "PR #$num merged — claim closed, WIP slot freed"
+                drop_label_if_done "$issue"
+                bash scripts/slack-alert.sh ":tada: Agent PR merged: $pr_url ($TICKET_REPO#$issue -> $IMPL_REPO). Claim closed, WIP slot freed. $RUN_URL"
+                TRANSITIONED=$((TRANSITIONED + 1)) ;;
+              CLOSED)
+                echo "REAP #$issue ($IMPL_REPO): PR #$num closed unmerged -> abandoned"
+                git pull -q --rebase origin main || true
+                bash scripts/update-claim.sh "$issue" abandoned \
+                  "$(jq -n --arg r "PR #$num closed unmerged" '{abandoned_reason: $r}')"
+                card "$issue" "$IMPL_REPO" --event pr-closed --status abandoned --set "abandoned_reason=PR #$num closed unmerged" \
+                  --note "PR #$num closed unmerged — claim abandoned, WIP slot freed"
+                drop_label_if_done "$issue"
+                bash scripts/slack-alert.sh ":wastebasket: Agent PR closed unmerged: $pr_url ($TICKET_REPO#$issue -> $IMPL_REPO). Claim abandoned, WIP slot freed. $RUN_URL"
+                TRANSITIONED=$((TRANSITIONED + 1)) ;;
+              *)
+                echo "SKIP #$issue: unknown PR state '$state'" ;;
+            esac
+          done <<< "$open_claims"
+          echo "transitioned=$TRANSITIONED" >> "$GITHUB_OUTPUT"
+          echo "Transitioned $TRANSITIONED claim(s)."
+
+      # Retention (decision 5): terminal claims and session transcripts older
+      # than RETENTION_DAYS leave the working tree; git history keeps both.
+      - name: Retention sweep (terminal claims + sessions older than ${{ env.RETENTION_DAYS }} days)
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          git pull -q --rebase origin main || true
+          CUTOFF=$(date -u -d "$RETENTION_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)
+          BEFORE=$(git show HEAD:state/queue.json | shasum -a 256 | cut -d' ' -f1)
+          jq --arg cut "$CUTOFF" '
+            .claims |= map(select(
+              (.status | IN("merged","abandoned") | not)
+              or ((.closed_at // .claimed_at) >= $cut)))' state/queue.json > state/queue.json.tmp
+          REMOVED=$(( $(jq '.claims | length' state/queue.json) - $(jq '.claims | length' state/queue.json.tmp) ))
+          mv state/queue.json.tmp state/queue.json
+          if [ "$REMOVED" -gt 0 ]; then
+            bash scripts/commit-state.sh state/queue.json "$BEFORE" "queue: reap $REMOVED terminal claim(s) older than $RETENTION_DAYS days"
+          else
+            echo "No terminal claims older than $RETENTION_DAYS days."
+          fi
+          # sessions/YYYY-Www -> the Monday of that ISO week; prune whole weeks.
+          CUT_DAY=$(date -u -d "$RETENTION_DAYS days ago" +%Y-%m-%d)
+          PRUNED=0
+          for d in sessions/*/; do
+            wk=$(basename "$d")
+            [[ "$wk" =~ ^([0-9]{4})-W([0-9]{2})$ ]] || continue
+            # ISO week N Monday = Jan 4 of that year, back to its Monday, + (N-1) weeks
+            monday=$(python3 -c "import datetime,sys; y,w=int(sys.argv[1]),int(sys.argv[2]); print(datetime.date.fromisocalendar(y,w,1))" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+            if [[ "$monday" < "$CUT_DAY" ]]; then
+              git rm -rq "$d" && PRUNED=$((PRUNED + 1)) && echo "pruned $d (week of $monday)"
+            fi
+          done
+          if [ "$PRUNED" -gt 0 ]; then
+            git commit -qm "sessions: prune $PRUNED week(s) older than $RETENTION_DAYS days"
+            for _ in 1 2 3; do
+              if git push; then
+                break
+              else
+                git pull --rebase origin main
+              fi
+            done
+          else
+            echo "No session weeks older than $RETENTION_DAYS days."
+          fi
+
+      - name: Dispatch ticket-intake if slots freed
+        if: steps.gate.outputs.go == 'true' && steps.reap.outputs.transitioned != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run ticket-intake.yml
+
+      - name: Alert on failure
+        if: failure() && steps.gate.outputs.go == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/slack-alert.sh ":x: pr-merged-reap failed — a merged agent PR may still hold a WIP slot. $RUN_URL"

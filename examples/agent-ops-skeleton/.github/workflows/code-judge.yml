@@ -3,10 +3,26 @@ name: Code Judge
 # Phase 3 quality gate: score an agent PR against the code-judge rubric
 # (internal-docs 07-engineering-docs/code-judge-rubric.md). Posts a commit
 # status `agent-ops/code-judge` on the product-repo PR head (make it a
-# required check via repo admin — tracked in issue #1 follow-ups) plus a
+# required check via repo admin — tracked in SETUP.md §7) plus a
 # findings comment. Dispatched by implement.yml after opening the PR;
 # re-dispatch manually to re-judge after new commits.
+#
+# The model's verdict is never trusted as written: scripts/validate-judge-
+# verdict.py recomputes score and verdict from the twenty per-criterion
+# results (n/a excluded, threshold 80, any blocking finding => fail). A
+# verdict that fails validation — or no verdict.json at all — posts a
+# FAILURE status with the reason, comments what it can, and fails the run.
 # Degrades gracefully pre-setup: missing secrets -> no-op with a notice.
+#
+# Loop control: after
+# the status is posted, the round is recorded in the PR body's round block
+# (scripts/round-history.py — the loop's only state) and one of four things
+# happens: pass -> label agent:judge-pass + Slack; fail below the round cap
+# and under the per-ticket cost ceiling -> dispatch revise.yml for this
+# round (quiet); fail at the cap or over the ceiling -> label
+# agent:needs-human + Slack with the full round history; a rejected verdict
+# -> halt (the run fails; a broken judge never drives revisions). revise.yml
+# re-dispatches this workflow with round+1.
 
 on:
   workflow_dispatch:
@@ -18,16 +34,31 @@ on:
         description: "Source issue number (optional, for linkage)"
         required: false
         default: ""
+      repo:
+        description: "Implementation repo short name (e.g. example-app-sdk-js). Where the branch, code, and PR land — often not the repo the ticket is filed in."
+        required: false
+        default: example-app-core
+      round:
+        description: "Judge round on this PR (1 = first judge after the PR opened). Leave empty to derive from the PR body's round block — right for a manual re-judge."
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: code-judge-${{ inputs.pr }}
+  group: code-judge-${{ inputs.repo }}-${{ inputs.pr }}
   cancel-in-progress: false
 
 env:
-  PRODUCT_REPO: <YOUR_ORG>/example-app-core
+  # TICKET_REPO = where the issue lives (always example-app-core).
+  # IMPL_REPO   = where the PR under review lives.
+  TICKET_REPO: <YOUR_ORG>/example-app-core
+  IMPL_REPO: <YOUR_ORG>/${{ inputs.repo }}
+  # Bounded loop: three judge rounds, a per-ticket cost ceiling
+  # across implement + every round, summed from each node's own cost estimate.
+  ROUND_CAP: "3"
+  COST_CEILING_USD: "50"
 
 jobs:
   judge:
@@ -36,6 +67,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write   # sessions/ transcript
+      actions: write    # dispatch revise.yml
     steps:
       - uses: actions/checkout@v4
 
@@ -43,36 +75,65 @@ jobs:
         id: gate
         env:
           A: ${{ secrets.ANTHROPIC_API_KEY }}
-          B: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
-          C: ${{ secrets.PRODUCT_REPOS_PAT }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
         run: |
           MISSING=""
           [ -z "$A" ] && MISSING="$MISSING ANTHROPIC_API_KEY"
-          [ -z "$B" ] && MISSING="$MISSING INTERNAL_DOCS_RO_PAT"
-          [ -z "$C" ] && MISSING="$MISSING PRODUCT_REPOS_PAT"
+          [ -z "$K" ] && MISSING="$MISSING BOT_APP_PRIVATE_KEY"
+          [ -z "$C" ] && MISSING="$MISSING BOT_APP_CLIENT_ID"
           if [ -n "$MISSING" ]; then
-            echo "Missing secrets (issue #1):$MISSING — code-judge is a no-op."
+            echo "Missing secrets/vars (SETUP.md §2):$MISSING — code-judge is a no-op."
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Mint internal-docs token (rubric read)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
+
+      - name: Mint product-repo token (status + comment)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-product
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }},example-app-core
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
+          permission-statuses: write
 
       - name: Checkout internal-docs (rubric)
         if: steps.gate.outputs.go == 'true'
         uses: actions/checkout@v4
         with:
           repository: <YOUR_ORG>/internal-docs
-          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          token: ${{ steps.bot-docs.outputs.token }}
           path: internal-docs
           fetch-depth: 0
+          persist-credentials: false
           sparse-checkout: |
             07-engineering-docs
+
+      - uses: ./.github/actions/bot-identity
+        if: steps.gate.outputs.go == 'true'
 
       - name: Assemble judge inputs
         if: steps.gate.outputs.go == 'true'
         id: inputs
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot-product.outputs.token }}
           PR: ${{ inputs.pr }}
           ISSUE: ${{ inputs.issue }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -80,81 +141,242 @@ jobs:
           RUBRIC=internal-docs/07-engineering-docs/code-judge-rubric.md
           [ -f "$RUBRIC" ] || { echo "::error::rubric doc missing in internal-docs"; exit 1; }
           mkdir -p /tmp/review-input /tmp/review-output
-          gh pr diff "$PR" -R "$PRODUCT_REPO" > /tmp/review-input/diff.patch
+          gh pr diff "$PR" -R "$IMPL_REPO" > /tmp/review-input/diff.patch
           [ -s /tmp/review-input/diff.patch ] || { echo "::error::empty diff for PR #$PR"; exit 1; }
-          gh pr view "$PR" -R "$PRODUCT_REPO" --json title,body,headRefOid \
+          gh pr view "$PR" -R "$IMPL_REPO" --json title,body,headRefOid \
             --jq '"# PR: " + .title + "\n\n" + (.body // "")' > /tmp/review-input/context.md
-          HEAD_SHA=$(gh pr view "$PR" -R "$PRODUCT_REPO" --json headRefOid --jq .headRefOid)
+          HEAD_SHA=$(gh pr view "$PR" -R "$IMPL_REPO" --json headRefOid --jq .headRefOid)
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           if [ -n "$ISSUE" ]; then
-            gh api "repos/$PRODUCT_REPO/issues/$ISSUE" \
+            gh api "repos/$TICKET_REPO/issues/$ISSUE" \
               --jq '{title, body, labels: [.labels[].name]}' > /tmp/review-input/ticket.json
           fi
           cp "$RUBRIC" /tmp/review-input/rubric.md
           RUBRIC_VERSION=$(git -C internal-docs log -1 --format=%H -- 07-engineering-docs/code-judge-rubric.md)
-          jq -n --arg repo "$PRODUCT_REPO" --argjson pr "$PR" \
+          jq -n --arg repo "$IMPL_REPO" --argjson pr "$PR" \
                 --arg rv "$RUBRIC_VERSION" --arg url "$RUN_URL" \
                 '{repo: $repo, pr: $pr, rubric_version: $rv, run_url: $url}' \
                 > /tmp/review-input/run-meta.json
 
       - name: Set up Claude Code
         if: steps.gate.outputs.go == 'true'
-        run: npm install -g @anthropic-ai/claude-code@latest
+        uses: ./.github/actions/setup-claude
 
       - name: Run code-judge
         if: steps.gate.outputs.go == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          PR: ${{ inputs.pr }}
         run: |
-          claude -p "$(cat agents/code-judge/CLAUDE.md)" \
+          bash scripts/run-claude.sh /tmp/judge.stream.jsonl "$(cat agents/code-judge/CLAUDE.md)
+
+          Task: judge PR #$PR on $IMPL_REPO against rubric.md.
+          Inputs at: /tmp/review-input (diff.patch, rubric.md, run-meta.json; context.md and ticket.json when present)
+          Write output to: /tmp/review-output/verdict.json and /tmp/review-output/findings.md
+          End with exactly one RESULT: line." \
             --allowedTools "Bash,Read,Write,Glob,Grep" \
             --model claude-opus-4-7 \
-            --max-turns 50 \
-            --output-format stream-json --verbose > /tmp/judge.stream.jsonl
+            --max-turns 50
           jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/judge.stream.jsonl | tail -5
 
-      - name: Validate verdict against schema
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/judge.stream.jsonl
+
+      # Deterministic gate: recompute score and
+      # verdict from the criteria; never trust the model's arithmetic or its
+      # verdict word. This step always exits 0 so the status below is posted
+      # either way; the run fails at the end on a rejected verdict.
+      - name: Validate verdict (schema + recomputation)
         if: steps.gate.outputs.go == 'true'
         id: verdict
         run: |
-          [ -f /tmp/review-output/verdict.json ] || { echo "::error::judge produced no verdict.json"; exit 1; }
           pip install --quiet "jsonschema[format]"
-          python - <<'PYEOF'
-          import json
-          from jsonschema import Draft202012Validator, FormatChecker
-          schema = json.load(open("schemas/judge-verdict.schema.json"))
-          verdict = json.load(open("/tmp/review-output/verdict.json"))
-          errors = list(Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(verdict))
-          for e in errors:
-              print(f"::error::verdict.json: {'/'.join(map(str, e.path)) or '<root>'}: {e.message}")
-          raise SystemExit(1 if errors else 0)
-          PYEOF
-          echo "verdict=$(jq -r .verdict /tmp/review-output/verdict.json)" >> "$GITHUB_OUTPUT"
-          echo "score=$(jq -r .score /tmp/review-output/verdict.json)" >> "$GITHUB_OUTPUT"
+          OK=false; VERDICT=fail; SCORE=0; REASON=""
+          if [ ! -f /tmp/review-output/verdict.json ]; then
+            REASON="judge produced no verdict.json"
+            echo "::error::$REASON"
+          else
+            set +e
+            python3 scripts/validate-judge-verdict.py /tmp/review-output/verdict.json --json > /tmp/verdict-check.json
+            RC=$?
+            set -e
+            if jq -e . /tmp/verdict-check.json >/dev/null 2>&1; then
+              OK=$(jq -r 'if .ok then "true" else "false" end' /tmp/verdict-check.json)
+              VERDICT=$(jq -r '.verdict // "fail"' /tmp/verdict-check.json)
+              SCORE=$(jq -r '.computed_score // 0' /tmp/verdict-check.json)
+              REASON=$(jq -r '.errors | join("; ")' /tmp/verdict-check.json)
+              jq -r '.errors[]' /tmp/verdict-check.json | while IFS= read -r e; do echo "::error::verdict.json: $e"; done
+              [ "$OK" = "true" ] && echo "verdict valid: $VERDICT, score $SCORE (recomputed)"
+            else
+              REASON="validator exited $RC without a report"
+              echo "::error::$REASON"
+            fi
+          fi
+          {
+            echo "ok=$OK"
+            echo "verdict=$VERDICT"
+            echo "score=$SCORE"
+            echo "reason=$(printf '%s' "$REASON" | tr -d '\r\n' | cut -c1-300)"
+          } >> "$GITHUB_OUTPUT"
+
+      # Fresh token: judge run can take most of the timeout; the near-expiry
+      # bot-product token above may be dead by the time we post statuses.
+      - name: Mint product-repo token (post status + comment)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-post
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }},example-app-core
+          permission-pull-requests: write
+          permission-issues: write
+          permission-statuses: write
 
       - name: Post commit status + findings comment
         if: steps.gate.outputs.go == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot-post.outputs.token }}
           PR: ${{ inputs.pr }}
           HEAD_SHA: ${{ steps.inputs.outputs.head_sha }}
+          OK: ${{ steps.verdict.outputs.ok }}
           VERDICT: ${{ steps.verdict.outputs.verdict }}
           SCORE: ${{ steps.verdict.outputs.score }}
+          REASON: ${{ steps.verdict.outputs.reason }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          STATE=failure; [ "$VERDICT" = "pass" ] && STATE=success
-          gh api -X POST "repos/$PRODUCT_REPO/statuses/$HEAD_SHA" \
+          STATE=failure
+          if [ "$OK" = "true" ] && [ "$VERDICT" = "pass" ]; then STATE=success; fi
+          if [ "$OK" = "true" ]; then
+            DESC="score $SCORE/100 (threshold 80)"
+          else
+            DESC="judge verdict rejected: $(printf '%s' "$REASON" | cut -d';' -f1 | cut -c1-100)"
+          fi
+          gh api -X POST "repos/$IMPL_REPO/statuses/$HEAD_SHA" \
             -f state="$STATE" \
             -f context="agent-ops/code-judge" \
-            -f description="score $SCORE/100 (threshold 80)" \
+            -f description="$DESC" \
             -f target_url="$RUN_URL" \
-            || echo "::warning::could not post commit status (PAT may lack statuses permission)"
+            || echo "::warning::could not post commit status"
+          # Stage 1.5: a missing findings.md must never fail this step after
+          # the status has been posted — synthesize the comment from what exists.
+          RUBRIC=$(jq -r '.rubric_version // "unknown"' /tmp/review-output/verdict.json 2>/dev/null | cut -c1-12)
           {
-            cat /tmp/review-output/findings.md
+            if [ -s /tmp/review-output/findings.md ]; then
+              cat /tmp/review-output/findings.md
+            else
+              echo "## code-judge: $(echo "$VERDICT" | tr '[:lower:]' '[:upper:]') — $SCORE/100 (threshold 80)"
+              echo ""
+              if [ "$OK" = "true" ]; then
+                echo "The judge wrote no findings.md; verdict.json is in the run artifacts."
+              else
+                echo "The judge wrote no findings.md; verdict.json was rejected: $REASON"
+              fi
+            fi
+            if [ "$OK" != "true" ] && [ -s /tmp/review-output/findings.md ]; then
+              echo ""
+              echo "> **Verdict rejected by the deterministic check** (status posted as failure): $REASON"
+            fi
             echo ""
-            echo "<sub>rubric $(jq -r .rubric_version /tmp/review-output/verdict.json | cut -c1-12) · [run]($RUN_URL) · re-judge after new commits: \`gh workflow run code-judge.yml -f pr=$PR\`</sub>"
+            echo "<sub>rubric ${RUBRIC:-unknown} · [run]($RUN_URL) · re-judge after new commits: \`gh workflow run code-judge.yml -f pr=$PR -f repo=${{ inputs.repo }}\` (the round is derived from the PR body's round block)</sub>"
           } > /tmp/comment.md
-          gh api -X POST "repos/$PRODUCT_REPO/issues/$PR/comments" -F body=@/tmp/comment.md
+          gh api -X POST "repos/$IMPL_REPO/issues/$PR/comments" -F body=@/tmp/comment.md \
+            || echo "::warning::could not post findings comment"
+
+      # Loop control — record this round in the PR body and decide what happens
+      # next. The block is idempotent per (round, stage): a manual re-judge of
+      # the same round replaces its row instead of double-counting the cost.
+      - name: Loop control — record the round and decide
+        if: steps.gate.outputs.go == 'true'
+        id: loop
+        env:
+          GH_TOKEN: ${{ steps.bot-post.outputs.token }}
+          PR: ${{ inputs.pr }}
+          ROUND_IN: ${{ inputs.round }}
+          OK: ${{ steps.verdict.outputs.ok }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          SCORE: ${{ steps.verdict.outputs.score }}
+          HEAD_SHA: ${{ steps.inputs.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr view "$PR" -R "$IMPL_REPO" --json body --jq '.body // ""' > /tmp/pr-body.md
+          ROUND="$ROUND_IN"
+          [ -n "$ROUND" ] || ROUND=$(python3 scripts/round-history.py --body /tmp/pr-body.md next-round)
+          COST=$(jq -rs '[.[] | select(.type == "result")] | last | .total_cost_usd // 0' /tmp/judge.stream.jsonl 2>/dev/null || echo 0)
+          V="$VERDICT"; [ "$OK" = "true" ] || V=rejected
+          python3 scripts/round-history.py --body /tmp/pr-body.md append --cap "$ROUND_CAP" --ceiling "$COST_CEILING_USD" --entry \
+            "$(jq -n --argjson r "$ROUND" --arg v "$V" --argjson s "${SCORE:-0}" --argjson c "${COST:-0}" \
+                  --arg sha "$HEAD_SHA" --arg url "$RUN_URL" \
+                  '{round: $r, stage: "judge", verdict: $v, score: (if $v == "rejected" then null else $s end), cost_usd: $c, sha: $sha, run_url: $url}')"
+          gh pr edit "$PR" -R "$IMPL_REPO" --body-file /tmp/pr-body.md || echo "::warning::could not write the round block to the PR body"
+          DECISION=$(python3 scripts/round-history.py --body /tmp/pr-body.md decide --round "$ROUND" --verdict "$V")
+          TOTAL=$(python3 scripts/round-history.py --body /tmp/pr-body.md total-cost)
+          echo "loop: round $ROUND/$ROUND_CAP verdict=$V total=\$$TOTAL/\$$COST_CEILING_USD -> $DECISION"
+          {
+            echo "round=$ROUND"
+            echo "decision=$DECISION"
+            echo "total=$TOTAL"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Loop — dispatch revise (round ${{ steps.loop.outputs.round }})
+        if: steps.gate.outputs.go == 'true' && steps.loop.outputs.decision == 'revise'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TOKEN: ${{ steps.bot-post.outputs.token }}
+          PR: ${{ inputs.pr }}
+          ISSUE: ${{ inputs.issue }}
+          ROUND: ${{ steps.loop.outputs.round }}
+        run: |
+          GH_TOKEN="$PR_TOKEN" gh pr edit "$PR" -R "$IMPL_REPO" --remove-label "agent:judge-pass" 2>/dev/null || true
+          gh workflow run revise.yml -f pr="$PR" -f issue="$ISSUE" -f repo="${{ inputs.repo }}" -f round="$ROUND" \
+            || { echo "::error::could not dispatch revise.yml — run: gh workflow run revise.yml -f pr=$PR -f issue=$ISSUE -f repo=${{ inputs.repo }} -f round=$ROUND"; exit 1; }
+          echo "revise round $ROUND dispatched for $IMPL_REPO PR #$PR"
+
+      - name: Loop — judge pass
+        if: steps.gate.outputs.go == 'true' && steps.loop.outputs.decision == 'judge-pass'
+        env:
+          GH_TOKEN: ${{ steps.bot-post.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          PR: ${{ inputs.pr }}
+          ROUND: ${{ steps.loop.outputs.round }}
+          SCORE: ${{ steps.verdict.outputs.score }}
+          TOTAL: ${{ steps.loop.outputs.total }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create "agent:judge-pass" -R "$IMPL_REPO" --color 0E8A16 --force \
+            --description "code-judge passed (see the PR's round block); ready for human review" >/dev/null 2>&1 || true
+          gh pr edit "$PR" -R "$IMPL_REPO" --add-label "agent:judge-pass" || echo "::warning::could not add agent:judge-pass"
+          bash scripts/slack-alert.sh ":white_check_mark: code-judge PASS $SCORE/100 on round $ROUND: https://github.com/$IMPL_REPO/pull/$PR ($TICKET_REPO#${{ inputs.issue }}) — \$$TOTAL spent across rounds. Ready for human review. $RUN_URL"
+
+      - name: Loop — hand to a human
+        if: steps.gate.outputs.go == 'true' && startsWith(steps.loop.outputs.decision, 'needs-human')
+        env:
+          GH_TOKEN: ${{ steps.bot-post.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          PR: ${{ inputs.pr }}
+          ROUND: ${{ steps.loop.outputs.round }}
+          DECISION: ${{ steps.loop.outputs.decision }}
+          TOTAL: ${{ steps.loop.outputs.total }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create "agent:needs-human" -R "$IMPL_REPO" --color FBCA04 --force \
+            --description "The bounded judge/revise loop ended without a pass — a human decides (see the PR's round block)" >/dev/null 2>&1 || true
+          gh pr edit "$PR" -R "$IMPL_REPO" --add-label "agent:needs-human" || echo "::warning::could not add agent:needs-human"
+          gh pr edit "$PR" -R "$IMPL_REPO" --remove-label "agent:judge-pass" 2>/dev/null || true
+          case "$DECISION" in
+            needs-human:cap)  WHY="round cap ($ROUND_CAP) reached" ;;
+            needs-human:cost) WHY="per-ticket cost ceiling reached (\$$TOTAL of \$$COST_CEILING_USD)" ;;
+            *)                WHY="$DECISION" ;;
+          esac
+          HISTORY=$(python3 scripts/round-history.py --body /tmp/pr-body.md summary)
+          bash scripts/slack-alert.sh ":raised_hand: code-judge FAIL on round $ROUND and the loop stopped — $WHY. https://github.com/$IMPL_REPO/pull/$PR ($TICKET_REPO#${{ inputs.issue }}) labeled agent:needs-human.
+          $HISTORY
+          $RUN_URL"
 
       # Phase 5 graduation ladder: at L3+ a passing verdict arms GitHub
       # auto-merge (merges only when ALL required checks are green). Gated on
@@ -163,27 +385,38 @@ jobs:
       # verdict flip). 24h revert window announced on Slack. No issue linkage
       # -> class unknown -> never auto-merge.
       - name: Auto-merge at L3+ (24h revert window)
-        if: steps.gate.outputs.go == 'true' && steps.verdict.outputs.verdict == 'pass' && vars.AUTO_MERGE_FROZEN != 'true' && inputs.issue != ''
+        if: steps.gate.outputs.go == 'true' && steps.verdict.outputs.ok == 'true' && steps.verdict.outputs.verdict == 'pass' && vars.AUTO_MERGE_FROZEN != 'true' && inputs.issue != ''
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot-post.outputs.token }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           PR: ${{ inputs.pr }}
           ISSUE: ${{ inputs.issue }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          LABELS=$(gh api "repos/$PRODUCT_REPO/issues/$ISSUE" --jq '.labels[].name')
+          LABELS=$(gh api "repos/$TICKET_REPO/issues/$ISSUE" --jq '.labels[].name')
           CLASS=$( (grep -m1 '^class:' <<<"$LABELS" || true) | sed 's/^class://')
           [ -n "$CLASS" ] || CLASS=unclassified
           LEVEL=$(jq -r --arg c "$CLASS" '.classes[$c].level // 0' state/autonomy-ledger.json)
           FROZEN=$(jq -r --arg c "$CLASS" '.classes[$c].frozen // false' state/autonomy-ledger.json)
           GLOBAL=$(jq -r '.global_freeze' state/autonomy-ledger.json)
           if [ "$LEVEL" -ge 3 ] && [ "$FROZEN" != "true" ] && [ "$GLOBAL" != "true" ]; then
-            gh pr merge "$PR" -R "$PRODUCT_REPO" --auto --squash \
-              || { echo "::warning::could not arm auto-merge (repo setting or PAT scope)"; exit 0; }
-            bash scripts/slack-alert.sh ":rocket: L$LEVEL auto-merge armed: $PRODUCT_REPO PR #$PR (class: $CLASS). Merges when required checks pass. 24h revert window starts at merge. $RUN_URL"
+            gh pr merge "$PR" -R "$IMPL_REPO" --auto --squash \
+              || { echo "::warning::could not arm auto-merge (repo setting or App scope)"; exit 0; }
+            bash scripts/slack-alert.sh ":rocket: L$LEVEL auto-merge armed: $IMPL_REPO PR #$PR (class: $CLASS). Merges when required checks pass. 24h revert window starts at merge. $RUN_URL"
           else
             echo "No auto-merge: class=$CLASS level=$LEVEL frozen=$FROZEN ledger_global_freeze=$GLOBAL"
           fi
+
+      # The status and comment are already posted; now make the run itself
+      # red so alert-on-failure fires and the run list shows the rejection.
+      - name: Fail the run on a rejected verdict
+        if: steps.gate.outputs.go == 'true' && steps.verdict.outputs.ok != 'true'
+        env:
+          REASON: ${{ steps.verdict.outputs.reason }}
+        run: |
+          echo "::error::code-judge verdict rejected — failure status posted on the PR head. $REASON"
+          exit 1
 
       - name: Save transcript to sessions/
         if: always() && steps.gate.outputs.go == 'true'
@@ -192,15 +425,24 @@ jobs:
           mkdir -p "sessions/$WEEK"
           sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
             /tmp/judge.stream.jsonl > "sessions/$WEEK/judge-pr${{ inputs.pr }}.stream.jsonl" || true
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
           git add "sessions/$WEEK" && git commit -m "sessions: code-judge PR #${{ inputs.pr }}" || exit 0
-          for i in 1 2 3; do git push && break || git pull --rebase origin main; done
+          for _ in 1 2 3; do
+            if git push; then
+              break
+            else
+              git pull --rebase origin main
+            fi
+          done
 
       - name: Alert on failure
         if: failure() && steps.gate.outputs.go == 'true'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          bash scripts/slack-alert.sh ":x: code-judge run failed for $PRODUCT_REPO PR #${{ inputs.pr }} (the PR is NOT blocked — no status posted). $RUN_URL"
+          if SYSTEMIC=$(bash scripts/is-systemic-failure.sh /tmp/judge.stream.jsonl); then
+            echo "::warning::Suppressing Slack alert — systemic failure detected: $SYSTEMIC"
+          else
+            bash scripts/slack-alert.sh ":x: code-judge run failed for $IMPL_REPO PR #${{ inputs.pr }} (the PR is NOT blocked — no status posted). $RUN_URL"
+          fi

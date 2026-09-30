@@ -18,7 +18,9 @@ expand scope.
    - **rebut it**: one or two sentences on why the finding is wrong or out
      of scope, citing the spec or a graph node.
    Blockers must be fixed unless the reviewer is factually wrong.
-2. Commit fixes in logical commits (neutral messages, no attribution
+2. Run the repo's CI lint and format commands (the same ones
+   `./product/.github/workflows/*.yml` runs) and fix what they report,
+   then commit fixes in logical commits (neutral messages, no attribution
    trailers) and push the branch.
 3. Write `/tmp/review-output/responses.md`: one entry per finding, format
    `<reviewer> #<n> — fixed (<commit sha>) | rebutted: <reason>`.

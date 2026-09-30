@@ -10,6 +10,35 @@ memory-poisoning firewall — never weaken it.**
 
 The lookback window is `$LOOKBACK_DAYS` days.
 
+## Stage split (verify gate)
+
+The workflow runs you in one of three stages, chosen by the `DREAM_STAGE`
+env var. This exists so the `miner-verify` gate can run between mining and
+drafting — the verifier confirms each miner's *summary* matches the
+artifacts it emitted, catching "right actions, wrong report" before it
+reaches the memory PR.
+
+- `mine` — run miners, write `/tmp/dream/findings/<miner>.json` and
+  `/tmp/dream/summaries/<miner>.md` (one per healthy miner), record miner
+  health, then STOP. Do not synthesize, do not open any PR. Emit final
+  lines:
+  ```
+  MINERS_HEALTHY: <comma-separated miner names, or "none">
+  RESULT: MINED
+  ```
+- `draft` — mining already ran and the verifier already passed. Read the
+  findings the workflow left at `/tmp/dream/findings/` (unhealthy or
+  quarantined miners are absent), synthesize, and open the memory / fixture
+  / self-improvement PRs per steps 4–7. Emit the normal `DREAM_PR`,
+  `FIXTURES_PR`, `IMPROVEMENT_PR`, `RESULT` lines.
+- `all` (default; kept for local dry-runs only) — run mine and draft
+  back-to-back with no verify gate. **CI never uses this.**
+
+The verify gate lives in `.github/workflows/dream.yml`; you do not
+implement it. Per-miner summaries must be written to
+`/tmp/dream/summaries/<miner>.md` in stage `mine` so the verifier has the
+prose to audit.
+
 ## Environment
 
 - `./` — this repo (agent-ops): `sessions/` transcripts,
@@ -27,19 +56,29 @@ The lookback window is `$LOOKBACK_DAYS` days.
 
 ## Procedure
 
-1. `mkdir -p /tmp/dream/findings`.
-2. Spawn **three Task subagents in parallel**, one per miner. Each subagent
-   prompt = the contents of `agents/dream-orchestrator/miners/<miner>.md`
-   followed by these run parameters on separate lines:
+1. `mkdir -p /tmp/dream/findings /tmp/dream/summaries`. (Stage `mine` and
+   stage `all` only; stage `draft` reads the workflow-materialized dir.)
+2. **Stage `draft`: skip to step 4.** The workflow has already run the
+   miners and the verifier and left validated findings at
+   `/tmp/dream/findings/`. Any miner absent from that dir is either
+   unhealthy or was quarantined by the verifier — synthesize from what
+   remains.
+3. **Stages `mine` and `all`:** Spawn **three Task subagents in parallel**,
+   one per miner. Each subagent prompt = the contents of
+   `agents/dream-orchestrator/miners/<miner>.md` followed by these run
+   parameters on separate lines:
    `LOOKBACK_DAYS=<n>`, `RUN_URL=<url>`,
-   `OUTPUT=/tmp/dream/findings/<miner>.json`. Miners:
+   `OUTPUT=/tmp/dream/findings/<miner>.json`,
+   `SUMMARY_OUTPUT=/tmp/dream/summaries/<miner>.md`. Miners:
    - `transcript-failure-miner`
    - `review-delta-miner`
    - `doc-drift-miner`
-3. Validate each findings file against `schemas/miner-findings.schema.json`
-   (`python3 -c` with `jsonschema.Draft202012Validator`). A missing or
-   invalid file does NOT abort the run: record the miner as unhealthy in the
-   PR body / final report and synthesize from the valid ones.
+   Validate each findings file against
+   `schemas/miner-findings.schema.json` (`python3 -c` with
+   `jsonschema.Draft202012Validator`). A missing or invalid file does NOT
+   abort the run: record the miner as unhealthy. In stage `mine`, stop here
+   and emit `MINERS_HEALTHY: <list>` + `RESULT: MINED`. In stage `all`,
+   fall through to synthesize from the valid ones.
 4. **Synthesize.** Cluster findings across miners (same wrong assumption,
    same kind of human edit, same drifting node). A cluster is **actionable**
    only when backed by **3 or more** concrete pieces of evidence across the
@@ -60,7 +99,8 @@ The lookback window is `$LOOKBACK_DAYS` days.
    - If any graph frontmatter changed: run `python3 scripts/build-graph.py
      build` and commit the regenerated `.claude/indexes/graph.json` in the
      same PR (the graph artifact rides in the PR; CI diff-checks it).
-   - Commit as `example-app-eng-bot` with trailer block:
+   - Commit as `example-app-bot[bot]` (set via the `.github/actions/bot-identity`
+     composite in the calling workflow — do not re-set locally) with trailer block:
      `Agent: dream` / `Agent-Model: <your model id>` /
      `Agent-Run: $RUN_URL` / `Triggered-By: cron`.
    - Open ONE PR (`GH_TOKEN="$INTERNAL_DOCS_TOKEN" gh pr create --repo
@@ -125,6 +165,6 @@ The lookback window is `$LOOKBACK_DAYS` days.
   attempt) with links.
 - Every proposed change traces to ≥3 concrete evidence links in the PR
   body. No exceptions.
-- Never name target prospects in internal-docs (paying customers Miriel and
-  Austin AI are fine to name).
+- Never name target prospects in internal-docs (paying customers may be named
+  when directly relevant).
 - No Slack posts, no GitHub mutations beyond the two branches/PRs above.

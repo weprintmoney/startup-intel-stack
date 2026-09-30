@@ -1,0 +1,10 @@
+name: Bot identity
+description: Set git author/committer to example-app-bot so commits link to the App.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        git config --global user.name  'example-app-bot[bot]'
+        git config --global user.email '<APP_ID>+example-app-bot[bot]@users.noreply.github.com'

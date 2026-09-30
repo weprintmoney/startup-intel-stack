@@ -1,14 +1,23 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/<YOUR_ORG>/agent-ops/schemas/queue-claim.schema.json",
+  "$id": "https://github.com/example-org/agent-ops/schemas/queue-claim.schema.json",
   "title": "Queue claim",
   "description": "One claimed ticket in state/queue.json. Written by ticket-intake, updated by each downstream stage.",
   "type": "object",
-  "required": ["issue", "repo", "mode", "ticket_class", "claimed_at", "run_url", "branch", "status"],
+  "required": ["issue", "repo", "impl_repo", "mode", "ticket_class", "claimed_at", "run_url", "branch", "status"],
   "additionalProperties": false,
   "properties": {
     "issue": { "type": "integer", "minimum": 1 },
-    "repo": { "type": "string", "pattern": "^[A-Za-z0-9._<>-]+/[A-Za-z0-9._-]+$" },
+    "repo": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._<>-]+/[A-Za-z0-9._-]+$",
+      "description": "Repo the ticket lives in. Always example-org/example-app-core (team issues are filed there regardless of which repo the work touches)."
+    },
+    "impl_repo": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._<>-]+/[A-Za-z0-9._-]+$",
+      "description": "Repo the branch, commits, and PR land in — routed from the ticket's repo:<name> label. Often differs from `repo`: an SDK ticket is filed in example-app-core but implemented in example-app-sdk-py/js/go. One claim per (issue, impl_repo) pair, so a three-SDK ticket fans out to three claims."
+    },
     "title": { "type": "string" },
     "mode": { "const": "claude-led" },
     "ticket_class": {
@@ -19,14 +28,49 @@
     "run_url": { "type": "string", "format": "uri" },
     "branch": { "type": "string", "pattern": "^agent/[0-9]+-[a-z0-9-]+$" },
     "status": {
-      "enum": ["claimed", "spec-pending", "spec-approved", "implementing", "in-review", "pr-open", "merged", "abandoned"]
+      "enum": ["claimed", "spec-pending", "spec-clarify-pending", "spec-approved", "implementing", "pr-open", "merged", "abandoned"],
+      "description": "spec-clarify-pending = parked on one clarifying question posted to the ticket; holds no WIP slot; resumes when a human re-dispatches spec-draft"
     },
     "spec_fast_path": {
       "type": "boolean",
       "description": "True when the spec gate was skipped per the template's does-not-apply list"
     },
     "spec_path": { "type": "string" },
+    "spec_pr": { "type": "string", "format": "uri" },
     "pr_url": { "type": "string", "format": "uri" },
-    "abandoned_reason": { "type": "string" }
+    "abandoned_reason": { "type": "string" },
+    "closed_at": {
+      "type": "string", "format": "date-time",
+      "description": "When the claim reached merged/abandoned (stamped by update-claim.sh). pr-merged-reap reaps terminal claims older than the retention window by this date, falling back to claimed_at for older records"
+    },
+    "merge_sha": {
+      "type": "string", "pattern": "^[0-9a-f]{7,40}$",
+      "description": "Merge commit on the implementation repo (written by pr-merged-reap on merged)"
+    },
+    "retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Spec-draft attempts against this claim (drain-chain retries on failure or cancellation)"
+    },
+    "clarify_reason": {
+      "type": "string",
+      "description": "One-line reason from RESULT: CLARIFY_NEEDED — what the drafter could not resolve from the ticket"
+    },
+    "blocked_by": {
+      "type": "string",
+      "description": "Prerequisite named by RESULT: DEPENDENCY_BLOCKED (issue/PR/ADR ref); claim is abandoned until a human re-queues"
+    },
+    "blocked_owner": {
+      "type": "string",
+      "description": "GitHub handle from named-people.yaml, or 'unassigned', for whoever owns the blocker in blocked_by"
+    },
+    "claim_verification": {
+      "enum": ["verified", "unverified", "contradicted"],
+      "description": "claim-verify gate verdict on the spec PR (spec-draft.yml). contradicted = the PR was converted to draft and labeled claims:contradicted; a human resolves before approval"
+    },
+    "last_review_dispatched": {
+      "type": "string",
+      "description": "id of the most recent human CHANGES_REQUESTED review on the pr-open claim's PR that pr-review-reap.yml has already dispatched a revise.yml round for — prevents re-dispatching every poll for the same standing review"
+    }
   }
 }

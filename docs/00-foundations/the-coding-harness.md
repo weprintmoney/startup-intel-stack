@@ -424,7 +424,7 @@ The dream loop's miners read these condensed summaries. They must not see raw co
 
 Repo skeleton: `agents/`, `evals/`, `state/`, `sessions/`, `schemas/`, `.github/workflows/`. An attribution-strip composite action that re-authors commits to the bot and strips Claude trailers, plus a `footprint-scan` check for public-facing repos. A `pipeline-heartbeat.yml` that alerts on staleness, zero-output runs, and failed-latest runs — into the *ops* channel, never leadership.
 
-Wire the cost ceiling now, before anything else runs. A weekly spend digest via `gh api`; alert at 70% of budget; hard-stop non-exempt workflows at 100%. Document the ceiling in `terminus/operational-guardrails.md`. Do not skip this step. A runaway agent that discovers your API key has no ceiling is the single most expensive failure mode in the whole system.
+Wire the cost ceiling now, before anything else runs. A weekly spend digest via `gh api`; alert at 70% of budget; hard-stop non-exempt workflows at 100%. Document the ceiling in `terminus/operational-guardrails.md`. A weekly digest alone is not enough: a burst of CI-driven eval reruns can spend a week's budget in hours, long before a twice-weekly digest posts. Run a separate guard on a 15-minute cron that checks spend for the pipeline's own API workspace and flips the pause switch itself (that write needs an admin-scoped credential; the default `GITHUB_TOKEN` cannot write repo variables). Do not skip this step. A runaway agent that discovers your API key has no ceiling is the single most expensive failure mode in the whole system.
 
 Wire the input scanner. It's a PostToolUse hook that runs on every tool call that reads external content — issue bodies, PR comments, commit messages, scraped pages. It checks for prompt-injection patterns, secret patterns, and any name on `schemas/blocked-names.json`. On match: halt the tool call, alert ops, comment on the source flagging the pattern. External contributors are your highest-exposure surface; the scanner is your defense, not the model's judgment.
 
@@ -443,6 +443,8 @@ Never give a task agent a write token scoped beyond one PR. The dream loop's tok
 
 > **You'd think a small team can share a single powerful token.**
 > That's how a compromised implementer session ends up rewriting your positioning docs. Narrow PATs are the cheapest boundary you'll ever install.
+
+**Prefer a GitHub App to the PAT matrix when you can.** Same principle, one narrow credential per capability, but installation tokens expire in an hour, scope is per repo and per permission, and commits are auditable as `your-bot[bot]`. Withhold `Workflows: write` so the agent physically cannot edit CI, which is a stronger guarantee than a path guard. The skeleton ships this wiring (`examples/agent-ops-skeleton/docs/github-app-setup.md`).
 
 **Readiness gate:** the bot opens a footprint-clean PR to a public-facing repo from CI; the cost digest and heartbeat both post to Slack.
 
@@ -506,6 +508,8 @@ The spec template is seven required sections: **Problem**, **Constraints**, **Re
 
 **Guards** are required CI checks on `agent/*` branches in product repos. The `expertise-path-guard` reads `terminus/expertise-paths.md` and fails any agent PR touching your highest-risk paths — for a SaaS product, think auth and session handling, billing and entitlements, data-layer internals, anything security-sensitive. This is deterministic. Never self-policed. The `footprint-scan` check confirms no Claude attribution markers landed in commit messages, PR bodies, or code comments.
 
+Two habits keep the loop legible once it runs at volume. First, **claims move only along a transition table** (`state/transitions.json`) enforced at write time, and a validator cross-checks the table against the schema so they cannot drift. Second, **one status card per ticket**: every stage rewrites a single bot comment in place instead of posting a new one, and a model node can put text on a ticket only through an outbox the workflow filters. Without the second, a single retry loop will leave twenty bot comments on one ticket.
+
 **Readiness gate:** five tickets flow end-to-end. Median time-to-PR under 24 hours from label. Zero expertise-path violations.
 
 ---
@@ -538,6 +542,8 @@ Build the golden set. Twenty to thirty historical PRs with known human verdicts 
 Layer on the mechanical checks CI doesn't already cover: coverage delta ≤ 2pp per file, invariant/contract suite inclusion on guarded paths.
 
 Stub the `release-kickoff` skill — LLM-driven integration tests as a release gate, cheap path-filtered surfaces per PR (checking error message actionability when error strings change, checking docs voice on docs-only changes). Fully wire in L3-4.
+
+Two more pieces belong here. **A bounded judge → revise → re-judge loop:** when the judge fails a PR, a fresh-context `reviser` applies the findings (and may decline one, never rebut it) and the judge runs again. Cap it at three rounds and a per-ticket cost ceiling, record every round in the PR body, and hand the PR to a human when either bound trips. It is the one deliberate exception to "never retry in a loop." **A claim-verify gate on anything the agents write as prose about the product:** a deterministic pre-pass decides everything a grep can (retired phrases, cited `path:line` that does not exist, missing graph nodes) and a fresh-context verifier handles the rest. Confident and wrong is the failure mode that turn caps and timeouts never catch.
 
 **Readiness gate:** the judge is required on all agent PRs. Weekly eval is green. Judge/human verdict agreement ≥85% over ≥15 PRs.
 

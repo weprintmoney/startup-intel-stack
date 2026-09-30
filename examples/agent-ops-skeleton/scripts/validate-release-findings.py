@@ -18,7 +18,7 @@ DIMENSIONS = [
 ]
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901 — pre-existing, not a lint-floor refactor
     args = sys.argv[1:]
     if not args:
         print(__doc__, file=sys.stderr)

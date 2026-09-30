@@ -1,0 +1,12 @@
+{
+  "case": "clean-05-spec-agent-ops-cited",
+  "kind": "spec",
+  "artifact": "artifact.md",
+  "artifact_ref": "07-engineering-docs/specs/features/9005-guard-example-app-sdk-js-wasm-bridge.md",
+  "expected_verdict": "verified",
+  "expected_claims": [
+    { "claim": "guards/example-app-sdk-js.paths:2 src/native", "expected_verdict": "verified" }
+  ],
+  "expected_deterministic": [],
+  "point": "Exercises scan_path_citations resolving a path-citation against the agent-ops root end to end — the exact citation shape (`guards/*.paths`) that PR #81 fixed after burning 3 spec-draft attempts with zero golden-set coverage. Zero false positives."
+}

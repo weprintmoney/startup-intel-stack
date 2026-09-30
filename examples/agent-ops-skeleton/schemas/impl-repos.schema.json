@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/example-org/agent-ops/schemas/impl-repos.schema.json",
+  "title": "Product-repo registry",
+  "description": "state/impl-repos.json \u2014 the one registry of product repos the pipeline knows. Keys are short repo names under the example-org org. Every key must have guards/<repo>.paths and every guards file must have a key; schema-validate enforces both. Only routable:true repos receive routed tickets from ticket-intake.",
+  "type": "object",
+  "required": [
+    "repos"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": {
+      "type": "string"
+    },
+    "repos": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9._-]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "routable",
+          "visibility"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "routable": {
+            "type": "boolean",
+            "description": "ticket-intake may route repo:<name> tickets here"
+          },
+          "visibility": {
+            "enum": [
+              "public",
+              "internal",
+              "private"
+            ],
+            "description": "public repos get strip-attribution + footprint-scan on every push"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
