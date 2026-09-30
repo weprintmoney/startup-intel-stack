@@ -1,0 +1,153 @@
+name: Budget Guard
+
+# Guardrail 1a enforcement — a real stop, not an advisory. cost-digest.yml
+# only runs Mon/Thu and reports; by the time it posts, a burst like
+# one (a few hours of eval-suite CI driven by repeated
+# pushes to a PR touching judge/eval fixtures) can already be over budget.
+# This workflow runs every 15 minutes and actually flips the switch: it
+# checks trailing-7-day agent-ops-workspace spend against
+# WEEKLY_COST_CEILING_USD and, if over, sets AGENT_OPS_PAUSED=true.
+#
+# Every pause-gated workflow in this repo already checks
+# `vars.AGENT_OPS_PAUSED != 'true'` at the job level (implement, revise,
+# code-judge, spec-draft*, ticket-intake, the four eval suites, dream,
+# dependabot-triage, release-intelligence, *-reap, ledger-update). Flipping
+# this one variable stops the entire pipeline immediately — nothing else
+# needs to change.
+#
+# Why this couldn't just be added to cost-digest.yml: cost-digest.yml
+# already tried writing this variable with secrets.GITHUB_TOKEN once
+# and reverted it — confirmed again with a live
+# test (PATCH and POST on /actions/variables both 403 "Resource not
+# accessible by integration", even with `permissions: actions: write`
+# declared on the job). This is a hard platform limit on the ephemeral
+# Actions token, not a config mistake — Writing repo Actions variables needs an admin
+# credential: a PAT, or a GitHub App installation token from an App with
+# the "Variables" repository permission (a permission distinct from
+# "Actions", per GitHub's REST API permissions reference).
+#
+# Current status: example-app-bot (already installed on this repo, already
+# used elsewhere here for other cross-repo tokens) does NOT yet have
+# "Variables: Read and write" — that's an admin-only grant in the App's
+# settings, asked for in issue #61 (item 8). Until it's granted, the mint step
+# below degrades gracefully and this workflow falls back to the same
+# "set it manually" alert cost-digest.yml already posts — nothing
+# regresses by shipping this now, and it activates automatically the
+# moment the permission lands (no redeploy needed).
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute trailing-7-day spend
+        id: check
+        env:
+          ANTHROPIC_ADMIN_KEY: ${{ secrets.ANTHROPIC_ADMIN_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CEILING: ${{ vars.WEEKLY_COST_CEILING_USD }}
+          WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, sys, urllib.parse, urllib.request
+          from datetime import datetime, timedelta, timezone
+
+          admin_key = os.environ.get("ANTHROPIC_ADMIN_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+          ceiling_raw = os.environ.get("CEILING", "").strip()
+          workspace = os.environ.get("WORKSPACE_ID", "").strip()
+
+          def output(k, v):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"{k}={v}\n")
+
+          # Degrade quietly pre-setup — cost-digest.yml is the loud
+          # "not configured" alert; this workflow just skips.
+          if not admin_key or not ceiling_raw or not workspace:
+              output("over_budget", "false")
+              raise SystemExit(0)
+
+          start = (datetime.now(timezone.utc) - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+          base = ("https://api.anthropic.com/v1/organizations/cost_report"
+                  f"?starting_at={start.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+                  "&bucket_width=1d&limit=31&group_by[]=workspace_id")
+          buckets, page, pages = [], None, 0
+          try:
+              while True:
+                  url = base + (f"&page={urllib.parse.quote(page)}" if page else "")
+                  req = urllib.request.Request(url, headers={"x-api-key": admin_key, "anthropic-version": "2023-06-01"})
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      payload = json.load(r)
+                  buckets.extend(payload.get("data", []) or [])
+                  pages += 1
+                  page = payload.get("next_page")
+                  if not payload.get("has_more") or not page or pages >= 20:
+                      break
+          except Exception as e:
+              print(f"cost-report API error: {e}", file=sys.stderr)
+              output("over_budget", "false")
+              raise SystemExit(0)
+
+          # amount is in cents, not dollars (Usage & Cost API docs) —
+          # same fix as cost-digest.yml / metrics-digest.yml.
+          spend = 0.0
+          for bucket in buckets:
+              for row in bucket.get("results", []) or []:
+                  if row.get("workspace_id") != workspace:
+                      continue
+                  try:
+                      spend += float(row.get("amount")) / 100.0
+                  except (TypeError, ValueError):
+                      continue
+
+          ceiling = float(ceiling_raw)
+          print(f"spend=${spend:.2f} ceiling=${ceiling:.2f}")
+          output("spend", f"{spend:.2f}")
+          output("over_budget", "true" if spend >= ceiling else "false")
+          PYEOF
+
+      - name: Mint example-app-bot token
+        if: steps.check.outputs.over_budget == 'true' && vars.BOT_APP_CLIENT_ID != ''
+        id: bot
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: agent-ops
+          # No permission-* inputs: mint with whatever the installation
+          # already grants, so this doesn't need to guess the exact
+          # permission key for "Variables" — it just needs that permission
+          # to exist on the installation (see the ask in issue #61 (item 8)).
+
+      - name: Pause the pipeline
+        if: steps.check.outputs.over_budget == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          SPEND: ${{ steps.check.outputs.spend }}
+          CEILING: ${{ vars.WEEKLY_COST_CEILING_USD }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if gh api -X PATCH "repos/${{ github.repository }}/actions/variables/AGENT_OPS_PAUSED" \
+               -f name=AGENT_OPS_PAUSED -f value=true \
+             || gh api -X POST "repos/${{ github.repository }}/actions/variables" \
+               -f name=AGENT_OPS_PAUSED -f value=true; then
+            bash scripts/slack-alert.sh ":octagonal_sign: *Budget guard: pipeline auto-paused.* \$${SPEND} spent this week >= \$${CEILING} ceiling (checked every 15 min). \`AGENT_OPS_PAUSED=true\` is now set — every pause-gated workflow will skip starting now. Investigate, then set the variable back to \`false\` manually to resume. $RUN_URL"
+          else
+            bash scripts/slack-alert.sh ":rotating_light: *Budget guard: \$${SPEND} spent this week >= \$${CEILING} ceiling, but could not set AGENT_OPS_PAUSED* — example-app-bot needs the 'Variables: Read and write' repository permission (not yet granted, see issue #61 (item 8)) or GITHUB_TOKEN 403'd as expected. Set repo variable \`AGENT_OPS_PAUSED=true\` manually NOW. $RUN_URL"
+          fi

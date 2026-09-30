@@ -1,0 +1,29 @@
+{
+  "global_freeze": false,
+  "classes": {
+    "sdk-regen": {
+      "level": 2,
+      "consecutive_clean_merges": 0,
+      "change_requested_streak": 0,
+      "judge_first_pass": {
+        "pass": 0,
+        "total": 0
+      },
+      "coverage_trips": 0,
+      "guardrail_overrides": 0,
+      "frozen": false,
+      "frozen_reason": null,
+      "last_promoted_at": "2026-08-21T12:00:00Z",
+      "last_demoted_at": null,
+      "history": [
+        {
+          "at": "2026-08-21T12:00:00Z",
+          "from": 1,
+          "to": 2,
+          "reason": "promotion: 10 clean merges, judge first-pass 10/10, no postmortems in 30d"
+        }
+      ]
+    }
+  },
+  "updated_at": "2026-08-21T12:00:00Z"
+}

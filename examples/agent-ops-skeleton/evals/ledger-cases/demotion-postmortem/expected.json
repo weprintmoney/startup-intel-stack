@@ -1,0 +1,36 @@
+{
+  "global_freeze": false,
+  "updated_at": "2026-08-21T12:00:00Z",
+  "classes": {
+    "sdk-regen": {
+      "level": 1,
+      "consecutive_clean_merges": 0,
+      "change_requested_streak": 0,
+      "judge_first_pass": {
+        "pass": 0,
+        "total": 0
+      },
+      "coverage_trips": 0,
+      "guardrail_overrides": 0,
+      "frozen": true,
+      "frozen_reason": "demotion: postmortem caused_by_class",
+      "last_promoted_at": "2026-08-01T09:00:00Z",
+      "last_demoted_at": "2026-08-21T12:00:00Z",
+      "history": [
+        {
+          "at": "2026-08-01T09:00:00Z",
+          "from": 1,
+          "to": 2,
+          "reason": "promotion: 10 clean merges, judge first-pass 10/10, no postmortems in 30d"
+        },
+        {
+          "at": "2026-08-21T12:00:00Z",
+          "from": 2,
+          "to": 1,
+          "reason": "demotion: postmortem caused_by_class",
+          "evidence_url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/postmortems/2026-08-15-sdk-regen-escape.md"
+        }
+      ]
+    }
+  }
+}

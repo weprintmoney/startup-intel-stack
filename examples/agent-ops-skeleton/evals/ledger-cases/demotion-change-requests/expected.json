@@ -1,0 +1,30 @@
+{
+  "global_freeze": false,
+  "updated_at": "2026-08-21T12:00:00Z",
+  "classes": {
+    "docs-scaffolding": {
+      "level": 1,
+      "consecutive_clean_merges": 0,
+      "change_requested_streak": 0,
+      "judge_first_pass": {
+        "pass": 0,
+        "total": 0
+      },
+      "coverage_trips": 0,
+      "guardrail_overrides": 0,
+      "frozen": false,
+      "frozen_reason": null,
+      "last_promoted_at": "2026-08-01T09:00:00Z",
+      "last_demoted_at": "2026-08-21T12:00:00Z",
+      "history": [
+        {
+          "at": "2026-08-21T12:00:00Z",
+          "from": 2,
+          "to": 1,
+          "reason": "demotion: 2 consecutive change-requested PRs",
+          "evidence_url": "https://github.com/example-org/example-app-core/pull/201"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,159 @@
+name: Judge Evals — Repeat-Run Consistency
+
+# judge-evals.yml grades every pr-cases fixture once per
+# baseline run, so a genuine founder-voice-pr-reviewer calibration gap (the reviewer disagrees with history on a meaningful share of the
+# author-matched graded set) and ordinary Opus run-to-run sampling variance
+# (the same report: several individual flips, e.g. slow-fp-denormals,
+# reproduced as a clean pass on an immediate retry against identical code)
+# land in the same number. This workflow grades every graded-for-`judge`
+# case N times and reports, per case, whether it disagrees with history on
+# EVERY run (a real signal) or only SOME runs (noise) — see
+# evals/eval_lib.py's classify_consistency / consistency_rate_breakdown.
+#
+# Dispatch-only, not on the weekly schedule: this is N times the cost of one
+# judge-evals.yml leg for `judge`, meant to be run deliberately before a
+# calibration decision on a judge's rubric/persona — not every week. It is
+# purely additive: it does not touch judge-evals.yml's own single-run
+# compare/report, which stays the trend-continuity source for the existing
+# headline number. It never fails the build (see run_eval.py's
+# repeat_compare docstring) — it is a report, not a gate — but it still
+# respects the same pause/budget controls as every other eval workflow.
+#
+# Cost note: `runs` (default 3) x however many cases are graded for `judge`
+# (the size of the graded set for that judge) on Opus, sequential. Bounded by
+# `budget-guard.yml`'s WEEKLY_COST_CEILING_USD like every other run in this
+# repo — dispatching this on top of a normal week's scheduled evals should
+# stay comfortably inside it (an occasional dispatch, not a recurring add-on
+# to the weekly $ figure).
+
+on:
+  workflow_dispatch:
+    inputs:
+      judge:
+        description: "Judge to repeat (founder-voice-pr-reviewer or pr-reviewer; code-judge's rubric-score noise near the 80 threshold is a separate question from #137's approve/request-changes calibration)"
+        required: false
+        default: "founder-voice-pr-reviewer"
+      runs:
+        description: "Repeats per case"
+        required: false
+        default: "3"
+      cases:
+        description: "Comma-separated case subset (default: all graded for judge)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  repeat-eval:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      secrets_missing: ${{ steps.gate.outputs.missing }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
+        run: |
+          if [ -z "$A" ] || [ -z "$K" ] || [ -z "$C" ]; then
+            echo "::error::Missing ANTHROPIC_API_KEY and/or BOT_APP_* (SETUP.md §2) — judge-evals-repeat cannot run its golden set. Failing loud instead of a silent no-op."
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "missing=false" >> "$GITHUB_OUTPUT"
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
+      - name: Mint internal-docs token (rubric read)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
+
+      - name: Checkout internal-docs (rubric)
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ steps.bot-docs.outputs.token }}
+          path: internal-docs
+          persist-credentials: false
+          sparse-checkout: |
+            07-engineering-docs
+
+      - name: Set up Python
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true'
+        uses: ./.github/actions/setup-claude
+
+      - name: Run ${{ inputs.judge }} N times per case
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          ONLY: ${{ inputs.cases }}
+          RUNS: ${{ inputs.runs }}
+          JUDGE: ${{ inputs.judge }}
+        run: |
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          mkdir -p /tmp/streams
+          for case in $(python evals/run_eval.py cases --judge "$JUDGE" "${ONLY_FLAG[@]}"); do
+            for i in $(seq 1 "$RUNS"); do
+              echo "::group::${JUDGE} / $case / run $i of $RUNS"
+              python evals/run_eval.py setup --case "$case" --judge "$JUDGE"
+              bash scripts/run-claude.sh "/tmp/streams/${case}-run${i}.stream.jsonl" "$(cat "agents/${JUDGE}/CLAUDE.md")
+
+          Task: evaluate the case staged at /tmp/review-input exactly as you would a production PR.
+          Inputs at: /tmp/review-input
+          Write output to: /tmp/review-output/ (the files your instructions name: verdict.json + findings.md for code-judge; review.md for founder-voice-pr-reviewer)" \
+                --allowedTools "Bash,Read,Write,Glob,Grep" \
+                --model claude-opus-4-7 \
+                --max-turns 40 \
+                || echo "::warning::run $i errored on $case (recorded as MISSING)"
+              python evals/run_eval.py collect --judge "$JUDGE" --case "$case" --results "/tmp/results/run-$i"
+              echo "::endgroup::"
+            done
+          done
+
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/streams/*.stream.jsonl
+
+      - name: Compare repeat-run consistency
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ONLY: ${{ inputs.cases }}
+          RUNS: ${{ inputs.runs }}
+          JUDGE: ${{ inputs.judge }}
+        run: |
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          python evals/run_eval.py repeat-compare --judge "$JUDGE" --results-base /tmp/results \
+            --runs "$RUNS" --summary /tmp/repeat-summary.json "${ONLY_FLAG[@]}"
+
+      - name: Upload repeat-consistency summary
+        if: always() && steps.gate.outputs.go == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-evals-repeat-consistency
+          path: /tmp/repeat-summary.json
+          if-no-files-found: warn

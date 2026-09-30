@@ -1,10 +1,13 @@
 name: Metrics Digest
 
 # Phase 5 weekly digest to Slack: autonomy levels + transitions, merged agent
-# PRs, judge first-pass rate, dream-loop acceptance, staleness backlog, cost
-# pointer. Deterministic — no model calls. Sections degrade to "n/a" when
-# their token is missing (issue #1). Digest-not-per-event-pings is the
-# reviewer-fatigue mitigation from the build plan.
+# PRs, judge first-pass rate, dream-loop acceptance, staleness backlog, and
+# unit economics (cost per merged agent PR — the steering metric is cost per
+# outcome, not aggregate spend; spend is the agent-ops workspace slice, never
+# org-wide). Deterministic — no model calls. Sections
+# degrade to "n/a" when the App token cannot be minted (SETUP.md §2).
+# Digest-not-per-event-pings is the reviewer-fatigue mitigation from the
+# build plan.
 
 on:
   schedule:
@@ -23,11 +26,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Mint tokens for product + internal-docs (read)
+        id: bot
+        if: vars.BOT_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core,internal-docs
+          permission-contents: read
+          permission-pull-requests: read
+          permission-issues: read
+
       - name: Build digest
         id: build
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
-          DOCS_TOKEN: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          DOCS_TOKEN: ${{ steps.bot.outputs.token }}
+          ANTHROPIC_ADMIN_KEY: ${{ secrets.ANTHROPIC_ADMIN_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
         run: |
           SINCE=$(date -u -d '7 days ago' +%Y-%m-%d)
 
@@ -44,8 +64,8 @@ jobs:
           # --- merged agent PRs this week (product repos from guards/)
           if [ -n "$GH_TOKEN" ]; then
             MERGED=0
-            for p in guards/*.paths; do
-              repo="<YOUR_ORG>/$(basename "$p" .paths)"
+            for name in $(jq -r '.repos | keys[]' state/impl-repos.json); do
+              repo="<YOUR_ORG>/$name"
               n=$(gh pr list -R "$repo" --state merged --limit 100 \
                     --json headRefName,mergedAt \
                     --jq "[.[] | select(.headRefName | startswith(\"agent/\")) | select(.mergedAt >= \"$SINCE\")] | length" \
@@ -54,7 +74,91 @@ jobs:
             done
             PRS_LINE="$MERGED merged agent PR(s) this week"
           else
-            PRS_LINE="n/a (PRODUCT_REPOS_PAT missing, issue #1)"
+            PRS_LINE="n/a (BOT_APP_* missing, SETUP.md §2)"
+          fi
+
+          # --- unit economics: cost per merged agent PR. Spend is the
+          # agent-ops WORKSPACE slice of the org cost report (same grouped,
+          # paginated query cost-digest.yml uses) — never the org-wide number,
+          # which includes every Claude Code seat and other repos' workflows
+          #. No ANTHROPIC_WORKSPACE_ID -> the line says so
+          # instead of quietly reporting the org total.
+          COST_KEY="${ANTHROPIC_ADMIN_KEY:-$ANTHROPIC_API_KEY}"
+          SPEND=""
+          SPEND_NOTE=""
+          if [ -n "$COST_KEY" ] && [ -n "$WORKSPACE_ID" ]; then
+          RAW=$(COST_KEY="$COST_KEY" WORKSPACE_ID="$WORKSPACE_ID" python3 - <<'PYEOF'
+          import json, os, sys, urllib.parse, urllib.request
+          from datetime import datetime, timedelta, timezone
+          start = (datetime.now(timezone.utc) - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+          base = ("https://api.anthropic.com/v1/organizations/cost_report"
+                  f"?starting_at={start.strftime('%Y-%m-%dT%H:%M:%SZ')}&bucket_width=1d&limit=31&group_by[]=workspace_id")
+          buckets, page, pages = [], None, 0
+          try:
+              while True:
+                  url = base + (f"&page={urllib.parse.quote(page)}" if page else "")
+                  req = urllib.request.Request(url, headers={"x-api-key": os.environ["COST_KEY"], "anthropic-version": "2023-06-01"})
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      payload = json.load(r)
+                  buckets.extend(payload.get("data", []) or [])
+                  pages += 1
+                  page = payload.get("next_page")
+                  if not payload.get("has_more") or not page or pages >= 20:
+                      break
+          except Exception as e:
+              print(f"cost-report API error: {e}", file=sys.stderr)
+              sys.exit(0)
+          ws = os.environ["WORKSPACE_ID"]
+          # amount is in cents (Usage & Cost API docs: "reported as decimal
+          # strings in lowest units (cents)"), not dollars — found in practice
+          # after this script and cost-digest.yml both reported a 100x-
+          # inflated figure by treating cents as dollars.
+          daily = []
+          for b in buckets:
+              day_total = 0.0
+              for row in b.get("results", []) or []:
+                  if row.get("workspace_id") != ws:
+                      continue
+                  try:
+                      day_total += float(row.get("amount")) / 100.0
+                  except (TypeError, ValueError):
+                      pass
+              daily.append(day_total)
+          total = sum(daily)
+          # Same lopsided-day guard as cost-digest.yml: not a sign of bad
+          # data, just flags when one day dominates the week so a real
+          # (or, previously, a units-bug-amplified) busy day is visible
+          # instead of hiding inside one bare number.
+          note = ""
+          amounts = sorted(daily)
+          if len(amounts) >= 3:
+              median = amounts[len(amounts) // 2]
+              top = max(daily)
+              if top > max(20 * median, 200):
+                  mult = (top / median) if median else float("inf")
+                  note = f"~{mult:.0f}x its median day"
+          print(f"{total:.2f}|{note}")
+          PYEOF
+          )
+          SPEND="${RAW%%|*}"
+          SPEND_NOTE="${RAW#*|}"
+          fi
+          if [ -z "$COST_KEY" ]; then
+            UNIT_LINE="n/a (no ANTHROPIC_ADMIN_KEY or ANTHROPIC_API_KEY set, SETUP.md §4)"
+          elif [ -z "$WORKSPACE_ID" ]; then
+            UNIT_LINE="n/a (ANTHROPIC_WORKSPACE_ID not set — refusing to report the org-wide number as pipeline spend)"
+          elif [ -z "$SPEND" ]; then
+            UNIT_LINE="n/a (cost-report API error — see run log)"
+          elif [ -z "${MERGED:-}" ]; then
+            UNIT_LINE="\$$SPEND pipeline spend (7d, agent-ops workspace); merged-PR count n/a (BOT_APP_* missing, SETUP.md §2)"
+          elif [ "$MERGED" -eq 0 ]; then
+            UNIT_LINE="\$$SPEND pipeline spend (7d, agent-ops workspace), 0 merged agent PRs — no unit cost yet"
+          else
+            PER_PR=$(awk -v s="$SPEND" -v m="$MERGED" 'BEGIN{printf "%.2f", s/m}')
+            UNIT_LINE="\$$SPEND pipeline spend (7d, agent-ops workspace) ÷ $MERGED merged agent PR(s) = *\$$PER_PR per merged PR*"
+          fi
+          if [ -n "$SPEND_NOTE" ]; then
+            UNIT_LINE="$UNIT_LINE — :mag: lopsided day: $SPEND_NOTE"
           fi
 
           # --- dream acceptance (trailing 28d, internal-docs PRs head dream/*)
@@ -71,8 +175,8 @@ jobs:
               --jq '.body' 2>/dev/null | grep -c '^- \[ \]' || true)
             STALE_LINE="$OPEN_FLAGS open staleness flag(s) — internal-docs #422"
           else
-            DREAM_LINE="n/a (INTERNAL_DOCS_RO_PAT missing, issue #1)"
-            STALE_LINE="n/a (INTERNAL_DOCS_RO_PAT missing, issue #1)"
+            DREAM_LINE="n/a (BOT_APP_* missing, SETUP.md §2)"
+            STALE_LINE="n/a (BOT_APP_* missing, SETUP.md §2)"
           fi
 
           {
@@ -84,19 +188,22 @@ jobs:
             echo "*Throughput:* $PRS_LINE"
             echo "*Dream loop:* $DREAM_LINE"
             echo "*Staleness:* $STALE_LINE"
-            echo "*Cost:* see Monday cost-digest thread"
+            echo "*Unit economics:* $UNIT_LINE"
+            echo "*Cost detail:* see Monday cost-digest thread"
           } > /tmp/digest.txt
           cat /tmp/digest.txt
 
       - name: Post digest
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
         run: bash scripts/slack-alert.sh "$(cat /tmp/digest.txt)"
 
       - name: Alert on failure
         if: failure()
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           bash scripts/slack-alert.sh ":x: metrics-digest failed. Not retrying. $RUN_URL"

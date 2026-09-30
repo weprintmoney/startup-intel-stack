@@ -2,13 +2,18 @@
   "case": "toy-fixture",
   "repo": "<YOUR_ORG>/example-app-service",
   "pr": 1,
+  "reviewer": "<FOUNDER_NAME>",
+  "graded_by": [
+    "code-judge",
+    "founder-voice-pr-reviewer"
+  ],
   "expected": {
     "code-judge": "pass",
     "founder-voice-pr-reviewer": "approve"
   },
   "human_outcome": "Approved and merged; one docstring nit deferred to a follow-up",
   "evidence": [
-    "fabricated for template purposes — replace this fixture with real PR history before enabling judge-evals as a required check"
+    "fabricated for template purposes \u2014 replace this fixture with real PR history before enabling judge-evals as a required check"
   ],
   "themes": [
     "null-check",

@@ -14,13 +14,22 @@ name: Judge Golden-Set Evals
 #
 # Cost note: full run = 27 cases x 2 judges on Opus, sequential per judge.
 # Use the `cases` dispatch input for cheap subset runs while iterating.
+#
+# Model routing: the `model_ref` dispatch input evals a CANDIDATE judge model
+# (e.g. claude-sonnet-4-6) against the golden set without touching main. A
+# flip there blocks the candidate, it is not drift — auto-merge stays open.
+# If a cheaper model matches Opus verdicts, repoint the judges and cut the
+# cost of the pipeline's highest-frequency model call.
 
 on:
   pull_request:
     paths:
-      - "agents/code-judge/**"
-      - "agents/founder-voice-pr-reviewer/**"
-      - "evals/**"
+      - "agents/code-judge/CLAUDE.md"
+      - "agents/founder-voice-pr-reviewer/CLAUDE.md"
+      - "agents/pr-reviewer/CLAUDE.md"
+      - "evals/pr-cases/**"
+      - "evals/eval_lib.py"
+      - "evals/run_eval.py"
       - "schemas/judge-verdict.schema.json"
       - ".github/workflows/judge-evals.yml"
   schedule:
@@ -36,13 +45,29 @@ on:
         description: "internal-docs ref for the rubric — eval a PROPOSED rubric branch pre-merge (a flip then blocks that proposal instead of freezing auto-merge)"
         required: false
         default: ""
+      model_ref:
+        description: "candidate judge model (e.g. claude-sonnet-4-6) — eval a PROPOSED model swap (a flip blocks the candidate instead of freezing auto-merge)"
+        required: false
+        default: ""
+
+concurrency:
+  # A new push to the same PR supersedes the in-flight full 27-case x 2-judge
+  # Opus run instead of piling up alongside it — found in practice: a PR under
+  # active iteration ran this a dozen times in a day with no cancellation. Scheduled/dispatch runs get their own group (keyed by
+  # ref, not a PR number) so this never cancels the weekly drift canary.
+  group: judge-evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   eval:
-    if: vars.AGENT_OPS_PAUSED != 'true'
+    # Skip the expensive full run while the PR is still a draft — iterate
+    # locally (or push to a draft PR, which costs nothing here) and only
+    # pay for this once you mark it ready for review. See SETUP.md "Eval-
+    # suite cost policy".
+    if: vars.AGENT_OPS_PAUSED != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -56,6 +81,8 @@ jobs:
           - judge: founder-voice-pr-reviewer
             model: claude-opus-4-7
 
+    outputs:
+      secrets_missing: ${{ steps.gate.outputs.missing }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,23 +90,37 @@ jobs:
         id: gate
         env:
           A: ${{ secrets.ANTHROPIC_API_KEY }}
-          B: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
         run: |
-          if [ -z "$A" ] || [ -z "$B" ]; then
-            echo "Missing ANTHROPIC_API_KEY and/or INTERNAL_DOCS_RO_PAT (issue #1) — judge-evals is a no-op."
-            echo "go=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "go=true" >> "$GITHUB_OUTPUT"
+          if [ -z "$A" ] || [ -z "$K" ] || [ -z "$C" ]; then
+            echo "::error::Missing ANTHROPIC_API_KEY and/or BOT_APP_* (SETUP.md §2) — judge-evals cannot run its golden set. Failing loud instead of a silent no-op that would otherwise report green with zero cases run."
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
+          echo "missing=false" >> "$GITHUB_OUTPUT"
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
+      - name: Mint internal-docs token (rubric read)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
 
       - name: Checkout internal-docs (rubric)
         if: steps.gate.outputs.go == 'true'
         uses: actions/checkout@v4
         with:
           repository: <YOUR_ORG>/internal-docs
-          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          token: ${{ steps.bot-docs.outputs.token }}
           path: internal-docs
           ref: ${{ inputs.rubric_ref }}
+          persist-credentials: false
           sparse-checkout: |
             07-engineering-docs
 
@@ -91,44 +132,55 @@ jobs:
 
       - name: Set up Claude Code
         if: steps.gate.outputs.go == 'true'
-        run: npm install -g @anthropic-ai/claude-code@latest
+        uses: ./.github/actions/setup-claude
 
       - name: Run ${{ matrix.judge }} on golden set
         if: steps.gate.outputs.go == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
           ONLY: ${{ inputs.cases }}
         run: |
-          ONLY_FLAG=""
-          [ -n "$ONLY" ] && ONLY_FLAG="--only $ONLY"
-          for case in $(python evals/run_eval.py cases $ONLY_FLAG); do
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          mkdir -p /tmp/streams
+          for case in $(python evals/run_eval.py cases "${ONLY_FLAG[@]}"); do
             echo "::group::${{ matrix.judge }} / $case"
-            python evals/run_eval.py setup --case "$case"
-            claude -p "$(cat agents/${{ matrix.judge }}/CLAUDE.md)" \
+            python evals/run_eval.py setup --case "$case" --judge ${{ matrix.judge }}
+            bash scripts/run-claude.sh "/tmp/streams/${case}.stream.jsonl" "$(cat agents/${{ matrix.judge }}/CLAUDE.md)
+
+          Task: evaluate the case staged at /tmp/review-input exactly as you would a production PR.
+          Inputs at: /tmp/review-input
+          Write output to: /tmp/review-output/ (the files your instructions name: verdict.json + findings.md for code-judge; review.md for founder-voice-pr-reviewer)" \
               --allowedTools "Bash,Read,Write,Glob,Grep" \
-              --model ${{ matrix.model }} \
+              --model ${{ inputs.model_ref || matrix.model }} \
               --max-turns 40 \
               || echo "::warning::judge run errored on $case (recorded as MISSING)"
+            jq -rs '[.[] | select(.type == "result")] | last | .result // ""' "/tmp/streams/${case}.stream.jsonl" | tail -3
             python evals/run_eval.py collect --judge ${{ matrix.judge }} --case "$case" --results /tmp/results
             echo "::endgroup::"
           done
+
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/streams/*.stream.jsonl
 
       - name: Compare verdicts against golden set
         if: steps.gate.outputs.go == 'true'
         env:
           ONLY: ${{ inputs.cases }}
         run: |
-          ONLY_FLAG=""
-          [ -n "$ONLY" ] && ONLY_FLAG="--only $ONLY"
-          python evals/run_eval.py compare --judge ${{ matrix.judge }} --results /tmp/results $ONLY_FLAG
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          python evals/run_eval.py compare --judge ${{ matrix.judge }} --results /tmp/results "${ONLY_FLAG[@]}"
 
   freeze-on-drift:
     # A flip on schedule/dispatch means the judge drifted on main (rubric or
     # model), not that a proposed change failed review — freeze auto-merge.
-    # Exception: a dispatch with rubric_ref evaluates a PROPOSED rubric
-    # branch; a flip there blocks that proposal, it is not drift on main.
+    # Exception: a dispatch with rubric_ref or model_ref evaluates a PROPOSED
+    # change; a flip there blocks that proposal, it is not drift on main.
     needs: eval
-    if: failure() && github.event_name != 'pull_request' && inputs.rubric_ref == ''
+    if: failure() && needs.eval.outputs.secrets_missing != 'true' && github.event_name != 'pull_request' && inputs.rubric_ref == '' && inputs.model_ref == ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -139,11 +191,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # Alert first: humans must hear about the drift even if the variable
+          # write below fails. Then fail the step (D-item: a failed write must
+          # fail, not just log) so an unguarded freeze is as visible as the
+          # drift itself, not a quiet ::error:: buried in a green run.
+          FROZE=ok
           gh api -X PATCH "repos/${{ github.repository }}/actions/variables/AUTO_MERGE_FROZEN" \
             -f name=AUTO_MERGE_FROZEN -f value=true \
           || gh api -X POST "repos/${{ github.repository }}/actions/variables" \
             -f name=AUTO_MERGE_FROZEN -f value=true \
-          || echo "::error::could not set AUTO_MERGE_FROZEN — set it manually NOW"
-          bash scripts/slack-alert.sh ":rotating_light: *Judge eval verdict flip* on a non-PR run — a judge drifted without a prompt change (rubric edit in internal-docs or model drift). \`AUTO_MERGE_FROZEN=true\` set; auto-merge stays frozen until evals are green and the variable is cleared. $RUN_URL"
+          || FROZE=failed
+          if [ "$FROZE" = ok ]; then
+            STATUS="\`AUTO_MERGE_FROZEN=true\` set; auto-merge stays frozen until evals are green and the variable is cleared."
+          else
+            STATUS="*could not set \`AUTO_MERGE_FROZEN\`* — auto-merge is NOT frozen; set it manually NOW."
+          fi
+          bash scripts/slack-alert.sh ":rotating_light: *Judge eval verdict flip* on a non-PR run — a judge drifted without a prompt change (rubric edit in internal-docs or model drift). $STATUS $RUN_URL"
+          [ "$FROZE" = ok ] || exit 1

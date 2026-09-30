@@ -1,0 +1,30 @@
+[
+  {
+    "repo": "example-org/example-app-core",
+    "pr": 200,
+    "url": "https://github.com/example-org/example-app-core/pull/200",
+    "ticket_class": "docs-scaffolding",
+    "merged": false,
+    "closed_at": "2026-08-18T10:00:00Z",
+    "change_requested": true,
+    "human_commits": 0,
+    "post_merge_human_edits": false,
+    "judge_first_pass": false,
+    "coverage_tripped": false,
+    "guardrail_overridden": false
+  },
+  {
+    "repo": "example-org/example-app-core",
+    "pr": 201,
+    "url": "https://github.com/example-org/example-app-core/pull/201",
+    "ticket_class": "docs-scaffolding",
+    "merged": false,
+    "closed_at": "2026-08-19T10:00:00Z",
+    "change_requested": true,
+    "human_commits": 0,
+    "post_merge_human_edits": false,
+    "judge_first_pass": false,
+    "coverage_tripped": false,
+    "guardrail_overridden": false
+  }
+]
