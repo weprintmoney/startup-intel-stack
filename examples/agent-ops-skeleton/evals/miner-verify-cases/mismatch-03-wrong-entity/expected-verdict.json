@@ -1,0 +1,9 @@
+{
+  "case": "mismatch-03-wrong-entity",
+  "miner": "transcript-failure-miner",
+  "expected_verdict": "unsupported",
+  "expected_claims": [
+    { "claim": "summary cites implement-repo-A.stream.jsonl", "expected_supported": false },
+    { "claim": "summary cites implement-repo-C.stream.jsonl", "expected_supported": false }
+  ]
+}

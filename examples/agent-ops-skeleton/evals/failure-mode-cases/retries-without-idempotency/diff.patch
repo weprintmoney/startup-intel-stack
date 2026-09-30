@@ -1,0 +1,24 @@
+diff --git a/sdk/python/example_app/client.py b/sdk/python/example_app/client.py
+index 5e6f7a8..9b0c1d2 100644
+--- a/sdk/python/example_app/client.py
++++ b/sdk/python/example_app/client.py
+@@ -8,10 +8,20 @@ from httpx import HTTPStatusError, ReadTimeout
+
+ RETRY_ON = (500, 502, 503, 504)
+
+
+ async def upsert(self, index: str, vectors: list[Vector]) -> None:
++    """Upsert vectors, retrying on transient server errors."""
++    for attempt in range(4):
++        try:
+             await self._http.post(
+                 f"/index/{index}/vectors",
+                 json={"vectors": [v.dict() for v in vectors]},
+             )
++            return
++        except (HTTPStatusError, ReadTimeout) as e:
++            if isinstance(e, HTTPStatusError) and e.response.status_code not in RETRY_ON:
++                raise
++            if attempt == 3:
++                raise
++            await asyncio.sleep(0.1 * (2 ** attempt))

@@ -1,0 +1,14 @@
+{
+  "case": "control-02-idempotent-retry",
+  "pattern_id": "retries-without-idempotency",
+  "kind": "control",
+  "book_ref": "DDIA §8 exactly-once",
+  "class": "messaging",
+  "expected": {
+    "code-judge": "pass",
+    "founder-voice-pr-reviewer": "approve"
+  },
+  "should_flag": [],
+  "flag_terms": [],
+  "runtime_evidence": []
+}

@@ -1,0 +1,62 @@
+{
+  "miner": "transcript-failure-miner",
+  "run_url": "https://github.com/example-org/agent-ops/actions/runs/00000000001",
+  "lookback_days": 9,
+  "created_at": "2026-08-24T12:00:00Z",
+  "findings": [
+    {
+      "id": "f-01-agent-branch-naming",
+      "kind": "dead-end",
+      "summary": "Implementer used the wrong branch prefix (agents/ vs agent/) three times before self-correcting.",
+      "evidence": [
+        {
+          "url": "https://github.com/example-org/agent-ops/blob/main/sessions/2026-W34/implement-core-pr312.stream.jsonl",
+          "note": "3 failed `git checkout -b agents/312-*` calls, then a successful `agent/312-*`."
+        }
+      ],
+      "prevalence": { "occurrences": 3, "distinct_sources": 1 },
+      "proposed_change": {
+        "change_type": "team-memory-entry",
+        "target_path": ".claude/team-memory/agent-branch-naming.md",
+        "detail": "Document the agent/<ticket>-<slug> convention in team memory so implementers stop re-deriving it.",
+        "risk_if_wrong": "Wrong branch prefix could break the strip-attribution action's branch scan."
+      }
+    },
+    {
+      "id": "f-02-schema-path-drift",
+      "kind": "wrong-assumption",
+      "summary": "Implementer guessed underscored schema filename before finding hyphenated form.",
+      "evidence": [
+        {
+          "url": "https://github.com/example-org/agent-ops/blob/main/sessions/2026-W34/implement-core-pr312.stream.jsonl",
+          "note": "Two failed reads of schemas/miner_findings.schema.json, then a hit on the hyphenated name."
+        }
+      ],
+      "prevalence": { "occurrences": 2, "distinct_sources": 1 },
+      "proposed_change": {
+        "change_type": "rule-edit",
+        "target_path": ".claude/rules/naming-conventions.md",
+        "detail": "State that schemas/ files use hyphenated names, not underscored.",
+        "risk_if_wrong": "Rule too broad if applied outside schemas/."
+      }
+    },
+    {
+      "id": "f-03-git-worktree-convention",
+      "kind": "missing-context",
+      "summary": "Implementer tried git checkout on shared checkout four times before switching to worktree.",
+      "evidence": [
+        {
+          "url": "https://github.com/example-org/agent-ops/blob/main/sessions/2026-W34/implement-example_app-pr47.stream.jsonl",
+          "note": "Four `git checkout <branch>` attempts on the shared checkout, each aborted, before a `git worktree add` call succeeded."
+        }
+      ],
+      "prevalence": { "occurrences": 4, "distinct_sources": 1 },
+      "proposed_change": {
+        "change_type": "team-memory-entry",
+        "target_path": ".claude/team-memory/worktree-only.md",
+        "detail": "Load the worktree convention into implementer context by default.",
+        "risk_if_wrong": "Overhead if agent already loads it from CLAUDE.md."
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "case": "planted-02-findings-retired-phrase",
+  "kind": "release-findings",
+  "artifact": "artifact.json",
+  "artifact_ref": "v0.17.0",
+  "expected_verdict": "contradicted",
+  "expected_claims": [
+    { "claim": "retired positioning phrase sits in front of", "expected_verdict": "contradicted" },
+    { "claim": "retired positioning phrase separates compute from storage", "expected_verdict": "contradicted" }
+  ],
+  "expected_deterministic": [
+    { "claim": "sits in front of", "verdict": "contradicted" },
+    { "claim": "separates compute from storage", "verdict": "contradicted" }
+  ],
+  "point": "Ticket #18 acceptance criterion: a release-intelligence finding that uses retired positioning phrases is flagged. Caught deterministically (no model needed) because findings become prospect-facing tickets. The second finding is clean and must not be flagged."
+}

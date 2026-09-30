@@ -1,0 +1,5 @@
+# Expertise-guarded paths for example-org/example-app-sdk-js.
+src/native/**
+.github/workflows/test.yml
+.github/workflows/check_api_changes.yml
+.github/workflows/build_and_publish.yml

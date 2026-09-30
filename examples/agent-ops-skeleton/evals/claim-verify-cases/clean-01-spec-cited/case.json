@@ -1,0 +1,14 @@
+{
+  "case": "clean-01-spec-cited",
+  "kind": "spec",
+  "artifact": "artifact.md",
+  "artifact_ref": "07-engineering-docs/specs/features/9001-s3-prefix-validation.md",
+  "expected_verdict": "verified",
+  "expected_claims": [
+    { "claim": "src/example_app/service/config.py:10 S3_PREFIX", "expected_verdict": "verified" },
+    { "claim": "src/example_app/storage/factory.py:14 SUPPORTED_BACKENDS", "expected_verdict": "verified" },
+    { "claim": "component/backing-stores", "expected_verdict": "verified" }
+  ],
+  "expected_deterministic": [],
+  "point": "Every path:line resolves and supports its sentence; graph ids exist; v0.17.0 is in the changelog; storage surface stated correctly. Zero false positives."
+}

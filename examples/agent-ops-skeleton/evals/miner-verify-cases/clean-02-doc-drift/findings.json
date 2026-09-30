@@ -1,0 +1,60 @@
+{
+  "miner": "doc-drift-miner",
+  "run_url": "https://github.com/example-org/agent-ops/actions/runs/00000000002",
+  "lookback_days": 9,
+  "created_at": "2026-08-24T12:00:00Z",
+  "findings": [
+    {
+      "id": "f-01-storage-adr-drift",
+      "kind": "doc-drift",
+      "summary": "adr-storage-backends still names Postgres and Redis as supported stores; PR #291 removed them.",
+      "evidence": [
+        {
+          "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/adr/storage-backends.md",
+          "note": "ADR body lists Postgres, Redis, memory, disk, s3."
+        },
+        {
+          "url": "https://github.com/example-org/example-app-core/pull/291",
+          "note": "PR removes Postgres and Redis stores; keeps memory / disk / s3."
+        },
+        {
+          "url": "https://github.com/example-org/example-app-core/releases/tag/v0.17.0",
+          "note": "Release notes: 'Postgres and Redis stores removed.'"
+        }
+      ],
+      "prevalence": { "occurrences": 3, "distinct_sources": 3 },
+      "proposed_change": {
+        "change_type": "frontmatter-edit",
+        "target_path": "07-engineering-docs/adr/storage-backends.md",
+        "detail": "confidence: verified -> assumed; last_verified bump blocked until ADR body updated in a separate PR.",
+        "risk_if_wrong": "Downgrading a still-accurate node causes false alarms in the staleness digest."
+      }
+    },
+    {
+      "id": "f-02-enc-index-drift",
+      "kind": "doc-drift",
+      "summary": "component-enc-index depends_on still lists mock-vector-encoder; production encoder is the current dependency.",
+      "evidence": [
+        {
+          "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/components/enc-index.md",
+          "note": "depends_on frontmatter: [mock-vector-encoder]."
+        },
+        {
+          "url": "https://github.com/example-org/example-app-core/pull/305",
+          "note": "PR replaces mock encoder with production encoder in the encrypted-index build path."
+        },
+        {
+          "url": "https://github.com/example-org/example-app-core/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "note": "Merge commit for PR #305 on main; mock encoder no longer imported."
+        }
+      ],
+      "prevalence": { "occurrences": 3, "distinct_sources": 3 },
+      "proposed_change": {
+        "change_type": "frontmatter-edit",
+        "target_path": "07-engineering-docs/components/enc-index.md",
+        "detail": "depends_on: -mock-vector-encoder, +production-vector-encoder; last_verified: 2026-08-24.",
+        "risk_if_wrong": "Wrong edge direction would break the graph reverse-index."
+      }
+    }
+  ]
+}

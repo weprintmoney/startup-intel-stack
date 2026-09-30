@@ -1,0 +1,261 @@
+name: Claim Verify
+
+# The spec-PR fact gate, runnable on its own. spec-draft.yml runs the same
+# gate inline right after it opens a spec PR; this workflow re-runs it for a
+# PR that skipped it (a parser incident once left two spec PRs unverified)
+# or after a human fixed citations on a PR that was labeled claims:contradicted
+# (the claim would otherwise still read `contradicted` because nothing re-ran).
+#
+# Fresh-context rule 10: the verifier sees only the spec as pushed on its
+# branch, the deterministic pre-pass, and the canonical sources — never a
+# drafter transcript. Writes: the verification block in the PR body, the
+# claims:* label, draft state on `contradicted`, and claim_verification on
+# the (issue, impl_repo) claim in state/queue.json when one exists.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "internal-docs spec PR number"
+        required: true
+      issue:
+        description: "example-app-core ticket number (the claim to record the verdict on)"
+        required: true
+      repo:
+        description: "Implementation repo short name the claim implements in (e.g. example-app-sdk-js)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claim-verify-${{ inputs.pr }}
+  cancel-in-progress: false
+
+env:
+  TICKET_REPO: <YOUR_ORG>/example-app-core
+  IMPL_REPO: <YOUR_ORG>/${{ inputs.repo }}
+  DOCS_REPO: <YOUR_ORG>/internal-docs
+
+jobs:
+  verify:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write   # queue transition + sessions/ transcript
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bot-identity
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
+        run: |
+          MISSING=""
+          [ -z "$A" ] && MISSING="$MISSING ANTHROPIC_API_KEY"
+          [ -z "$K" ] && MISSING="$MISSING BOT_APP_PRIVATE_KEY"
+          [ -z "$C" ] && MISSING="$MISSING BOT_APP_CLIENT_ID"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing secrets/vars (SETUP.md §2):$MISSING"
+            exit 1
+          fi
+
+      - name: Mint internal-docs token (PR body, labels, draft state)
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Mint impl-repo token (read-only ground truth)
+        id: bot-impl
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: ${{ inputs.repo }}
+          permission-contents: read
+
+      - name: Resolve the spec PR
+        id: spec
+        env:
+          GH_TOKEN: ${{ steps.bot-docs.outputs.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          gh pr view "$PR" -R "$DOCS_REPO" --json headRefName,state,files,url > /tmp/spec-pr.json
+          STATE=$(jq -r .state /tmp/spec-pr.json)
+          [ "$STATE" = "OPEN" ] || { echo "::error::spec PR #$PR is $STATE, not OPEN — nothing to gate"; exit 1; }
+          SPEC_PATH=$(jq -r '[.files[].path | select(startswith("07-engineering-docs/specs/") and endswith(".md"))] | first // ""' /tmp/spec-pr.json)
+          [ -n "$SPEC_PATH" ] || { echo "::error::spec PR #$PR changes no file under 07-engineering-docs/specs/"; exit 1; }
+          {
+            echo "branch=$(jq -r .headRefName /tmp/spec-pr.json)"
+            echo "spec_path=$SPEC_PATH"
+            echo "url=$(jq -r .url /tmp/spec-pr.json)"
+          } >> "$GITHUB_OUTPUT"
+          echo "spec PR #$PR: $(jq -r .headRefName /tmp/spec-pr.json) -> $SPEC_PATH"
+
+      - name: Checkout internal-docs (spec branch)
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/internal-docs
+          token: ${{ steps.bot-docs.outputs.token }}
+          ref: ${{ steps.spec.outputs.branch }}
+          path: internal-docs
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout implementation repo (read-only ground truth)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IMPL_REPO }}
+          token: ${{ steps.bot-impl.outputs.token }}
+          path: product
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout example-app-docs (public, read-only — changelog)
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/example-app-docs
+          path: docs-public
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Claude Code
+
+        uses: ./.github/actions/setup-claude
+
+      - name: Claim-verify the spec (fresh context)
+        id: verify
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          SPEC_PATH: ${{ steps.spec.outputs.spec_path }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/claim-verify
+          cp "internal-docs/$SPEC_PATH" /tmp/claim-verify/artifact.md
+          python3 scripts/verify-claims.py sources \
+            --internal-docs internal-docs --docs-repo docs-public --out /tmp/claim-verify/sources
+          python3 scripts/verify-claims.py extract --kind spec \
+            --artifact /tmp/claim-verify/artifact.md --artifact-ref "$SPEC_PATH" \
+            --sources /tmp/claim-verify/sources --product product --internal-docs internal-docs \
+            --agent-ops . \
+            --out /tmp/claim-verify/claims.json
+          jq -n --arg k spec --arg ref "$SPEC_PATH" --arg url "$RUN_URL" \
+            '{artifact_kind: $k, artifact_ref: $ref, run_url: $url}' > /tmp/claim-verify/run-meta.json
+          bash scripts/run-claude.sh /tmp/claim-verify.stream.jsonl "$(cat agents/claim-verifier/CLAUDE.md)
+
+          Inputs at: /tmp/claim-verify
+          Write verdict to: /tmp/claim-verify/verdict.json" \
+            --allowedTools "Bash,Read,Write,Glob,Grep" \
+            --model claude-sonnet-4-6 \
+            --max-turns 40 \
+            || echo "::warning::claim-verifier errored — pending claims will aggregate as unverified"
+          jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/claim-verify.stream.jsonl | tail -2
+          python3 scripts/verify-claims.py aggregate \
+            --claims /tmp/claim-verify/claims.json --model-verdict /tmp/claim-verify/verdict.json \
+            --run-url "$RUN_URL" --out /tmp/claim-verify/final.json --md /tmp/claim-verify/final.md
+          echo "verdict=$(jq -r .verdict /tmp/claim-verify/final.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Act on claim verdict
+        # Same contract as spec-draft.yml: verified -> block in the body;
+        # unverified -> block + label; contradicted -> block + draft + label +
+        # comment + Slack. Labels created if missing.
+        id: act
+        env:
+          GH_TOKEN: ${{ steps.bot-docs.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          VERDICT: ${{ steps.verify.outputs.verdict }}
+          SPEC_PR: ${{ steps.spec.outputs.url }}
+          PR_NUM: ${{ inputs.pr }}
+          ISSUE: ${{ inputs.issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$VERDICT" ] || [ ! -s /tmp/claim-verify/final.md ]; then
+            echo "::error::claim-verify produced no verdict"
+            exit 1
+          fi
+          gh label create -R "$DOCS_REPO" "claims:contradicted" --color B60205 \
+            --description "claim-verifier: a factual claim contradicts a canonical source — resolve before approving" 2>/dev/null || true
+          gh label create -R "$DOCS_REPO" "claims:unverified" --color FBCA04 \
+            --description "claim-verifier: one or more claims could not be confirmed against canonical sources" 2>/dev/null || true
+          gh pr view "$PR_NUM" -R "$DOCS_REPO" --json body --jq .body > /tmp/pr-body.md
+          python3 scripts/verify-claims.py patch-body --body /tmp/pr-body.md --md /tmp/claim-verify/final.md
+          gh pr edit "$PR_NUM" -R "$DOCS_REPO" --body-file /tmp/pr-body.md
+          case "$VERDICT" in
+            contradicted)
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --add-label "claims:contradicted" || true
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --remove-label "claims:unverified" 2>/dev/null || true
+              gh pr ready "$PR_NUM" -R "$DOCS_REPO" --undo || echo "::warning::could not convert $SPEC_PR to draft"
+              { echo "**Claim verification found contradicted claims — this PR was converted to draft.** Resolve each item (fix the spec, or overrule with a source) then mark ready for review."; echo; cat /tmp/claim-verify/final.md; } > /tmp/claim-comment.md
+              gh pr comment "$PR_NUM" -R "$DOCS_REPO" --body-file /tmp/claim-comment.md || true
+              N=$(jq -r .counts.contradicted /tmp/claim-verify/final.json)
+              bash scripts/slack-alert.sh ":no_entry_sign: claim-verify: spec PR $SPEC_PR ($TICKET_REPO#$ISSUE) has $N contradicted claim(s) — converted to draft, labeled claims:contradicted. $RUN_URL"
+              ;;
+            unverified)
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --add-label "claims:unverified" || true
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --remove-label "claims:contradicted" 2>/dev/null || true
+              ;;
+            verified)
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --remove-label "claims:unverified" 2>/dev/null || true
+              gh pr edit "$PR_NUM" -R "$DOCS_REPO" --remove-label "claims:contradicted" 2>/dev/null || true
+              ;;
+          esac
+          echo "claim-verify: $VERDICT on $SPEC_PR"
+
+      - name: Record claim_verification on the claim
+        env:
+          ISSUE: ${{ inputs.issue }}
+          VERDICT: ${{ steps.verify.outputs.verdict }}
+        run: |
+          git pull --rebase origin main || true
+          if jq -e --argjson n "$ISSUE" --arg r "$IMPL_REPO" \
+               'any(.claims[]; .issue == $n and .impl_repo == $r)' state/queue.json >/dev/null; then
+            bash scripts/update-claim.sh "$ISSUE" - "$(jq -n --arg v "$VERDICT" '{claim_verification: $v}')"
+          else
+            echo "No claim for #$ISSUE in $IMPL_REPO — verdict recorded on the PR only."
+          fi
+
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/claim-verify.stream.jsonl
+
+      - name: Save transcript to sessions/
+        if: always()
+        run: |
+          [ -s /tmp/claim-verify.stream.jsonl ] || exit 0
+          WEEK=$(date -u +%G-W%V)
+          mkdir -p "sessions/$WEEK"
+          sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+            /tmp/claim-verify.stream.jsonl > "sessions/$WEEK/claim-verify-${{ inputs.issue }}-pr${{ inputs.pr }}.stream.jsonl" || true
+          git add "sessions/$WEEK" && git commit -m "sessions: claim-verify #${{ inputs.issue }} (internal-docs #${{ inputs.pr }})" || exit 0
+          for _ in 1 2 3; do
+            if git push; then
+              break
+            else
+              git pull --rebase origin main
+            fi
+          done
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/slack-alert.sh ":x: claim-verify failed for internal-docs PR #${{ inputs.pr }} ($TICKET_REPO#${{ inputs.issue }}) — the spec's claims were NOT checked. $RUN_URL"

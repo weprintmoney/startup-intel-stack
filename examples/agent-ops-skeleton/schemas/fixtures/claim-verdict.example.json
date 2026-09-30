@@ -1,0 +1,79 @@
+{
+  "artifact_kind": "spec",
+  "artifact_ref": "07-engineering-docs/specs/features/9003-postgres-pool-tuning.md",
+  "run_url": "https://github.com/example-org/agent-ops/actions/runs/00000000200",
+  "verified_at": "2026-09-05T14:00:00Z",
+  "verdict": "contradicted",
+  "counts": { "verified": 2, "unverified": 1, "contradicted": 2 },
+  "sources": [
+    { "name": "graph.json", "present": true, "ref": "3f9a1c2b7d0e" },
+    { "name": "features.json", "present": false, "ref": null },
+    { "name": "invariants.md", "present": true, "ref": "a1b2c3d4e5f6" },
+    { "name": "behavior-matrix.yaml", "present": true, "ref": "0f1e2d3c4b5a" },
+    { "name": "changelog.mdx", "present": true, "ref": "9e8d7c6b5a4f" },
+    { "name": "retired-phrases.txt", "present": true, "ref": "5a4f3e2d1c0b" },
+    { "name": "internal-docs@71b61de", "present": true, "ref": "71b61de" }
+  ],
+  "claims": [
+    {
+      "id": "d-01",
+      "kind": "path-citation",
+      "claim": "cites `src/example_app/storage/postgres_pool.py:12` — path not found",
+      "location": "L16",
+      "verdict": "contradicted",
+      "checked_by": "deterministic",
+      "source": "checkout",
+      "evidence": "not present in product, internal-docs checkout",
+      "note": "The pool is created with a fixed size of 16",
+      "finding_pr": null
+    },
+    {
+      "id": "d-02",
+      "kind": "graph-node",
+      "claim": "references graph node `adr-0041` — not in graph.json",
+      "location": "L23",
+      "verdict": "unverified",
+      "checked_by": "deterministic",
+      "source": "graph.json",
+      "evidence": null,
+      "note": "graph may lag an unmerged doc, or the id is invented",
+      "finding_pr": null
+    },
+    {
+      "id": "d-03",
+      "kind": "graph-node",
+      "claim": "references graph node `component/backing-stores`",
+      "location": "L22",
+      "verdict": "verified",
+      "checked_by": "deterministic",
+      "source": "graph.json",
+      "evidence": "component/backing-stores -> 07-engineering-docs/backing-stores/behavior-matrix.yaml",
+      "note": "existence only; the model checks what the artifact says about it",
+      "finding_pr": null
+    },
+    {
+      "id": "d-04",
+      "kind": "version",
+      "claim": "references release `v0.17.0`",
+      "location": "L40",
+      "verdict": "verified",
+      "checked_by": "deterministic",
+      "source": "changelog.mdx",
+      "evidence": "v0.17.x present in changelog",
+      "note": null,
+      "finding_pr": null
+    },
+    {
+      "id": "m-01",
+      "kind": "product-behavior",
+      "claim": "example-app supports Postgres storage; the service selects it through EXAMPLE_APP_CONNECTION_STRING",
+      "location": "L13",
+      "verdict": "contradicted",
+      "checked_by": "model",
+      "source": "changelog.mdx v0.17.0; behavior-matrix.yaml postgres.removed_in; invariants.md VA-01",
+      "evidence": "v0.17.0 breaking changes: 'The standalone, postgres, and redis backends have been removed'; EXAMPLE_APP_CONNECTION_STRING replaced by EXAMPLE_APP_DISK_PATH / EXAMPLE_APP_S3_*",
+      "note": null,
+      "finding_pr": null
+    }
+  ]
+}

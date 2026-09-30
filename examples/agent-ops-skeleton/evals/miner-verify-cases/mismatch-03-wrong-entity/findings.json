@@ -1,0 +1,44 @@
+{
+  "miner": "transcript-failure-miner",
+  "run_url": "https://github.com/example-org/agent-ops/actions/runs/00000000005",
+  "lookback_days": 9,
+  "created_at": "2026-08-31T12:00:00Z",
+  "findings": [
+    {
+      "id": "f-01-repo-b-dead-end",
+      "kind": "dead-end",
+      "summary": "Agent looped on missing schema import three times in repo-B implementer session.",
+      "evidence": [
+        {
+          "url": "https://github.com/example-org/agent-ops/blob/main/sessions/2026-W34/implement-repo-B.stream.jsonl",
+          "note": "Three failed `python -c 'import miner_findings'` calls, then a switch to the hyphenated schema path."
+        }
+      ],
+      "prevalence": { "occurrences": 3, "distinct_sources": 1 },
+      "proposed_change": {
+        "change_type": "rule-edit",
+        "target_path": ".claude/rules/naming-conventions.md",
+        "detail": "Schemas use hyphens not underscores.",
+        "risk_if_wrong": "Rule too broad if applied to Python module names."
+      }
+    },
+    {
+      "id": "f-02-repo-d-wrong-assumption",
+      "kind": "wrong-assumption",
+      "summary": "Agent assumed run-meta.json path was /tmp/meta.json.",
+      "evidence": [
+        {
+          "url": "https://github.com/example-org/agent-ops/blob/main/sessions/2026-W34/implement-repo-D.stream.jsonl",
+          "note": "Two failed reads of /tmp/meta.json before finding /tmp/review-input/run-meta.json."
+        }
+      ],
+      "prevalence": { "occurrences": 2, "distinct_sources": 1 },
+      "proposed_change": {
+        "change_type": "team-memory-entry",
+        "target_path": ".claude/team-memory/review-input-paths.md",
+        "detail": "Document the /tmp/review-input/ sandbox layout used by judges.",
+        "risk_if_wrong": "None; documentation only."
+      }
+    }
+  ]
+}

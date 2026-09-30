@@ -1,0 +1,17 @@
+{
+  "case": "planted-01-spec-postgres",
+  "kind": "spec",
+  "artifact": "artifact.md",
+  "artifact_ref": "07-engineering-docs/specs/features/9003-postgres-pool-tuning.md",
+  "expected_verdict": "contradicted",
+  "expected_claims": [
+    { "claim": "example-app supports Postgres storage", "expected_verdict": "contradicted" },
+    { "claim": "src/example_app/storage/postgres_pool.py:12 path not found", "expected_verdict": "contradicted" },
+    { "claim": "adr-0041 not in graph.json", "expected_verdict": "unverified" }
+  ],
+  "expected_deterministic": [
+    { "claim": "postgres_pool.py path not found", "verdict": "contradicted" },
+    { "claim": "adr-0041", "verdict": "unverified" }
+  ],
+  "point": "Ticket #18 acceptance criterion: a spec asserting Postgres storage is blocked. The model must catch the Postgres claim against changelog / behavior-matrix / VA-01 (and notice config.py:7 does not say what the spec claims); the deterministic pass catches the invented file and the unknown ADR id."
+}

@@ -1,0 +1,49 @@
+---
+title: example-app Release Notes — FIXTURE
+mode: wide
+---
+
+Synthetic excerpt of the public changelog for the claim-verify golden set.
+
+<Update label="v0.17.0" description="2026-06-25">
+## example-app v0.17.0
+
+### New Features
+
+- **Access control (RBAC)** on encrypted indexes — per-user keys scoped to `read` and/or `write`; service routes `POST`/`GET`/`DELETE` on `/v1/indexes/{name}/users`
+- **Per-index KMS & BYOK.** Providers `aws-kms`, `aws` (Secrets Manager), `none`; cross-account BYOK via `role_arn` + `external_id`
+- **Free tier.** `EXAMPLE_APP_API_KEY` is now optional — without it example-app runs free-tier with a 1,000,000-item-per-index cap
+- **YAML configuration** via `example_app.yaml`
+- `storage_precision` (`float16` rerank vectors) and `rerank_mult` on `query`
+
+### Breaking Changes
+
+- **Single index type.** example-app now ships one **DiskIVF** index type; the polymorphic `index_config` object is gone
+- **Storage refactor.** The backing store surface is now just `memory`, `disk` (embedded RocksDB), or `s3`
+  - The `standalone`, `postgres`, and `redis` backends have been removed
+  - `EXAMPLE_APP_CONNECTION_STRING` is replaced by `EXAMPLE_APP_DISK_PATH` and the `EXAMPLE_APP_S3_*` variables
+- **Authentication overhaul.** Request auth is controlled by `EXAMPLE_APP_SERVICE_ROOT_KEY`; the legacy `example_app-api-key` header is removed
+
+</Update>
+
+<Update label="v0.16.1" description="2026-04-13">
+## example-app v0.16.1
+
+- `query()` now returns only `id` fields by default when `include` is not specified
+- Fixed an S3 backing store bug with versioned objects
+
+</Update>
+
+<Update label="v0.16.0" description="2026-02-20">
+## example-app v0.16.0
+
+- S3 backing store hardening; `postgres` and `redis` marked deprecated
+
+</Update>
+
+<Update label="v0.15.0" description="2025-12-15">
+## example-app v0.15.0
+
+- S3 backing store (initial)
+
+</Update>

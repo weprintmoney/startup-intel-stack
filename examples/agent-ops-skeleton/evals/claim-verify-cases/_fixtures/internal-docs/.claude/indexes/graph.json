@@ -1,0 +1,128 @@
+{
+  "schema_version": 2,
+  "node_count": 9,
+  "nodes": {
+    "adr-0001": {
+      "title": "Adopt Disk IVF and Consolidate to a Single Index Type",
+      "path": "07-engineering-docs/architecture-decisions/0001-adopt-disk-ivf-and-consolidate-index-types.md",
+      "graph_type": "architectural-decision",
+      "confidence": "verified",
+      "last_verified": "2026-05-21",
+      "depends_on": [
+        "component/example-app-core"
+      ],
+      "supersedes": [],
+      "satisfies": []
+    },
+    "adr-0023": {
+      "title": "Dev mode for non-production evaluation",
+      "path": "07-engineering-docs/architecture-decisions/0023-dev-mode-for-non-production-eval.md",
+      "graph_type": "architectural-decision",
+      "confidence": "verified",
+      "last_verified": "2026-08-20",
+      "depends_on": [
+        "component/example-app-service"
+      ],
+      "supersedes": [],
+      "satisfies": []
+    },
+    "component/example-app-core": {
+      "title": "example-app-core",
+      "path": "07-engineering-docs/example-app-core/README.md",
+      "graph_type": "component",
+      "confidence": "verified",
+      "depends_on": [],
+      "supersedes": [],
+      "satisfies": []
+    },
+    "component/example-app-service": {
+      "title": "example-app-service",
+      "path": "07-engineering-docs/example-app-service/README.md",
+      "graph_type": "component",
+      "confidence": "verified",
+      "depends_on": [
+        "component/example-app-core"
+      ],
+      "supersedes": [],
+      "satisfies": []
+    },
+    "component/backing-stores": {
+      "title": "Backing stores",
+      "path": "07-engineering-docs/backing-stores/behavior-matrix.yaml",
+      "graph_type": "component",
+      "confidence": "verified",
+      "depends_on": [
+        "component/example-app-core"
+      ],
+      "supersedes": [],
+      "satisfies": []
+    },
+    "claim/tiered-storage-memory-disk-s3": {
+      "title": "Tiered storage \u2014 RAM, local disk, S3-compatible object stores",
+      "path": "02-positioning/claims/tiered-storage-memory-disk-s3.md",
+      "graph_type": "positioning-claim",
+      "confidence": "verified",
+      "depends_on": [
+        "component/backing-stores"
+      ],
+      "supersedes": [],
+      "satisfies": []
+    },
+    "claim/self-hosted-no-key-custody": {
+      "title": "Self-hosted; <YOUR_COMPANY> never holds customer keys",
+      "path": "02-positioning/claims/self-hosted-no-key-custody.md",
+      "graph_type": "positioning-claim",
+      "confidence": "verified",
+      "depends_on": [
+        "component/example-app-service"
+      ],
+      "supersedes": [],
+      "satisfies": []
+    },
+    "terminus/invariants": {
+      "title": "Invariants (Terminus 1b)",
+      "path": "07-engineering-docs/terminus/invariants.md",
+      "graph_type": "architectural-decision",
+      "confidence": "observed",
+      "depends_on": [
+        "component/example-app-service",
+        "adr-0023"
+      ],
+      "supersedes": [],
+      "satisfies": []
+    },
+    "terminus/performance-budgets": {
+      "title": "Performance budgets (Terminus 2)",
+      "path": "07-engineering-docs/terminus/performance-budgets.md",
+      "graph_type": "architectural-decision",
+      "confidence": "observed",
+      "depends_on": [
+        "component/example-app-core"
+      ],
+      "supersedes": [],
+      "satisfies": []
+    }
+  },
+  "reverse": {
+    "dependents_of": {
+      "component/example-app-core": [
+        "adr-0001",
+        "component/example-app-service",
+        "component/backing-stores",
+        "terminus/performance-budgets"
+      ],
+      "component/example-app-service": [
+        "adr-0023",
+        "claim/self-hosted-no-key-custody",
+        "terminus/invariants"
+      ],
+      "component/backing-stores": [
+        "claim/tiered-storage-memory-disk-s3"
+      ],
+      "adr-0023": [
+        "terminus/invariants"
+      ]
+    },
+    "satisfied_by": {}
+  }
+}

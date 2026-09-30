@@ -1,0 +1,38 @@
+diff --git a/sdk/python/example_app/client.py b/sdk/python/example_app/client.py
+index 5e6f7a8..d4e5f6a 100644
+--- a/sdk/python/example_app/client.py
++++ b/sdk/python/example_app/client.py
+@@ -1,12 +1,29 @@
+ import asyncio
++import uuid
+
+ from httpx import HTTPStatusError, ReadTimeout
+
+ RETRY_ON = (500, 502, 503, 504)
+
+
+ async def upsert(self, index: str, vectors: list[Vector]) -> None:
+-    await self._http.post(
+-        f"/index/{index}/vectors",
+-        json={"vectors": [v.dict() for v in vectors]},
+-    )
++    """Upsert vectors, retrying transient server errors with backoff."""
++    # One key per logical call, reused on every attempt; the server dedupes on it for 24h.
++    idempotency_key = str(uuid.uuid4())
++    for attempt in range(4):
++        try:
++            response = await self._http.post(
++                f"/index/{index}/vectors",
++                json={"vectors": [v.dict() for v in vectors]},
++                headers={"Idempotency-Key": idempotency_key},
++            )
++            # httpx does not raise on 4xx/5xx by default; without this the
++            # except clause below never sees a server error at all.
++            response.raise_for_status()
++            return
++        except (HTTPStatusError, ReadTimeout) as e:
++            if isinstance(e, HTTPStatusError) and e.response.status_code not in RETRY_ON:
++                raise
++            if attempt == 3:
++                raise
++            await asyncio.sleep(0.1 * (2 ** attempt))

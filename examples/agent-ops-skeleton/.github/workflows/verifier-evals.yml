@@ -1,0 +1,162 @@
+name: Verifier Golden-Set Evals
+
+# Regression-tests the miner-verifier (agents/miner-verifier/CLAUDE.md)
+# against 5 hand-curated cases in evals/miner-verify-cases/: 2 clean + 3
+# planted claim-vs-artifact mismatches (wrong count, fake evidence, wrong
+# entity). Contract: the verifier catches all 3 planted mismatches AND
+# produces zero false positives on the 2 clean cases.
+#
+# Runs on: PRs touching the verifier prompt, the fixture set, the runner
+# script, or this workflow; weekly Monday cron (drift canary); dispatch
+# (with `cases` for cheap subset runs and `verifier_ref` for pre-merge
+# proposal evals — matches the judge-evals shape).
+#
+# Cost note: 5 cases x 1 verifier on Sonnet, sequential. `--max-turns 20`
+# per case caps run cost. `cases` dispatch input for cheap iteration.
+
+on:
+  pull_request:
+    paths:
+      - "agents/miner-verifier/CLAUDE.md"
+      - "evals/miner-verify-cases/**"
+      - "scripts/run-verifier-evals.py"
+      - ".github/workflows/verifier-evals.yml"
+  schedule:
+    # Mondays 7 AM ET (11:00 UTC) — same slot as judge-evals
+    - cron: "0 11 * * 1"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "Comma-separated case subset (default: all)"
+        required: false
+        default: ""
+      verifier_ref:
+        description: "agent-ops ref for the verifier prompt — eval a PROPOSED verifier branch pre-merge (a fail then blocks that proposal, not this workflow)"
+        required: false
+        default: ""
+
+concurrency:
+  # See judge-evals.yml — same rationale.
+  group: verifier-evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    # See judge-evals.yml — skip the expensive run on draft PRs.
+    if: vars.AGENT_OPS_PAUSED != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    outputs:
+      secrets_missing: ${{ steps.gate.outputs.missing }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.verifier_ref }}
+
+      - name: Gate on required secrets
+        id: gate
+        env:
+          A: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$A" ]; then
+            echo "::error::Missing ANTHROPIC_API_KEY — verifier-evals cannot run its golden set. Failing loud instead of a silent no-op that would otherwise report green with zero cases run."
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "missing=false" >> "$GITHUB_OUTPUT"
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Claude Code
+        if: steps.gate.outputs.go == 'true'
+        uses: ./.github/actions/setup-claude
+
+      - name: Run miner-verifier on golden set
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          ONLY: ${{ inputs.cases }}
+        run: |
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          mkdir -p /tmp/streams /tmp/results
+          for case in $(python3 scripts/run-verifier-evals.py cases "${ONLY_FLAG[@]}"); do
+            echo "::group::miner-verifier / $case"
+            python3 scripts/run-verifier-evals.py setup --case "$case"
+            MINER=$(jq -r '.miner' "evals/miner-verify-cases/$case/expected-verdict.json")
+            bash scripts/run-claude.sh "/tmp/streams/${case}.stream.jsonl" "$(cat agents/miner-verifier/CLAUDE.md)
+
+          Verify miner: $MINER
+          Inputs at: /tmp/verify/$MINER
+          Write verdict to: /tmp/verify/$MINER.json" \
+              --allowedTools "Bash,Read,Write,Glob,Grep" \
+              --model claude-sonnet-4-6 \
+              --max-turns 20 \
+              || echo "::warning::verifier errored on $case (recorded as MISSING)"
+            jq -rs '[.[] | select(.type == "result")] | last | .result // ""' "/tmp/streams/${case}.stream.jsonl" | tail -3
+            python3 scripts/run-verifier-evals.py collect --case "$case" --results /tmp/results
+            echo "::endgroup::"
+          done
+
+      - name: Log token usage
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/streams/*.stream.jsonl || true
+
+      - name: Compare verdicts against golden set
+        if: steps.gate.outputs.go == 'true'
+        env:
+          ONLY: ${{ inputs.cases }}
+        run: |
+          ONLY_FLAG=()
+          [ -n "$ONLY" ] && ONLY_FLAG=(--only "$ONLY")
+          python3 scripts/run-verifier-evals.py compare --results /tmp/results "${ONLY_FLAG[@]}"
+
+  freeze-on-drift:
+    # A fail on schedule/dispatch means the verifier drifted on main, not
+    # that a proposed change failed review — freeze auto-merge. Exception:
+    # a dispatch with verifier_ref evaluates a PROPOSED change; a fail there
+    # blocks that proposal, it is not drift on main.
+    needs: eval
+    if: failure() && needs.eval.outputs.secrets_missing != 'true' && github.event_name != 'pull_request' && inputs.verifier_ref == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set AUTO_MERGE_FROZEN and alert
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Alert first: humans must hear about the drift even if the variable
+          # write below fails. Then fail the step (D-item: a failed write must
+          # fail, not just log) so an unguarded freeze is as visible as the
+          # drift itself, not a quiet ::error:: buried in a green run.
+          FROZE=ok
+          gh api -X PATCH "repos/${{ github.repository }}/actions/variables/AUTO_MERGE_FROZEN" \
+            -f name=AUTO_MERGE_FROZEN -f value=true \
+          || gh api -X POST "repos/${{ github.repository }}/actions/variables" \
+            -f name=AUTO_MERGE_FROZEN -f value=true \
+          || FROZE=failed
+          if [ "$FROZE" = ok ]; then
+            STATUS="\`AUTO_MERGE_FROZEN=true\` set; auto-merge stays frozen until evals are green and the variable is cleared."
+          else
+            STATUS="*could not set \`AUTO_MERGE_FROZEN\`* — auto-merge is NOT frozen; set it manually NOW."
+          fi
+          bash scripts/slack-alert.sh ":rotating_light: *Miner-verifier eval fail* on a non-PR run — the verifier drifted without a prompt change (model drift or fixture rot). Dream memory PRs are gated on the verifier, so a drifted verifier = poisoned memory risk. $STATUS $RUN_URL"
+          [ "$FROZE" = ok ] || exit 1
