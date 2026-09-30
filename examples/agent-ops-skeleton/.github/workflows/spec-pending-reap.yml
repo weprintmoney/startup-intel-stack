@@ -1,0 +1,210 @@
+name: Spec Pending Reap
+
+# Auto-transitions spec-pending claims once the corresponding internal-docs
+# spec PR is closed or merged. What a merge means depends on DRAIN_MODE:
+#
+#   DRAIN_MODE=true  — spec-only drain. Humans open, review, close/merge spec
+#                      PRs to harvest the "questions for the human reviewer"
+#                      sections and implement.yml stays parked, so both close
+#                      and merge map to abandoned.
+#   DRAIN_MODE=false — normal operation. A merged spec PR IS the human
+#                      approval the loop waits for: mark spec-approved and
+#                      dispatch implement. A closed spec PR is a rejection
+#                      and still abandons.
+#
+# Getting this wrong is silent: the pipeline drafts specs forever and never
+# implements anything, because approval retires the claim.
+#
+# When any transition happens, dispatches ticket-intake so the next pair
+# starts immediately rather than waiting for the intake cron.
+#
+# Cron every 10 min: this poll is what stands between a human merging a
+# spec PR and implement starting, so it sets the loop's approval latency.
+# That trades some idle no-op runs for latency, deliberately: this
+# workflow makes no model calls. Degrades gracefully pre-setup:
+# no-op without App creds.
+
+on:
+  schedule:
+    # Every 10 min at :07, offset clear of ticket-intake (:03/:13/...),
+    # pr-review-reap (:10/:40), pr-merged-reap (:15/:45) and budget-guard.
+    - cron: "7,17,27,37,47,57 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spec-pending-reap
+  cancel-in-progress: false
+
+env:
+  TICKET_REPO: <YOUR_ORG>/example-app-core
+
+jobs:
+  reap:
+    if: vars.AGENT_OPS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # queue.json transitions
+      actions: write    # dispatch ticket-intake
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on App credentials
+        id: gate
+        env:
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
+        run: |
+          if [ -z "$K" ] || [ -z "$C" ]; then
+            echo "BOT_APP_* not configured (SETUP.md §2) — reap is a no-op."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint internal-docs token (PR read)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
+          permission-pull-requests: read
+
+      # Every transition below is mirrored on the ticket's status card
+      # (scripts/status-card.py) — the one bot comment a claim gets.
+      - name: Mint ticket-repo token (status card)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-ticket
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-issues: write
+
+      - uses: ./.github/actions/bot-identity
+        if: steps.gate.outputs.go == 'true'
+
+      - name: Reap spec-pending claims
+        if: steps.gate.outputs.go == 'true'
+        id: reap
+        env:
+          DOCS_TOKEN: ${{ steps.bot-docs.outputs.token }}
+          TICKET_TOKEN: ${{ steps.bot-ticket.outputs.token }}
+          DRAIN_MODE: ${{ vars.DRAIN_MODE }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          card() { # <issue> <impl_repo> <status-card args...>
+            local issue="$1" impl="$2"; shift 2
+            GH_TOKEN="$TICKET_TOKEN" python3 scripts/status-card.py upsert --repo "$TICKET_REPO" \
+              --issue "$issue" --impl-repo "$impl" --run-url "$RUN_URL" "$@"
+          }
+          pending=$(jq -c '.claims[] | select(.status == "spec-pending")' state/queue.json)
+          if [ -z "$pending" ]; then
+            echo "No spec-pending claims."
+            echo "transitioned=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # One API call: list all spec/*-branched PRs (any state) on internal-docs.
+          # The spec-drafter opens PRs from branch `spec/<issue>-<slug>`, so we
+          # can match by headRefName prefix per claim.
+          all_prs=$(GH_TOKEN="$DOCS_TOKEN" gh pr list \
+            --repo <YOUR_ORG>/internal-docs \
+            --state all --limit 200 \
+            --json number,state,headRefName,mergedAt)
+
+          TRANSITIONED=0
+          while IFS= read -r claim; do
+            [ -z "$claim" ] && continue
+            issue=$(jq -r '.issue' <<<"$claim")
+            # A ticket can hold one claim per implementation repo; every
+            # update-claim call below must name the one being reaped.
+            IMPL_REPO=$(jq -r '.impl_repo' <<<"$claim"); export IMPL_REPO
+            # Match on the claim's own spec_pr first. A ticket fanned out across
+            # repos has one spec PR per claim, and every one of them starts with
+            # spec/<issue>- : the prefix alone reaped them together (a fanned-out ticket had one per repo). The prefix is a fallback for claims
+            # recorded before spec_pr existed, and only when exactly one PR matches.
+            spec_pr_url=$(jq -r '.spec_pr // ""' <<<"$claim")
+            prefix="spec/${issue}-"
+            if [ -n "$spec_pr_url" ]; then
+              pr=$(GH_TOKEN="$DOCS_TOKEN" gh pr view "${spec_pr_url##*/}" \
+                --repo <YOUR_ORG>/internal-docs --json number,state,headRefName,mergedAt 2>/dev/null || echo null)
+              if [ "$pr" = "null" ] || [ -z "$pr" ]; then
+                echo "::warning::SKIP #$issue ($IMPL_REPO): claim names $spec_pr_url but it cannot be read"
+                continue
+              fi
+            else
+              matches=$(jq --arg p "$prefix" '[.[] | select(.headRefName | startswith($p))]' <<<"$all_prs")
+              n=$(jq 'length' <<<"$matches")
+              if [ "$n" -eq 0 ]; then
+                echo "SKIP #$issue ($IMPL_REPO): no matching spec/${issue}-* PR yet"
+                continue
+              elif [ "$n" -gt 1 ]; then
+                echo "::warning::SKIP #$issue ($IMPL_REPO): $n PRs match $prefix and the claim has no spec_pr — record spec_pr on the claim by hand"
+                continue
+              fi
+              pr=$(jq 'first' <<<"$matches")
+            fi
+            state=$(jq -r '.state' <<<"$pr")
+            number=$(jq -r '.number' <<<"$pr")
+            case "$state" in
+              OPEN)
+                echo "SKIP #$issue: spec PR #$number still open"
+                ;;
+              MERGED)
+                if [ "${DRAIN_MODE:-false}" = "true" ]; then
+                  echo "REAP #$issue: spec PR #$number merged -> abandoned (DRAIN_MODE: spec harvested, implement parked)"
+                  bash scripts/update-claim.sh "$issue" abandoned \
+                    "$(jq -n --arg r "spec harvested — internal-docs PR #$number merged" '{abandoned_reason: $r}')"
+                  card "$issue" "$IMPL_REPO" --event spec-merged --status abandoned \
+                    --set "abandoned_reason=spec harvested — internal-docs PR #$number merged" \
+                    --note "DRAIN_MODE: spec harvested, implement not dispatched"
+                else
+                  branch=$(jq -r '.branch // ""' <<<"$claim")
+                  if [ -z "$branch" ]; then
+                    echo "::error::#$issue: spec PR #$number merged but the claim has no branch — cannot dispatch implement"
+                    continue
+                  fi
+                  echo "REAP #$issue: spec PR #$number merged -> spec-approved, dispatching implement on $IMPL_REPO"
+                  bash scripts/update-claim.sh "$issue" spec-approved
+                  # implement.yml takes the SHORT repo name — it builds
+                  # <YOUR_ORG>/<repo> itself. Passing owner/repo double-prefixes it.
+                  gh workflow run implement.yml -f issue="$issue" -f branch="$branch" -f repo="${IMPL_REPO##*/}"
+                  card "$issue" "$IMPL_REPO" --event spec-approved --status spec-approved \
+                    --note "spec PR #$number merged — implement dispatched on $IMPL_REPO"
+                fi
+                TRANSITIONED=$((TRANSITIONED + 1))
+                ;;
+              CLOSED)
+                echo "REAP #$issue: spec PR #$number closed -> abandoned (spec rejected)"
+                bash scripts/update-claim.sh "$issue" abandoned \
+                  "$(jq -n --arg r "spec rejected — internal-docs PR #$number closed unmerged" '{abandoned_reason: $r}')"
+                card "$issue" "$IMPL_REPO" --event spec-rejected --status abandoned \
+                  --set "abandoned_reason=spec rejected — internal-docs PR #$number closed unmerged" \
+                  --note "spec PR #$number closed unmerged"
+                TRANSITIONED=$((TRANSITIONED + 1))
+                ;;
+              *)
+                echo "SKIP #$issue: unknown PR state '$state'"
+                ;;
+            esac
+          done <<< "$pending"
+
+          echo "transitioned=$TRANSITIONED" >> "$GITHUB_OUTPUT"
+          echo "Transitioned $TRANSITIONED claim(s)."
+
+      - name: Dispatch ticket-intake if slots freed
+        if: steps.gate.outputs.go == 'true' && steps.reap.outputs.transitioned != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run ticket-intake.yml

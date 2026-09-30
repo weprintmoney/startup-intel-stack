@@ -1,0 +1,20 @@
+{
+  "$comment": "The ONE product-repo registry. Every repo here has a guards/<repo>.paths expertise list and vice versa \u2014 schema-validate enforces both directions. `routable: true` means ticket-intake may route work here from a repo:<name> label; widening that is a human decision because it widens what the coding agent can write to. `routable: false` repos are known to the pipeline (guard self-tests, ledger, digests) but never receive routed tickets.",
+  "repos": {
+    "example-app-core": {
+      "routable": true,
+      "visibility": "internal",
+      "note": "Ticket repo for every team ticket; implementation for core-scoped claude-led tickets"
+    },
+    "example-app-service": {
+      "routable": false,
+      "visibility": "internal",
+      "note": "Guarded (auth + billing) but not yet in the pilot; no routed tickets"
+    },
+    "agent-ops": {
+      "routable": false,
+      "visibility": "private",
+      "note": "This repo. Judged only for loop verification (planted-defect PR); never a ticket target"
+    }
+  }
+}

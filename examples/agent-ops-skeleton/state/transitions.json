@@ -1,0 +1,10 @@
+{
+  "claimed": ["spec-pending", "spec-clarify-pending", "spec-approved", "abandoned"],
+  "spec-clarify-pending": ["spec-pending", "spec-clarify-pending", "spec-approved", "abandoned"],
+  "spec-pending": ["spec-approved", "abandoned"],
+  "spec-approved": ["implementing", "abandoned"],
+  "implementing": ["implementing", "pr-open", "abandoned"],
+  "pr-open": ["merged", "abandoned"],
+  "merged": [],
+  "abandoned": []
+}

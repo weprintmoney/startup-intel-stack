@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/example-org/agent-ops/schemas/provenance.schema.json",
+  "title": "Provenance log",
+  "description": "state/provenance.json — the private half of hard rule 5. Public-repo commits carry zero Claude footprint; this file records, for every bot push to a product repo, which run produced which commit. Appended by scripts/record-provenance.sh from implement.yml (open-pr) and revise.yml.",
+  "type": "object",
+  "required": ["entries"],
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["repo", "pr", "branch", "sha", "stage", "run_url", "at"],
+        "additionalProperties": false,
+        "properties": {
+          "repo": { "type": "string", "pattern": "^[A-Za-z0-9._<>-]+/[A-Za-z0-9._-]+$" },
+          "pr": { "type": "integer", "minimum": 1 },
+          "branch": { "type": "string" },
+          "sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$", "description": "Commit pushed (post strip-attribution)" },
+          "issue": { "type": ["integer", "null"], "description": "example-app-core ticket, when known" },
+          "stage": { "enum": ["implement", "revise"] },
+          "round": { "type": ["integer", "null"], "minimum": 0, "description": "Revision round for stage=revise" },
+          "models": { "type": "array", "items": { "type": "string" }, "description": "Model IDs that produced the change" },
+          "run_url": { "type": "string", "format": "uri" },
+          "at": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}
