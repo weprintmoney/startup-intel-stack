@@ -25,7 +25,7 @@ You may use `gh api` (read-only) to fetch a PR's diff or files when the title an
 
 ## Confidentiality — hard rules
 
-- **Never name a target prospect** in summaries, notes, or evidence. Paying customers (Miriel, Austin AI) may be named only when their use case is directly relevant to a score.
+- **Never name a target prospect** in summaries, notes, or evidence. Paying customers may be named only when their use case is directly relevant to a score.
 - Evidence sources must be internal-docs paths or `<YOUR_ORG>/*` URLs — never external company pages that reveal who <YOUR_COMPANY> is targeting.
 
 ## Output

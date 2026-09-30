@@ -35,35 +35,49 @@ jobs:
       - name: Ledger selftest (deterministic replay cases)
         run: python scripts/update-ledger.py --selftest evals/ledger-cases
 
-      - name: Gate on required secrets
+      - name: Gate on App credentials
         id: gate
         env:
-          A: ${{ secrets.PRODUCT_REPOS_PAT }}
-          B: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
         run: |
-          MISSING=""
-          [ -z "$A" ] && MISSING="$MISSING PRODUCT_REPOS_PAT"
-          [ -z "$B" ] && MISSING="$MISSING INTERNAL_DOCS_RO_PAT"
-          if [ -n "$MISSING" ]; then
-            echo "Missing secrets (issue #1):$MISSING — ledger update is a no-op (selftest still ran)."
+          if [ -z "$K" ] || [ -z "$C" ]; then
+            echo "BOT_APP_* not configured (SETUP.md §2) — ledger update is a no-op (selftest still ran)."
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Mint tokens
+        if: steps.gate.outputs.go == 'true'
+        id: bot
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core,internal-docs
+          permission-contents: read
+          permission-pull-requests: read
+          permission-issues: read
 
       - name: Checkout internal-docs (postmortem scan)
         if: steps.gate.outputs.go == 'true'
         uses: actions/checkout@v4
         with:
           repository: <YOUR_ORG>/internal-docs
-          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          token: ${{ steps.bot.outputs.token }}
           path: internal-docs
+          persist-credentials: false
+
+      - uses: ./.github/actions/bot-identity
+        if: steps.gate.outputs.go == 'true'
 
       - name: Update ledger
         if: steps.gate.outputs.go == 'true'
         id: update
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           AUTO_MERGE_FROZEN: ${{ vars.AUTO_MERGE_FROZEN }}
         run: |
@@ -71,8 +85,6 @@ jobs:
           FLAGS=""
           [ "$AUTO_MERGE_FROZEN" = "true" ] && FLAGS="--auto-merge-frozen"
           python scripts/update-ledger.py --internal-docs internal-docs $FLAGS | tee /tmp/ledger-out.txt
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
           bash scripts/commit-state.sh state/autonomy-ledger.json "$BEFORE" "state: autonomy ledger daily update"
           if grep -q '^TRANSITION:' /tmp/ledger-out.txt; then
             echo "transitions=true" >> "$GITHUB_OUTPUT"
@@ -84,6 +96,7 @@ jobs:
         if: steps.gate.outputs.go == 'true' && steps.update.outputs.transitions == 'true'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           LINES=$(grep '^TRANSITION:' /tmp/ledger-out.txt | sed 's/^TRANSITION: /• /')
@@ -95,6 +108,7 @@ jobs:
         if: failure()
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           bash scripts/slack-alert.sh ":x: ledger-update failed — autonomy ledger may be stale (no promotions/demotions applied). Not retrying. $RUN_URL"

@@ -18,8 +18,10 @@ and filter). For each agent PR in the window:
    (`gh api repos/<repo>/pulls/<n>/reviews` and `/comments`.)
 2. **Human commits after the last bot commit** on the PR branch
    (`gh api repos/<repo>/pulls/<n>/commits` — authors other than
-   `example-app-eng-bot`): diff them against the bot's last commit; each distinct
-   edit is a correction. Record what changed and your one-line read of why.
+   `example-app-bot[bot]`, `app/example-app-bot`, or the retired `example-app-eng-bot`
+   identity; filter by all three so mid-migration history is handled
+   correctly): diff them against the bot's last commit; each distinct edit
+   is a correction. Record what changed and your one-line read of why.
 3. **Post-merge human edits** — commits on the default branch within the
    window that touch the same files an agent PR merged (`git log`/compare
    API); treat as late corrections.
@@ -38,6 +40,15 @@ quoting the correction. `proposed_change`: `team-memory-entry`, `rule-edit`,
 `frontmatter-edit` — or `golden-fixture` for judge disagreements
 (`target_path` = `evals/pr-cases/<repo-short>-pr<n>`, and the detail must
 state the human outcome, which becomes `expected.json`).
+
+Also write `$SUMMARY_OUTPUT` — a short prose summary of what you found:
+one paragraph naming the concrete counts (findings, PRs touched, distinct
+repos) and one bullet per finding with its `id`, the specific
+repo/PR/comment it came from, and a one-line description. This is what the
+`miner-verify` gate reads and audits against `findings.json` and against
+the freshly-fetched evidence URLs before the memory PR opens; your numeric
+claims, PR numbers, and repo names in this file must match the JSON and
+the underlying artifacts exactly.
 
 ## Rules
 

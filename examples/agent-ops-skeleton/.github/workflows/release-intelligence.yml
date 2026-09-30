@@ -14,10 +14,18 @@ name: Release Intelligence
 # product-repo change and doubles as the "release never processed" watchdog.
 # rc/pre-releases and drafts are skipped.
 #
+# Claim-verify: after deterministic validation, the market-
+# worthy findings' summaries + evidence are checked by the fresh-context
+# claim-verifier against retired phrases / graph / invariants / changelog.
+# The verdict is persisted to state/releases/<tag>/claim-verdict.json;
+# findings with a contradicted claim are excluded from ticket drafting and
+# unverified claims are footnoted on the ticket. The gate never fails the
+# run (continue-on-error) — an outage is reported in the Slack notice.
+#
 # Confidentiality: ticket text is scanned against the prospect-name list
 # fetched at run time from <YOUR_ORG>/sales-ops (never committed here, never
 # echoed to logs). Guard is fail-closed: no list, no tickets.
-# Degrades gracefully pre-setup (issue #1): missing secrets -> no-op notice.
+# Degrades gracefully pre-setup (SETUP.md §2/§3): missing secrets -> no-op notice.
 
 on:
   repository_dispatch:
@@ -58,22 +66,49 @@ jobs:
       - name: Gate on secrets
         id: gate
         env:
-          PAT: ${{ secrets.PRODUCT_REPOS_PAT }}
-          DOCS: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
           KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -z "$PAT" ] || [ -z "$DOCS" ] || [ -z "$KEY" ]; then
-            echo "Secrets not configured (issue #1) — release-intelligence is a no-op."
+          if [ -z "$K" ] || [ -z "$C" ] || [ -z "$KEY" ]; then
+            echo "Secrets/vars not configured (SETUP.md §2/§4) — release-intelligence is a no-op."
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Mint product-repo token (read + issue write)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-product
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-contents: read
+          permission-pull-requests: read
+          permission-issues: write
+
+      - name: Mint internal-docs token (read)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
+
+      - uses: ./.github/actions/bot-identity
+        if: steps.gate.outputs.go == 'true'
+
       - name: Detect unprocessed release
         id: detect
         if: steps.gate.outputs.go == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot-product.outputs.token }}
           TAG_INPUT: ${{ inputs.tag || github.event.client_payload.tag || '' }}
           LOOKBACK: ${{ inputs.lookback_days || '' }}
         run: |
@@ -120,14 +155,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: <YOUR_ORG>/internal-docs
-          token: ${{ secrets.INTERNAL_DOCS_RO_PAT }}
+          token: ${{ steps.bot-docs.outputs.token }}
           path: internal-docs
+          persist-credentials: false
 
       - name: Prepare miner input
         id: prep
         if: steps.detect.outputs.go == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot-product.outputs.token }}
           TAG: ${{ steps.detect.outputs.tag }}
           WINDOW_START: ${{ steps.detect.outputs.window_start }}
           WINDOW_END: ${{ steps.detect.outputs.window_end }}
@@ -150,7 +186,7 @@ jobs:
             echo "::warning::no positioning-claim nodes found in graph.json"
 
           SIG_DIR=internal-docs/01-market-intelligence/analyst-signals
-          for f in $(ls "$SIG_DIR"/2*.md 2>/dev/null | sort | tail -2); do
+          for f in $(find "$SIG_DIR" -maxdepth 1 -type f -name '2*.md' 2>/dev/null | sort | tail -2); do
             { echo "## $(basename "$f")"; echo; cat "$f"; echo; } >> /tmp/mine-input/market-signals.md
           done
           [ -s /tmp/mine-input/market-signals.md ] ||
@@ -180,20 +216,34 @@ jobs:
 
       - name: Set up Claude Code
         if: steps.prep.outputs.mine == 'true'
-        run: npm install -g @anthropic-ai/claude-code@latest
+        uses: ./.github/actions/setup-claude
 
       - name: Run release-intelligence-miner
         if: steps.prep.outputs.mine == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          GH_TOKEN: ${{ steps.bot-product.outputs.token }}
+          TAG: ${{ steps.detect.outputs.tag }}
         run: |
-          claude -p "$(cat agents/release-intelligence-miner/CLAUDE.md)" \
+          # scripts/run-claude.sh prints the parsed result entry, the CLI's
+          # stderr, and the stream tail on a non-zero exit (early failures showed only
+          # "exit code 1" before it existed), then
+          # propagates the code so `bash -e` stops the step here.
+          bash scripts/run-claude.sh /tmp/mine.stream.jsonl "$(cat agents/release-intelligence-miner/CLAUDE.md)
+
+          Task: mine the merged PRs of release $TAG in $PRODUCT_REPO for market-worthy findings and score each against the rubric.
+          Inputs at: /tmp/mine-input
+          Write output to: /tmp/mine-output/release-findings.json
+          End with exactly one RESULT: line." \
             --allowedTools "Bash,Read,Write,Glob,Grep" \
             --model claude-sonnet-4-6 \
-            --max-turns 40 \
-            --output-format stream-json --verbose > /tmp/mine.stream.jsonl
+            --max-turns 40
           jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/mine.stream.jsonl | tail -3
+
+      - name: Log token usage (miner)
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/mine.stream.jsonl
 
       - name: Validate findings (schema + arithmetic, deterministic)
         id: validate
@@ -215,76 +265,183 @@ jobs:
             echo "worthy=$(jq '[.findings[] | select(.verdict == "market-worthy")] | length' "$F")"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Checkout example-app-docs (public, read-only — changelog for claim-verify)
+        if: steps.prep.outputs.mine == 'true' && steps.validate.outputs.worthy != '0'
+        uses: actions/checkout@v4
+        with:
+          repository: <YOUR_ORG>/example-app-docs
+          path: docs-public
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Claim-verify market-worthy findings (fresh context)
+        # Only market-worthy findings are in scope — they are the ones that
+        # become prospect-facing tickets. Retired positioning phrases are
+        # contradicted deterministically; the model checks summaries against
+        # the changelog / graph docs and evidence paths against what they
+        # actually say. continue-on-error: a gate outage must not abandon a
+        # scored release.
+        id: verify
+        if: steps.prep.outputs.mine == 'true' && steps.validate.outputs.worthy != '0'
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          GH_TOKEN: ${{ steps.bot-product.outputs.token }}
+          TAG: ${{ steps.detect.outputs.tag }}
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/claim-verify
+          cp /tmp/mine-output/release-findings.json /tmp/claim-verify/artifact.json
+          python3 scripts/verify-claims.py sources \
+            --internal-docs internal-docs --docs-repo docs-public --out /tmp/claim-verify/sources
+          python3 scripts/verify-claims.py extract --kind release-findings \
+            --artifact /tmp/claim-verify/artifact.json --artifact-ref "$TAG" \
+            --sources /tmp/claim-verify/sources --internal-docs internal-docs \
+            --out /tmp/claim-verify/claims.json
+          jq -n --arg k release-findings --arg ref "$TAG" --arg url "$RUN_URL" \
+            '{artifact_kind: $k, artifact_ref: $ref, run_url: $url}' > /tmp/claim-verify/run-meta.json
+          bash scripts/run-claude.sh /tmp/claim-verify.stream.jsonl "$(cat agents/claim-verifier/CLAUDE.md)
+
+          Inputs at: /tmp/claim-verify
+          Write verdict to: /tmp/claim-verify/verdict.json" \
+            --allowedTools "Bash,Read,Write,Glob,Grep" \
+            --model claude-sonnet-4-6 \
+            --max-turns 30 \
+            || echo "::warning::claim-verifier errored — pending claims will aggregate as unverified"
+          jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/claim-verify.stream.jsonl | tail -2
+          python3 scripts/verify-claims.py aggregate \
+            --claims /tmp/claim-verify/claims.json --model-verdict /tmp/claim-verify/verdict.json \
+            --run-url "$RUN_URL" --out /tmp/claim-verify/final.json --md /tmp/claim-verify/final.md
+          {
+            echo "verdict=$(jq -r .verdict /tmp/claim-verify/final.json)"
+            echo "contradicted_prs=$(jq -c '[.claims[] | select(.verdict == "contradicted" and .finding_pr != null) | .finding_pr] | unique' /tmp/claim-verify/final.json)"
+            echo "summary=$(jq -r '"\(.verdict) (\(.counts.contradicted) contradicted, \(.counts.unverified) unverified, \(.counts.verified) verified)"' /tmp/claim-verify/final.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log token usage (claim-verifier)
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/claim-verify.stream.jsonl
+
       - name: Commit findings to state
         if: steps.detect.outputs.go == 'true'
         env:
           TAG: ${{ steps.detect.outputs.tag }}
         run: |
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
           mkdir -p "state/releases/$TAG"
           cp /tmp/mine-output/release-findings.json "state/releases/$TAG/findings.json"
           bash scripts/commit-state.sh "state/releases/$TAG/findings.json" - \
             "release-intelligence: $TAG findings"
 
+      - name: Commit claim verdict to state
+        if: steps.verify.outcome == 'success'
+        env:
+          TAG: ${{ steps.detect.outputs.tag }}
+        run: |
+          cp /tmp/claim-verify/final.json "state/releases/$TAG/claim-verdict.json"
+          bash scripts/commit-state.sh "state/releases/$TAG/claim-verdict.json" - \
+            "release-intelligence: $TAG claim verdict"
+
       - name: Notify when nothing is market-worthy
         if: steps.detect.outputs.go == 'true' && steps.validate.outputs.worthy == '0'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           TAG: ${{ steps.detect.outputs.tag }}
           TOTAL: ${{ steps.validate.outputs.total }}
         run: |
           bash scripts/slack-alert.sh ":mag: Release intelligence: $TAG scored — 0 of $TOTAL merged PRs market-worthy. No tickets proposed. $RUN_URL"
 
-      - name: Gate on prospect-name guard (fail closed)
+      # SALES-OPS ACCESS DEFERRED — pending a decision on PAT vs App-install for cross-boundary read of the prospect-names
+      # list. Everything up to and including findings.json is unaffected;
+      # ticket drafting + opening are held until the mechanism lands.
+      # To re-enable: restore the mint step below, restore the SALES_TOKEN
+      # env + gh fetch in the ticketgate step. SETUP.md §3 tracks status.
+      #
+      # - name: Mint sales-ops token (read)
+      #   if: steps.detect.outputs.go == 'true' && steps.validate.outputs.worthy != '0'
+      #   id: bot-sales
+      #   continue-on-error: true
+      #   uses: actions/create-github-app-token@v2
+      #   with:
+      #     app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+      #     private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+      #     owner: <YOUR_ORG>
+      #     repositories: sales-ops
+      #     permission-contents: read
+
+      - name: Gate ticket drafting (held pending sales-ops access decision)
         id: ticketgate
         if: steps.detect.outputs.go == 'true' && steps.validate.outputs.worthy != '0'
         env:
-          SALES_PAT: ${{ secrets.SALES_OPS_RO_PAT }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           TAG: ${{ steps.detect.outputs.tag }}
           WORTHY: ${{ steps.validate.outputs.worthy }}
+          CLAIM_SUMMARY: ${{ steps.verify.outputs.summary }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
         run: |
-          if [ -z "$SALES_PAT" ]; then
-            echo "go=false" >> "$GITHUB_OUTPUT"
-            bash scripts/slack-alert.sh ":lock: Release intelligence: $TAG has $WORTHY market-worthy finding(s), but SALES_OPS_RO_PAT is not configured (issue #1) so the prospect-name guard cannot run. Ticket drafting held — fail closed. Findings are in state/releases/$TAG/. $RUN_URL"
-            exit 0
-          fi
-          if GH_TOKEN="$SALES_PAT" gh api \
-            repos/<YOUR_ORG>/sales-ops/contents/guards/prospect-names.txt \
-            --jq .content | base64 -d > /tmp/prospect-names.txt; then
-            echo "go=true" >> "$GITHUB_OUTPUT"
+          echo "go=false" >> "$GITHUB_OUTPUT"
+          if [ "$VERIFY_OUTCOME" = "success" ]; then
+            CLAIMS="Claim-verify: $CLAIM_SUMMARY — state/releases/$TAG/claim-verdict.json."
           else
-            echo "go=false" >> "$GITHUB_OUTPUT"
-            bash scripts/slack-alert.sh ":lock: Release intelligence: $TAG has $WORTHY market-worthy finding(s), but fetching guards/prospect-names.txt from sales-ops failed. Ticket drafting held — fail closed. $RUN_URL"
+            CLAIMS="Claim-verify did NOT complete ($VERIFY_OUTCOME) — findings are unchecked."
           fi
+          bash scripts/slack-alert.sh ":inbox_tray: Release intelligence: $TAG scored — $WORTHY market-worthy finding(s). $CLAIMS Ticket drafting held pending sales-ops access decision (SETUP.md §3). Findings written to state/releases/$TAG/findings.json — review manually and open tickets by hand if wanted. $RUN_URL"
 
       - name: Set up Claude Code (drafter)
         if: steps.ticketgate.outputs.go == 'true' && steps.prep.outputs.mine != 'true'
-        run: npm install -g @anthropic-ai/claude-code@latest
+        uses: ./.github/actions/setup-claude
 
       - name: Run ticket-drafter
         if: steps.ticketgate.outputs.go == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
           TAG: ${{ steps.detect.outputs.tag }}
+          CONTRADICTED_PRS: ${{ steps.verify.outputs.contradicted_prs || '[]' }}
         run: |
           mkdir -p /tmp/draft-input /tmp/draft-output
-          jq '{release_tag, findings: [.findings[] | select(.verdict == "market-worthy")]}' \
+          # Findings with a contradicted claim never reach the drafter.
+          jq --argjson bad "$CONTRADICTED_PRS" \
+            '{release_tag, findings: [.findings[] | select(.verdict == "market-worthy" and ((.pr_number | IN($bad[])) | not))]}' \
             "state/releases/$TAG/findings.json" > /tmp/draft-input/findings.json
+          echo "Drafting $(jq '.findings | length' /tmp/draft-input/findings.json) finding(s); excluded by claim-verify: $CONTRADICTED_PRS"
           cp /tmp/mine-input/run-meta.json /tmp/draft-input/run-meta.json
-          claude -p "$(cat agents/ticket-drafter/CLAUDE.md)" \
+          bash scripts/run-claude.sh /tmp/draft.stream.jsonl "$(cat agents/ticket-drafter/CLAUDE.md)
+
+          Task: draft one ticket per market-worthy finding for release $TAG.
+          Inputs at: /tmp/draft-input (findings.json, run-meta.json)
+          Write output to: /tmp/draft-output/ticket-<pr_number>.md, one file per finding
+          End with exactly one RESULT: line." \
             --allowedTools "Read,Write,Glob" \
             --model claude-sonnet-4-6 \
-            --max-turns 20 \
-            --output-format stream-json --verbose > /tmp/draft.stream.jsonl
+            --max-turns 20
           jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/draft.stream.jsonl | tail -3
+
+      - name: Log token usage (drafter)
+        if: always()
+        run: bash scripts/log-token-usage.sh /tmp/draft.stream.jsonl
+
+      # Fresh token: the miner+drafter can run for the better part of an
+      # hour. Re-mint before the label create + issue create loop.
+      - name: Mint product-repo token (open tickets)
+        if: steps.ticketgate.outputs.go == 'true'
+        id: bot-open
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-issues: write
 
       - name: Scan and open proposed tickets
         if: steps.ticketgate.outputs.go == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
+          GH_TOKEN: ${{ steps.bot-open.outputs.token }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           TAG: ${{ steps.detect.outputs.tag }}
         run: |
           gh label create -R "$PRODUCT_REPO" "agent:proposed" --color BFD4F2 \
@@ -300,6 +457,15 @@ jobs:
           for f in /tmp/draft-output/ticket-*.md; do
             head -1 "$f" | sed 's/^TITLE:[[:space:]]*//' > /tmp/title.txt
             tail -n +2 "$f" | sed '/./,$!d' > /tmp/body.md
+            # Footnote unverified claims from claim-verify on the ticket.
+            PRN=$(basename "$f" .md | sed 's/^ticket-//')
+            if [ -f /tmp/claim-verify/final.json ] && [[ "$PRN" =~ ^[0-9]+$ ]]; then
+              UNV=$(jq -r --argjson n "$PRN" \
+                '[.claims[] | select(.finding_pr == $n and .verdict == "unverified") | .claim]
+                 | if length > 0 then "Claim check: \(length) unverified — " + join("; ") else empty end' \
+                /tmp/claim-verify/final.json)
+              [ -n "$UNV" ] && printf '\n%s\n' "$UNV" >> /tmp/body.md
+            fi
             if ! bash scripts/prospect-name-scan.sh /tmp/prospect-names.txt /tmp/title.txt /tmp/body.md; then
               BLOCKED=$((BLOCKED + 1))
               echo "::warning::$(basename "$f") blocked by prospect-name guard — not opened"
@@ -310,7 +476,7 @@ jobs:
               --label "agent:proposed" --label "release-intelligence") ||
               { echo "::warning::issue create failed for $(basename "$f")"; continue; }
             gh project item-add 4 --owner <YOUR_ORG> --url "$URL" ||
-              echo "::warning::Project #4 add failed for $URL (PRODUCT_REPOS_PAT needs project scope — issue #1)"
+              echo "::warning::Project #4 add failed for $URL (check App org-projects permission)"
             URLS+=("$URL")
           done
 
@@ -338,6 +504,7 @@ jobs:
         if: failure()
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           TAG: ${{ steps.detect.outputs.tag }}
         run: |
           bash scripts/slack-alert.sh ":x: release-intelligence failed for ${TAG:-unknown release}. Abandoned — not retrying. $RUN_URL"

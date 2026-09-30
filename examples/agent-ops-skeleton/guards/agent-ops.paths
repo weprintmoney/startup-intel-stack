@@ -1,0 +1,27 @@
+# Expertise-guarded paths for <YOUR_ORG>/agent-ops — the pipeline's own repo.
+# Judged only for loop verification (a planted-defect PR runs judge -> revise
+# -> re-judge here so no public repo carries a deliberately broken PR). The
+# principle is the same as the product guards: the agent may never edit the
+# gates that grade it or the state it runs on.
+# One bash glob per line ('*' matches across '/'); full-line comments only.
+
+# CI, personas, schemas, runtime state
+.github/**
+agents/**
+schemas/**
+state/**
+guards/**
+
+# The scripts that grade, gate, and record agent work
+scripts/commit-state.sh
+scripts/update-claim.sh
+scripts/record-provenance.sh
+scripts/expertise-path-guard*
+scripts/footprint-scan.sh
+scripts/round-history.py
+scripts/result-line.sh
+scripts/validate-judge-verdict.py
+scripts/verify-claims.py
+
+# Rules
+CLAUDE.md

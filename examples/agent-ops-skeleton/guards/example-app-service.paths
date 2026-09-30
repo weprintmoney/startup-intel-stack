@@ -3,3 +3,4 @@ src/api/public/**
 src/webhooks/**
 src/data-access/**
 config/production/**
+.github/**

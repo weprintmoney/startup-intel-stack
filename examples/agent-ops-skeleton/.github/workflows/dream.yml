@@ -9,9 +9,26 @@ name: Dream Loop
 #     memory-poisoning firewall
 #   - optionally one small fixture PR to evals/pr-cases/ here (judge
 #     disagreements -> golden-set candidates)
+#
+# Stage split (issue #13 — claim-vs-artifact verify gate):
+#   1. mine       — orchestrator runs the 3 miners, writes findings +
+#                   per-miner prose summaries, then stops.
+#   2. verify     — fresh-context claude -p per miner, given only the
+#                   summary + findings.json + freshly-fetched evidence.
+#                   Catches "right actions, wrong report" — the miner
+#                   summary drifting from its artifact (wrong counts,
+#                   fake evidence, wrong entity). This is the specific
+#                   failure mode that makes memory-poisoning attractive
+#                   for the review-delta-miner and doc-drift-miner.
+#   3. draft      — orchestrator, second invocation, reads whatever
+#                   survived quarantine and drafts the memory PR.
+# On any unsupported claim: findings quarantined, no memory PR, Slack alert.
+#
 # NOT cost-exempt: first to shed at the cost ceiling (AGENT_OPS_PAUSED
 # stops it like everything else). Per-run cost is extracted from the
-# transcript and posted to Slack — the dream budget line.
+# transcript and posted to Slack — the dream budget line. Verifier cost is
+# budgeted at ≤30% of the miner run cost; enforced via `--max-turns 20` per
+# miner (rough proxy — the verifier does no synthesis, only claim checks).
 # Degrades gracefully pre-setup: missing secrets -> no-op with a notice.
 
 on:
@@ -36,7 +53,7 @@ jobs:
   dream:
     if: vars.AGENT_OPS_PAUSED != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: write        # sessions/ transcript + dream/fixtures-* branch
       pull-requests: write   # fixture proposal PR on this repo
@@ -48,28 +65,57 @@ jobs:
         id: gate
         env:
           A: ${{ secrets.ANTHROPIC_API_KEY }}
-          B: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
-          C: ${{ secrets.PRODUCT_REPOS_PAT }}
+          K: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          C: ${{ vars.BOT_APP_CLIENT_ID }}
         run: |
           MISSING=""
           [ -z "$A" ] && MISSING="$MISSING ANTHROPIC_API_KEY"
-          [ -z "$B" ] && MISSING="$MISSING INTERNAL_DOCS_PR_PAT"
-          [ -z "$C" ] && MISSING="$MISSING PRODUCT_REPOS_PAT"
+          [ -z "$K" ] && MISSING="$MISSING BOT_APP_PRIVATE_KEY"
+          [ -z "$C" ] && MISSING="$MISSING BOT_APP_CLIENT_ID"
           if [ -n "$MISSING" ]; then
-            echo "Missing secrets (issue #1):$MISSING — dream loop is a no-op."
+            echo "Missing secrets/vars (SETUP.md §2):$MISSING — dream loop is a no-op."
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Mint internal-docs token (write)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Mint product-repo token (read)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-product
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: example-app-core
+          permission-contents: read
+          permission-pull-requests: read
+          permission-issues: read
 
       - name: Checkout internal-docs
         if: steps.gate.outputs.go == 'true'
         uses: actions/checkout@v4
         with:
           repository: <YOUR_ORG>/internal-docs
-          token: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
+          token: ${{ steps.bot-docs.outputs.token }}
           path: internal-docs
           fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/bot-identity
+        if: steps.gate.outputs.go == 'true'
 
       - name: Set up Python
         if: steps.gate.outputs.go == 'true'
@@ -83,36 +129,45 @@ jobs:
 
       - name: Set up Claude Code
         if: steps.gate.outputs.go == 'true'
-        run: npm install -g @anthropic-ai/claude-code@latest
+        uses: ./.github/actions/setup-claude
 
-      - name: Run dream orchestrator
+      # Stage 1: mine only. Orchestrator runs the 3 miners and stops; PR
+      # drafting is gated on the verify step below.
+      - name: Run dream orchestrator (mine)
         if: steps.gate.outputs.go == 'true'
-        id: dream
+        id: mine
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PRODUCT_TOKEN: ${{ secrets.PRODUCT_REPOS_PAT }}
-          INTERNAL_DOCS_TOKEN: ${{ secrets.INTERNAL_DOCS_PR_PAT }}
+          PRODUCT_TOKEN: ${{ steps.bot-product.outputs.token }}
+          INTERNAL_DOCS_TOKEN: ${{ steps.bot-docs.outputs.token }}
           LOOKBACK_DAYS: ${{ inputs.lookback_days || '9' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DREAM_STAGE: mine
         run: |
-          git -C internal-docs config user.name "example-app-eng-bot"
-          git -C internal-docs config user.email "example-app-eng-bot@users.noreply.github.com"
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
-          claude -p "$(cat agents/dream-orchestrator/CLAUDE.md)" \
+          # Wire internal-docs remote with the write token so later stages can
+          # push the memory PR branch through the orchestrator.
+          git -C internal-docs remote set-url origin \
+            "https://x-access-token:${INTERNAL_DOCS_TOKEN}@github.com/<YOUR_ORG>/internal-docs.git"
+          mkdir -p /tmp/dream/findings /tmp/dream/summaries
+          bash scripts/run-claude.sh /tmp/dream.mine.stream.jsonl "$(cat agents/dream-orchestrator/CLAUDE.md)
+
+          Task: stage $DREAM_STAGE: run the three miners over the last $LOOKBACK_DAYS days, record miner health, then stop.
+          Inputs at: ./sessions; ./evals/pr-cases; ./internal-docs; ./guards (as your instructions list)
+          Write output to: /tmp/dream/findings/<miner>.json and /tmp/dream/summaries/<miner>.md
+          End with MINERS_HEALTHY: and RESULT: lines." \
             --allowedTools "Bash,Read,Write,Edit,Glob,Grep,Task" \
             --model claude-sonnet-4-6 \
-            --max-turns 150 \
-            --output-format stream-json --verbose > /tmp/dream.stream.jsonl
-          FINAL=$(jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/dream.stream.jsonl)
+            --max-turns 100
+          FINAL=$(jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/dream.mine.stream.jsonl)
           echo "$FINAL"
-          COST=$(jq -rs '[.[] | select(.type == "result")] | last | .total_cost_usd // 0' /tmp/dream.stream.jsonl)
-          echo "result=$(grep -o '^RESULT: [A-Z_]*' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-          echo "dream_pr=$(grep '^DREAM_PR: ' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-          echo "fixtures_pr=$(grep '^FIXTURES_PR: ' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-          echo "improvement_pr=$(grep '^IMPROVEMENT_PR: ' <<<"$FINAL" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-          echo "cost=$COST" >> "$GITHUB_OUTPUT"
+          RESULT=$(bash scripts/result-line.sh /tmp/dream.mine.stream.jsonl | sed -n 's/^result=//p')
+          if [ "$RESULT" != "MINED" ]; then
+            echo "::error::mine stage expected RESULT: MINED, got: $RESULT"
+            exit 1
+          fi
+          echo "healthy=$(grep '^MINERS_HEALTHY: ' <<<"$FINAL" | tail -1 | sed 's/^MINERS_HEALTHY: //')" >> "$GITHUB_OUTPUT"
 
       - name: Validate miner findings
         if: steps.gate.outputs.go == 'true'
@@ -140,31 +195,226 @@ jobs:
             exit 1
           fi
 
+      # Stage 2: claim-vs-artifact verify per miner, in parallel. Fresh
+      # context each — no orchestrator transcript, no other miners' data.
+      # `--max-turns 20` caps each verifier at roughly ≤10% of the miner
+      # budget (miners cap at ~50 turns each in the orchestrator's Task
+      # spawn); 3 miners x ≤10% ≈ ≤30% of the miner run cost, per issue #13.
+      - name: Miner verify (parallel, fresh context per miner)
+        if: steps.gate.outputs.go == 'true'
+        id: verify
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRODUCT_TOKEN: ${{ steps.bot-product.outputs.token }}
+          INTERNAL_DOCS_TOKEN: ${{ steps.bot-docs.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p /tmp/verify /tmp/verify-streams
+          run_one() {
+            local miner="$1"
+            local findings="/tmp/dream/findings/$miner.json"
+            local summary="/tmp/dream/summaries/$miner.md"
+            if [ ! -f "$findings" ] || [ ! -f "$summary" ]; then
+              echo "::warning::$miner: missing findings or summary — skipping verify (miner already unhealthy)"
+              return 0
+            fi
+            local sandbox="/tmp/verify/$miner"
+            mkdir -p "$sandbox"
+            cp "$findings" "$sandbox/findings.json"
+            cp "$summary" "$sandbox/summary.md"
+            jq -n --arg m "$miner" --arg r "$RUN_URL" --arg l "${LOOKBACK_DAYS:-9}" \
+              '{miner:$m, run_url:$r, lookback_days:($l|tonumber)}' > "$sandbox/run-meta.json"
+            MINER_SANDBOX="$sandbox" MINER_NAME="$miner" \
+            bash scripts/run-claude.sh "/tmp/verify-streams/$miner.stream.jsonl" "$(cat agents/miner-verifier/CLAUDE.md)
+
+          Verify miner: $miner
+          Inputs at: $sandbox
+          Write verdict to: /tmp/verify/$miner.json" \
+              --allowedTools "Bash,Read,Write,Glob,Grep" \
+              --model claude-sonnet-4-6 \
+              --max-turns 20 \
+              || echo "::warning::verifier errored on $miner"
+          }
+          for m in transcript-failure-miner review-delta-miner doc-drift-miner; do
+            run_one "$m" &
+          done
+          wait
+          # Aggregate: any unsupported claim => quarantine that miner's
+          # findings and record the unsupported claims for Slack.
+          mkdir -p "state/dream/${{ github.run_id }}/quarantine"
+          UNSUPPORTED=""
+          QUARANTINED=""
+          for m in transcript-failure-miner review-delta-miner doc-drift-miner; do
+            v="/tmp/verify/$m.json"
+            f="/tmp/dream/findings/$m.json"
+            if [ ! -f "$v" ]; then
+              [ -f "$f" ] && echo "::warning::$m: no verifier verdict — quarantining conservatively" && \
+                mv "$f" "state/dream/${{ github.run_id }}/quarantine/" && \
+                QUARANTINED="$QUARANTINED $m"
+              continue
+            fi
+            VERDICT=$(jq -r '.verdict' "$v")
+            if [ "$VERDICT" = "unsupported" ]; then
+              # Up to 10 unsupported claims across all miners for Slack; prepend miner name.
+              CLAIMS=$(jq -r --arg m "$m" '.claims[] | select(.supported == false) | "- \($m): \(.claim) — \(.contradiction // "?")"' "$v")
+              UNSUPPORTED="$UNSUPPORTED
+          $CLAIMS"
+              [ -f "$f" ] && mv "$f" "state/dream/${{ github.run_id }}/quarantine/"
+              QUARANTINED="$QUARANTINED $m"
+            fi
+          done
+          # Trim unsupported to at most 10 lines for Slack
+          UNSUPPORTED_TRIMMED=$(echo "$UNSUPPORTED" | grep -E '^- ' | head -10 | tr '\n' '\v')
+          {
+            echo "quarantined<<EOF"
+            echo "$QUARANTINED"
+            echo "EOF"
+            echo "unsupported<<EOF"
+            echo "$UNSUPPORTED_TRIMMED"
+            echo "EOF"
+            if [ -n "$QUARANTINED" ]; then
+              echo "any_unsupported=true"
+            else
+              echo "any_unsupported=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit quarantined findings
+        if: steps.gate.outputs.go == 'true' && steps.verify.outputs.any_unsupported == 'true'
+        run: |
+          git add "state/dream/${{ github.run_id }}/quarantine" || true
+          git commit -m "state: quarantine dream miner findings (run ${{ github.run_id }})
+
+          Verifier rejected one or more miner claims — preserving findings for the
+          next run's failure miner to consume. No memory PR drafted this run.
+
+          $RUN_URL" || exit 0
+          for _ in 1 2 3; do
+            if git push; then
+              break
+            else
+              git pull --rebase origin main
+            fi
+          done
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      # Stage 3: draft. Only proceeds if at least one miner survived verify.
+      # The orchestrator reads whatever is left at /tmp/dream/findings/ and
+      # drafts the memory PR / fixture PR / self-improvement PRs.
+      # Fresh internal-docs token: the mine stage may have consumed most of
+      # the 1h lifetime by the time the draft pass pushes the memory PR.
+      - name: Mint internal-docs token (draft push)
+        if: steps.gate.outputs.go == 'true'
+        id: bot-docs-draft
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Run dream orchestrator (draft)
+        if: steps.gate.outputs.go == 'true'
+        id: dream
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_CUSTOM_HEADERS: "anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRODUCT_TOKEN: ${{ steps.bot-product.outputs.token }}
+          INTERNAL_DOCS_TOKEN: ${{ steps.bot-docs-draft.outputs.token }}
+          LOOKBACK_DAYS: ${{ inputs.lookback_days || '9' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DREAM_STAGE: draft
+        run: |
+          # Refresh the internal-docs remote to use the newly minted token.
+          git -C internal-docs remote set-url origin \
+            "https://x-access-token:${INTERNAL_DOCS_TOKEN}@github.com/<YOUR_ORG>/internal-docs.git"
+          # If EVERY miner was quarantined, there is nothing to synthesize.
+          REMAINING=$(find /tmp/dream/findings -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$REMAINING" = "0" ]; then
+            echo "All miners quarantined by verifier — no memory PR this run."
+            {
+              echo "result=NO_SIGNAL"
+              echo "dream_pr=none"
+              echo "fixtures_pr=none"
+              echo "improvement_pr=none"
+              echo "cost=0"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          bash scripts/run-claude.sh /tmp/dream.stream.jsonl "$(cat agents/dream-orchestrator/CLAUDE.md)
+
+          Task: stage $DREAM_STAGE: synthesize the verifier-passed findings and open the memory / fixture / self-improvement PRs your instructions describe.
+          Inputs at: /tmp/dream/findings (validated miner output; quarantined miners are absent); ./internal-docs (write-enabled checkout)
+          Write output to: PRs on internal-docs and on this repo, as your instructions describe
+          End with DREAM_PR:, FIXTURES_PR:, IMPROVEMENT_PR:, and RESULT: lines." \
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep,Task" \
+            --model claude-sonnet-4-6 \
+            --max-turns 100
+          FINAL=$(jq -rs '[.[] | select(.type == "result")] | last | .result // ""' /tmp/dream.stream.jsonl)
+          echo "$FINAL"
+          COST=$(jq -rs '[.[] | select(.type == "result")] | last | .total_cost_usd // 0' /tmp/dream.stream.jsonl)
+          {
+            echo "result=$(bash scripts/result-line.sh /tmp/dream.stream.jsonl | sed -n 's/^result=//p')"
+            echo "dream_pr=$(grep '^DREAM_PR: ' <<<"$FINAL" | tail -1 | awk '{print $2}')"
+            echo "fixtures_pr=$(grep '^FIXTURES_PR: ' <<<"$FINAL" | tail -1 | awk '{print $2}')"
+            echo "improvement_pr=$(grep '^IMPROVEMENT_PR: ' <<<"$FINAL" | tail -1 | awk '{print $2}')"
+            echo "cost=$COST"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log token usage
+        if: always()
+        run: |
+          bash scripts/log-token-usage.sh /tmp/dream.mine.stream.jsonl || true
+          bash scripts/log-token-usage.sh /tmp/verify-streams/*.stream.jsonl || true
+          bash scripts/log-token-usage.sh /tmp/dream.stream.jsonl || true
+
       - name: Save transcript and findings to sessions/
         if: always() && steps.gate.outputs.go == 'true'
         run: |
           WEEK=$(date -u +%G-W%V)
           mkdir -p "sessions/$WEEK"
-          sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
-            /tmp/dream.stream.jsonl > "sessions/$WEEK/dream.stream.jsonl" || true
-          for f in /tmp/dream/findings/*.json; do
-            [ -f "$f" ] && sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
-              "$f" > "sessions/$WEEK/dream-$(basename "$f")" || true
+          for src in /tmp/dream.mine.stream.jsonl /tmp/dream.stream.jsonl /tmp/verify-streams/*.stream.jsonl; do
+            [ -f "$src" ] || continue
+            base=$(basename "$src")
+            sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+              "$src" > "sessions/$WEEK/dream-$base" || true
           done
-          git config user.name "example-app-eng-bot"
-          git config user.email "example-app-eng-bot@users.noreply.github.com"
-          git add "sessions/$WEEK" && git commit -m "sessions: dream loop $WEEK" || exit 0
-          for i in 1 2 3; do git push && break || git pull --rebase origin main; done
+          for f in /tmp/dream/findings/*.json /tmp/verify/*.json; do
+            if [ -f "$f" ]; then
+              sed -E 's/sk-ant-[A-Za-z0-9_-]{8,}/<redacted>/g; s/gh[pousr]_[A-Za-z0-9]{20,}/<redacted>/g; s/github_pat_[A-Za-z0-9_]{20,}/<redacted>/g; s/xox[a-z]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+                "$f" > "sessions/$WEEK/dream-$(basename "$f")" || true
+            fi
+          done
+          if ! { git add "sessions/$WEEK" && git commit -m "sessions: dream loop $WEEK"; }; then
+            exit 0
+          fi
+          for _ in 1 2 3; do
+            if git push; then
+              break
+            else
+              git pull --rebase origin main
+            fi
+          done
 
       - name: Notify Slack
         if: steps.gate.outputs.go == 'true'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           RESULT: ${{ steps.dream.outputs.result }}
           DREAM_PR: ${{ steps.dream.outputs.dream_pr }}
           FIXTURES_PR: ${{ steps.dream.outputs.fixtures_pr }}
           IMPROVEMENT_PR: ${{ steps.dream.outputs.improvement_pr }}
           COST: ${{ steps.dream.outputs.cost }}
+          QUARANTINED: ${{ steps.verify.outputs.quarantined }}
+          UNSUPPORTED: ${{ steps.verify.outputs.unsupported }}
+          ANY_UNSUPPORTED: ${{ steps.verify.outputs.any_unsupported }}
         run: |
           case "$RESULT" in
             PROPOSED)
@@ -181,6 +431,14 @@ jobs:
               MSG=":warning: Dream loop finished without a RESULT line — inspect the run."
               ;;
           esac
+          if [ "$ANY_UNSUPPORTED" = "true" ]; then
+            # Restore newlines that were flattened into \v for output storage
+            CLAIMS_PRETTY=$(printf '%s' "$UNSUPPORTED" | tr '\v' '\n')
+            MSG=":rotating_light: *Dream verifier caught unsupported miner claims* — no memory PR this run. Quarantined miners:$QUARANTINED
+          Unsupported claims (up to 10):
+          $CLAIMS_PRETTY
+          $MSG"
+          fi
           bash scripts/slack-alert.sh "$MSG
           Run cost: \$${COST} (dream budget line)"
 
@@ -188,6 +446,15 @@ jobs:
         if: failure() && steps.gate.outputs.go == 'true'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          bash scripts/slack-alert.sh ":x: Dream loop run failed — no memory PR this week. Not retrying (re-dispatch manually if wanted). $RUN_URL"
+          TRANSCRIPT=""
+          for candidate in /tmp/dream.stream.jsonl /tmp/dream.mine.stream.jsonl /tmp/verify-streams/*.stream.jsonl; do
+            [ -f "$candidate" ] && TRANSCRIPT="$candidate" && break
+          done
+          if [ -n "$TRANSCRIPT" ] && SYSTEMIC=$(bash scripts/is-systemic-failure.sh "$TRANSCRIPT"); then
+            echo "::warning::Suppressing Slack alert — systemic failure detected: $SYSTEMIC"
+          else
+            bash scripts/slack-alert.sh ":x: Dream loop run failed — no memory PR this week. Not retrying (re-dispatch manually if wanted). $RUN_URL"
+          fi

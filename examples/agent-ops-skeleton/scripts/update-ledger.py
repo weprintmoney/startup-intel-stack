@@ -47,7 +47,7 @@ POSTMORTEM_PROMOTION_BLOCK_DAYS = 30
 POSTMORTEM_DEMOTION_WINDOW_DAYS = 90
 PR_LOOKBACK_DAYS = 90
 POST_MERGE_EDIT_WINDOW_DAYS = 7
-BOT_LOGIN = os.environ.get("BOT_LOGIN", "example-app-eng-bot")
+BOT_LOGIN = os.environ.get("BOT_LOGIN", "example-app-bot[bot]")
 TICKET_REPO = "<YOUR_ORG>/example-app-core"
 JUDGE_CONTEXT = "agent-ops/code-judge"
 COVERAGE_CONTEXT = "agent-ops/coverage-delta"  # not built yet; counted when present
@@ -100,7 +100,9 @@ def is_clean_merge(pr):
     )
 
 
-def apply(ledger, prs, postmortems, now, auto_merge_frozen=False):
+def apply(  # noqa: C901 — pre-existing, not a lint-floor refactor
+    ledger, prs, postmortems, now, auto_merge_frozen=False,
+):
     """Pure transition function. Mutates and returns (ledger, transitions)."""
     transitions = []
     classes = ledger.setdefault("classes", {})
@@ -224,10 +226,10 @@ def is_bot(login):
 
 
 def product_repos(root):
-    repos = []
-    for p in sorted(Path(root, "guards").glob("*.paths")):
-        repos.append(f"<YOUR_ORG>/{p.stem}")
-    return repos
+    # The one registry. Every entry, routable or not: a
+    # non-routable repo can still carry agent/* PRs (a loop-verification sandbox).
+    reg = json.loads(Path(root, "state", "impl-repos.json").read_text())
+    return [f"<YOUR_ORG>/{name}" for name in sorted(reg["repos"])]
 
 
 _class_cache = {}
@@ -253,26 +255,38 @@ def ticket_class(branch):
     return _class_cache[issue]
 
 
-def judge_first_pass(repo, first_sha):
-    try:
-        statuses = gh_json(["api", "--paginate",
-                            f"repos/{repo}/commits/{first_sha}/statuses"])
-    except RuntimeError:
-        return None
-    judge = sorted(
-        (s for s in statuses if s["context"] == JUDGE_CONTEXT),
-        key=lambda s: s["created_at"],
-    )
-    if not judge:
-        return None
-    return judge[0]["state"] == "success"
+def judge_first_pass(repo, commit_shas):
+    """Did the judge pass on its FIRST run for this PR?
+
+    This used to read the status on commits[0],
+    but the judge posts to the PR head, and the plan commit was always first
+    — so every PR read as never-judged and L3 was unreachable. Walk the PR's
+    commits in order and take the earliest judge status on the first commit
+    that carries one (the head of round 1). None = never judged.
+    """
+    for sha in commit_shas:
+        try:
+            statuses = gh_json(["api", "--paginate",
+                                f"repos/{repo}/commits/{sha}/statuses?per_page=100"])
+        except RuntimeError:
+            continue
+        judge = sorted(
+            (s for s in statuses if s["context"] == JUDGE_CONTEXT),
+            key=lambda s: s["created_at"],
+        )
+        if judge:
+            return judge[0]["state"] == "success"
+    return None
 
 
 def post_merge_human_edits(repo, merged_at, pr_files):
     since = merged_at
     until = fmt_ts(parse_ts(merged_at) + timedelta(days=POST_MERGE_EDIT_WINDOW_DAYS))
     try:
-        commits = gh_json(["api", f"repos/{repo}/commits?since={since}&until={until}"])
+        # --paginate + per_page: the default 30-commit page under-counted
+        # busy repos and produced clean-merge false positives.
+        commits = gh_json(["api", "--paginate",
+                           f"repos/{repo}/commits?since={since}&until={until}&per_page=100"])
     except RuntimeError:
         return False
     for c in commits:
@@ -316,16 +330,20 @@ def gather_prs(root, now):
                 for r in reviews
             )
             commits = detail.get("commits", [])
+            # A commit is human only when it has an identified non-bot author.
+            # Authorless commits (no linked GitHub account) used to count as
+            # human and block clean-merge streaks.
             human_commits = sum(
                 1 for c in commits
-                if not any(is_bot(a.get("login") or "") for a in c.get("authors", []))
+                if (c.get("authors") or [])
+                and not any(is_bot(a.get("login") or "") for a in c["authors"])
             )
             merged = p["state"] == "MERGED"
             pr_files = {f["path"] for f in detail.get("files", [])}
             pme = False
             if merged and p.get("mergedAt"):
                 pme = post_merge_human_edits(repo, p["mergedAt"], pr_files)
-            jfp = judge_first_pass(repo, commits[0]["oid"]) if commits else None
+            jfp = judge_first_pass(repo, [c["oid"] for c in commits]) if commits else None
             prs.append({
                 "repo": repo,
                 "pr": n,
@@ -369,7 +387,7 @@ def gather_postmortems(docs_dir):
             pms.append({
                 "class": cls,
                 "date": f"{date}T00:00:00Z",
-                "url": f"https://github.com/<YOUR_ORG>/internal-docs/blob/main/{rel}",
+                "url": f"https://github.com/example-org/internal-docs/blob/main/{rel}",
             })
     return pms
 

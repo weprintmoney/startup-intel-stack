@@ -44,6 +44,15 @@ PR/commit/doc URLs plus the node doc's GitHub URL, with `note`s.
 Y`, `last_verified: <date>`, `supersedes: +<graph_id>`) or `node-stub`, with
 the internal-docs `target_path` and a `risk_if_wrong` line.
 
+Also write `$SUMMARY_OUTPUT` — a short prose summary of what you found:
+one paragraph naming the concrete counts (drifted nodes, stale nodes
+confirmed, stale nodes not-confirmed) and one bullet per finding with its
+`id`, the graph node id it concerns, and a one-line description. This is
+what the `miner-verify` gate reads and audits against `findings.json` and
+against the freshly-fetched contradicting-PR URLs before the memory PR
+opens; your numeric claims and graph node ids in this file must match the
+JSON and the underlying artifacts exactly.
+
 ## Rules
 
 - Re-verification means checking the source, not trusting the digest: a
