@@ -1,6 +1,6 @@
 {
   "miner": "doc-drift-miner",
-  "run_url": "https://github.com/<YOUR_ORG>/agent-ops/actions/runs/3",
+  "run_url": "https://github.com/example-org/agent-ops/actions/runs/3",
   "lookback_days": 14,
   "created_at": "2026-08-23T07:00:00Z",
   "findings": [
@@ -9,9 +9,9 @@
       "kind": "doc-drift",
       "summary": "ADR-0008 still describes Postgres/Redis as supported backing stores; v0.17 removed both (memory/disk/s3 only). Three agent sessions loaded the stale claim.",
       "evidence": [
-        { "url": "https://github.com/<YOUR_ORG>/example-app-service/pull/398", "note": "PR removing Postgres/Redis stores" },
-        { "url": "https://github.com/<YOUR_ORG>/internal-docs/blob/main/07-engineering-docs/architecture-decisions/adr-0008.md", "note": "Stale node" },
-        { "url": "https://github.com/<YOUR_ORG>/agent-ops/blob/main/sessions/2026-33/impl-412.json", "note": "Session that acted on the stale claim" }
+        { "url": "https://github.com/example-org/example-app-service/pull/398", "note": "PR removing Postgres/Redis stores" },
+        { "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/architecture-decisions/adr-0008.md", "note": "Stale node" },
+        { "url": "https://github.com/example-org/agent-ops/blob/main/sessions/2026-33/impl-412.json", "note": "Session that acted on the stale claim" }
       ],
       "prevalence": { "occurrences": 3, "distinct_sources": 3 },
       "proposed_change": {

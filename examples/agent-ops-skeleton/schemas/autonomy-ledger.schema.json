@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/<YOUR_ORG>/agent-ops/schemas/autonomy-ledger.schema.json",
+  "$id": "https://github.com/example-org/agent-ops/schemas/autonomy-ledger.schema.json",
   "title": "Autonomy ledger",
   "description": "Per ticket-class autonomy levels (L0-L4) and rolling metrics. Autonomy is earned per class, never globally; a regression demotes the class, not the harness. mode:requires-expertise work is pinned at L0 forever and never appears here. Written only by scripts/update-ledger.py via scripts/commit-state.sh (hash-checked). Unfreezing a class or clearing global_freeze is a human edit via PR/commit-state.",
   "type": "object",

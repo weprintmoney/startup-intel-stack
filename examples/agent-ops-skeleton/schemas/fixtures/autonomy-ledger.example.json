@@ -19,7 +19,7 @@
           "from": 1,
           "to": 2,
           "reason": "promotion: 10 clean merges, judge first-pass 10/10, no postmortems in 30d",
-          "evidence_url": "https://github.com/<YOUR_ORG>/agent-ops/actions/runs/123456"
+          "evidence_url": "https://github.com/example-org/agent-ops/actions/runs/123456"
         }
       ]
     },

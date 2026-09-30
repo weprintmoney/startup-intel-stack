@@ -1,0 +1,84 @@
+name: Docs Sync Check
+
+# Advisory-only: does the developer guide at internal-docs
+# 07-engineering-docs/development/agent-ops/reference.md still match the
+# claim state machine and the workflow file list it documents.
+#
+# Built after two PRs changed state/transitions.json (one added a whole
+# new workflow) on the same day the developer guide was written, and
+# staying accurate needed a manual,
+# easy-to-forget follow-up pass. The dream-loop doc-drift-miner doesn't cover
+# this: it watches product-repo changes against knowledge-graph nodes, never
+# agent-ops's own changes against these plain (non-graph) procedural pages.
+#
+# scripts/check-docs-sync.py does the actual comparison, deterministically --
+# no model call. This workflow's only job is fetching the one doc page (a
+# single-file API read, not a full checkout) and posting the result to Slack.
+# It always succeeds: docs live in a different repo, and this pipeline has no
+# business blocking its own merges over another repo's page. See the
+# script's module docstring for exactly what it checks and its known
+# limitations.
+#
+# Triggers only on the files the script actually reads, so it's a no-op on
+# the overwhelming majority of PRs.
+
+on:
+  push:
+    branches: [main]
+    paths: ["state/transitions.json", ".github/workflows/*.yml", "scripts/check-docs-sync.py"]
+  pull_request:
+    paths: ["state/transitions.json", ".github/workflows/*.yml", "scripts/check-docs-sync.py"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: python3 scripts/check-docs-sync_test.py
+
+      - name: Mint token (read-only, internal-docs)
+        id: bot
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: <YOUR_ORG>
+          repositories: internal-docs
+          permission-contents: read
+
+      - name: Fetch reference.md
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          # Repo variable DEV_GUIDE_PATH overrides where your developer guide lives.
+          DEV_GUIDE_PATH: ${{ vars.DEV_GUIDE_PATH || '07-engineering-docs/development/agent-ops/reference.md' }}
+        run: |
+          gh api -H "Accept: application/vnd.github.raw" \
+            "repos/<YOUR_ORG>/internal-docs/contents/${DEV_GUIDE_PATH}" \
+            > /tmp/reference.md
+
+      - name: Compare
+        id: check
+        run: |
+          OUT=$(python3 scripts/check-docs-sync.py /tmp/reference.md)
+          echo "$OUT"
+          {
+            echo "output<<EOF"
+            echo "$OUT"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Alert on drift
+        if: contains(steps.check.outputs.output, 'finding(s)')
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_OPS_CHANNEL_ID: ${{ vars.SLACK_OPS_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/slack-alert.sh ":memo: reference.md may be out of sync with the pipeline it documents — see the run for specifics. Advisory only, nothing is blocked. $RUN_URL"
