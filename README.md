@@ -42,6 +42,7 @@ Read the two field-notes papers first (framework + implementation companion). Th
 | **L3 · Coding harness (reference)** | The self-improving ticket → spec → implement → review → judge → PR → dream-loop pipeline. Not shipped in this template's live scaffold; open the skeleton to see the shape. | [`examples/agent-ops-skeleton/`](examples/agent-ops-skeleton/) |
 | **Foundations** | The two field-notes papers this template implements (framework + phase-by-phase implementation companion) | [`docs/00-foundations/`](docs/00-foundations/) |
 | **Onboarding** | Interactive setup: ingests your existing docs or scrapes your website/LinkedIn/X to draft the SSOT docs for your correction | `/gtm-init` |
+| **Product feedback** | Turns a demo or advisory conversation into a founder-facing memo: personas and how they consume the product now vs. in 3 years, a staged vision with honestly graded defensibility, landscape check, product/feature/GTM options, and five self-serve prompts to run next | `/call-to-product-feedback` |
 
 ## Modes — how much is switched on
 
