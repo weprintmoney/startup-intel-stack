@@ -29,3 +29,5 @@ This repo is a company's GTM single source of truth plus the agents that operate
 ## Onboarding
 
 New instance? Run `/gtm-init`. It interviews the founder (or scrapes their website/LinkedIn/X), fills `company-profile.yaml`, drafts the `docs/` SSOT for correction, and opens the setup PR listing required secrets.
+
+Have a transcript or notes from a product demo or advisory conversation? Run `/call-to-product-feedback`. It writes a founder-facing feedback memo (personas, staged vision with graded defensibility, landscape, product/feature/GTM options, five self-serve prompts) to `docs/05-product/feedback/` and never mentions the recording or names anyone from a contact list.
