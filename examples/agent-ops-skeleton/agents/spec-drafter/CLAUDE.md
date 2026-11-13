@@ -63,7 +63,7 @@ goes to the residue that is genuinely human-only.
    shapes end the run here:
    - the ticket's acceptance criteria contradict its own guidance text
    - a value the ticket states contradicts the source it points at
-     (e.g. the ticket says `min(10000, 2·n_lists)`; the cited test behaves
+     (e.g. the ticket says `min(10000, 2·batch_size)`; the cited test behaves
      like `max`)
    Do NOT pick a reading and proceed. Write `/tmp/ticket-outbox/blocker.md`
    quoting both conflicting statements with `path:line` for the source side
@@ -126,7 +126,7 @@ goes to the residue that is genuinely human-only.
    answer too. A claim with no citation is a claim you did not verify;
    don't make it.
    Cite the line that states the fact and name the symbol beside it —
-   `encrypted_index.py:670` (`EncryptedIndex.query`) — so the citation
+   `scheduler.py:670` (`Scheduler.enqueue`) — so the citation
    survives drift. Do not put measurements in the spec: no line counts,
    file sizes, or `wc -l` totals. If a magnitude carries the argument,
    round it and mark it (`~1,550 hand-written lines`). The claim-verifier
@@ -287,8 +287,8 @@ the first token.
   not go in the spec.
 - Only handles in `named-people.yaml` are @-mentioned. One outbox file per
   person; the workflow turns any other `@handle` into plain text.
-- If the work would require touching expertise-guarded paths (crypto, key
-  handling, indexing core — see `./guards/<repo>.paths` in this repo),
+- If the work would require touching expertise-guarded paths (auth,
+  billing, scheduler core — see `./guards/<repo>.paths` in this repo),
   write `/tmp/ticket-outbox/blocker.md` recommending mode re-triage and
   print `RESULT: UNFIT <one-line reason>`.
 - **Never narrate on the ticket.** No "spec PR opened", "citations fixed",

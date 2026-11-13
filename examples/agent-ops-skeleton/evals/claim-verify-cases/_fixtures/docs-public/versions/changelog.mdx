@@ -5,44 +5,44 @@ mode: wide
 
 Synthetic excerpt of the public changelog for the claim-verify golden set.
 
-<Update label="v0.17.0" description="2026-06-25">
-## example-app v0.17.0
+<Update label="v0.33.0" description="2026-03-10">
+## example-app v0.33.0
 
 ### New Features
 
-- **Access control (RBAC)** on encrypted indexes — per-user keys scoped to `read` and/or `write`; service routes `POST`/`GET`/`DELETE` on `/v1/indexes/{name}/users`
-- **Per-index KMS & BYOK.** Providers `aws-kms`, `aws` (Secrets Manager), `none`; cross-account BYOK via `role_arn` + `external_id`
-- **Free tier.** `EXAMPLE_APP_API_KEY` is now optional — without it example-app runs free-tier with a 1,000,000-item-per-index cap
+- **Access control (RBAC)** on queues — per-user tokens scoped to `enqueue` and/or `consume`; service routes `POST`/`GET`/`DELETE` on `/v1/queues/{name}/users`
+- **Per-queue worker identity.** Worker tokens can be issued by the operator's own identity provider; providers `oidc`, `aws-iam`, `static`; cross-account workers via `role_arn` + `external_id`
+- **Free tier.** `EXAMPLE_APP_LICENSE_KEY` is now optional — without it example-app runs free-tier with a 100,000-job-per-queue cap
 - **YAML configuration** via `example_app.yaml`
-- `storage_precision` (`float16` rerank vectors) and `rerank_mult` on `query`
+- `visibility_timeout` and `max_attempts` on `enqueue`
 
 ### Breaking Changes
 
-- **Single index type.** example-app now ships one **DiskIVF** index type; the polymorphic `index_config` object is gone
-- **Storage refactor.** The backing store surface is now just `memory`, `disk` (embedded RocksDB), or `s3`
-  - The `standalone`, `postgres`, and `redis` backends have been removed
-  - `EXAMPLE_APP_CONNECTION_STRING` is replaced by `EXAMPLE_APP_DISK_PATH` and the `EXAMPLE_APP_S3_*` variables
-- **Authentication overhaul.** Request auth is controlled by `EXAMPLE_APP_SERVICE_ROOT_KEY`; the legacy `example_app-api-key` header is removed
+- **Single queue type.** example-app now ships one **durable** queue type; the polymorphic `queue_config` object is gone
+- **Storage refactor.** The backing store surface is now just `memory`, `disk` (embedded LMDB), or `s3`
+  - The `embedded`, `postgres`, and `redis` backends have been removed
+  - `EXAMPLE_APP_STORE_URL` is replaced by `EXAMPLE_APP_DATA_DIR` and the `EXAMPLE_APP_S3_*` variables
+- **Authentication overhaul.** Request auth is controlled by `EXAMPLE_APP_ROOT_TOKEN`; the legacy `X-Example-App-Key` header is removed
 
 </Update>
 
-<Update label="v0.16.1" description="2026-04-13">
-## example-app v0.16.1
+<Update label="v0.32.1" description="2026-01-22">
+## example-app v0.32.1
 
-- `query()` now returns only `id` fields by default when `include` is not specified
+- `list_jobs()` now returns only `id` and `state` by default when `fields` is not specified
 - Fixed an S3 backing store bug with versioned objects
 
 </Update>
 
-<Update label="v0.16.0" description="2026-02-20">
-## example-app v0.16.0
+<Update label="v0.32.0" description="2025-12-04">
+## example-app v0.32.0
 
 - S3 backing store hardening; `postgres` and `redis` marked deprecated
 
 </Update>
 
-<Update label="v0.15.0" description="2025-12-15">
-## example-app v0.15.0
+<Update label="v0.31.0" description="2025-10-09">
+## example-app v0.31.0
 
 - S3 backing store (initial)
 

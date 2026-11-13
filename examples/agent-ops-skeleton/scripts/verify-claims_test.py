@@ -28,9 +28,9 @@ Intro paragraph.
 
 | Retired phrase | Why | Say instead |
 |---|---|---|
-| "proxy mode" / "proxy layer" / "sits in front of" | framing | "standalone" |
-| "point it at Postgres" / "Postgres, Redis" (as backing stores) | proxy | "tiered" |
-| "no new database to staff/operate/manage" / "isn't another database" | claim | Omit |
+| "plugin mode" / "cron add-on" / "bolts on top of" | framing | "self-hosted" |
+| "back it with Postgres" / "Postgres, Redis" (as backing stores) | add-on | "job store" |
+| "no new service to run/operate/manage" / "isn't another scheduler" | claim | Omit |
 | "MySQL" (as a supported backend) | never supported | — |
 
 ## Next section
@@ -42,19 +42,19 @@ Intro paragraph.
 class RetiredPhraseParsing(unittest.TestCase):
     def test_table_first_column_parsed(self):
         phrases = vc.parse_retired_phrases_md(RETIRED_MD)
-        self.assertIn("proxy mode", phrases)
-        self.assertIn("sits in front of", phrases)
-        self.assertIn("point it at Postgres", phrases)
+        self.assertIn("plugin mode", phrases)
+        self.assertIn("bolts on top of", phrases)
+        self.assertIn("back it with Postgres", phrases)
         self.assertIn("Postgres, Redis", phrases)
         self.assertIn("MySQL", phrases)
-        self.assertIn("isn't another database", phrases)
+        self.assertIn("isn't another scheduler", phrases)
 
     def test_qualifiers_dropped_and_slash_alternatives_expanded(self):
         phrases = vc.parse_retired_phrases_md(RETIRED_MD)
         self.assertNotIn("(as backing stores)", " ".join(phrases))
-        self.assertIn("no new database to staff", phrases)
-        self.assertIn("no new database to operate", phrases)
-        self.assertIn("no new database to manage", phrases)
+        self.assertIn("no new service to run", phrases)
+        self.assertIn("no new service to operate", phrases)
+        self.assertIn("no new service to manage", phrases)
 
     def test_stops_at_next_heading(self):
         phrases = vc.parse_retired_phrases_md(RETIRED_MD)
@@ -66,19 +66,19 @@ class RetiredPhraseParsing(unittest.TestCase):
 
     def test_features_json_precedence_shape(self):
         feats = {"features": [
-            {"id": "proxy", "status": "retired", "retired_claim_phrases": ["proxy mode", " sits in front of "]},
+            {"id": "plugin", "status": "retired", "retired_claim_phrases": ["plugin mode", " bolts on top of "]},
             {"id": "s3", "status": "ga", "retired_claim_phrases": []},
         ]}
-        self.assertEqual(vc.retired_phrases_from_features(feats), ["proxy mode", "sits in front of"])
+        self.assertEqual(vc.retired_phrases_from_features(feats), ["plugin mode", "bolts on top of"])
         # bare list form
-        self.assertEqual(vc.retired_phrases_from_features(feats["features"]), ["proxy mode", "sits in front of"])
+        self.assertEqual(vc.retired_phrases_from_features(feats["features"]), ["plugin mode", "bolts on top of"])
 
 
 class PhraseMatching(unittest.TestCase):
     def test_case_and_whitespace_insensitive_with_boundaries(self):
-        rx = vc.phrase_regex("sits in front of")
-        self.assertIsNotNone(rx.search("example-app Sits  in\nfront of your DB"))
-        self.assertIsNone(rx.search("visits in front of"))   # left boundary
+        rx = vc.phrase_regex("bolts on top of")
+        self.assertIsNotNone(rx.search("example-app Bolts  on\ntop of your DB"))
+        self.assertIsNone(rx.search("unbolts on top of"))   # left boundary
         rx2 = vc.phrase_regex("MySQL")
         self.assertIsNotNone(rx2.search("uses mysql as"))
         self.assertIsNone(rx2.search("mysqldump"))
@@ -86,10 +86,10 @@ class PhraseMatching(unittest.TestCase):
 
 class SentenceExtraction(unittest.TestCase):
     def test_versions_and_paths_stay_whole(self):
-        text = "Intro line.\nThe store moved in v0.17.0 per src/x/y.py:12 today. Next sentence."
-        pos = text.index("v0.17.0")
+        text = "Intro line.\nThe store moved in v0.33.0 per src/x/y.py:12 today. Next sentence."
+        pos = text.index("v0.33.0")
         s = vc._sentence_at(text, pos)
-        self.assertIn("v0.17.0", s)
+        self.assertIn("v0.33.0", s)
         self.assertIn("src/x/y.py:12", s)
         self.assertNotIn("Next sentence", s)
         self.assertNotIn("Intro line", s)
@@ -114,7 +114,7 @@ class SourcesCommand(unittest.TestCase):
             self.assertFalse(manifest["sources"]["features.json"]["present"])
             self.assertEqual(manifest["retired_phrases_from"], "claims-vetted.md")
             phrases = (out / "retired-phrases.txt").read_text().splitlines()
-            self.assertIn("separates compute from storage", phrases)
+            self.assertIn("decouples scheduling from execution", phrases)
             self.assertTrue((out / "changelog.mdx").is_file())
 
     def test_features_json_wins_when_present(self):
@@ -124,8 +124,8 @@ class SourcesCommand(unittest.TestCase):
             idocs = Path(td) / "internal-docs"
             shutil.copytree(FIXTURES / "internal-docs", idocs)
             (idocs / ".claude" / "indexes" / "features.json").write_text(json.dumps({
-                "features": [{"id": "proxy-mode", "status": "retired",
-                              "retired_claim_phrases": ["proxy mode", "sits in front of"]}]
+                "features": [{"id": "plugin-mode", "status": "retired",
+                              "retired_claim_phrases": ["plugin mode", "bolts on top of"]}]
             }))
             out = Path(td) / "sources"
             sys.argv = ["verify-claims.py", "sources", "--internal-docs", str(idocs), "--out", str(out)]
@@ -133,7 +133,7 @@ class SourcesCommand(unittest.TestCase):
             manifest = json.loads((out / "manifest.json").read_text())
             self.assertEqual(manifest["retired_phrases_from"], "features.json")
             self.assertEqual((out / "retired-phrases.txt").read_text().splitlines(),
-                             ["proxy mode", "sits in front of"])
+                             ["plugin mode", "bolts on top of"])
             self.assertFalse(manifest["sources"]["changelog.mdx"]["present"])  # no docs repo given
 
 
@@ -188,7 +188,7 @@ class ExtractSpec(unittest.TestCase):
         self.assertIn("agent-ops/guards/example-app-sdk-js.paths", c["source"])
 
     def test_urls_are_not_path_citations(self):
-        claims = self._extract("See https://docs.example.com/versions/v0.17.x/intro/foo.mdx:12 for details.")
+        claims = self._extract("See https://docs.example.com/versions/v0.33.x/intro/foo.mdx:12 for details.")
         self.assertFalse(any(c["kind"] == "path-citation" for c in claims))
 
     def test_no_product_checkout_marks_unverified(self):
@@ -199,24 +199,24 @@ class ExtractSpec(unittest.TestCase):
 
     def test_graph_ids_and_versions(self):
         claims = self._extract(
-            "Leans on `adr-0023` and `component/backing-stores`; `adr-0041` decided X.\n"
-            "Shipped in v0.17.0; target v0.19.\n"
+            "Leans on `adr-0031` and `component/backing-stores`; `adr-0058` decided X.\n"
+            "Shipped in v0.33.0; target v0.35.\n"
         )
         g = {c["claim"]: c["verdict"] for c in claims if c["kind"] == "graph-node"}
-        self.assertEqual(g["references graph node `adr-0023`"], "verified")
+        self.assertEqual(g["references graph node `adr-0031`"], "verified")
         self.assertEqual(g["references graph node `component/backing-stores`"], "verified")
-        self.assertEqual(g["references graph node `adr-0041` — not in graph.json"], "unverified")
+        self.assertEqual(g["references graph node `adr-0058` — not in graph.json"], "unverified")
         import re as _re
         v = {_re.search(r"`(v[\d.x]+)`", c["claim"]).group(1): c["verdict"]
              for c in claims if c["kind"] == "version"}
-        self.assertEqual(v["v0.17.0"], "verified")
-        self.assertEqual(v["v0.19"], "pending")
+        self.assertEqual(v["v0.33.0"], "verified")
+        self.assertEqual(v["v0.35"], "pending")
 
     def test_retired_phrase_in_spec_is_pending_not_contradicted(self):
-        claims = self._extract("Operators used to point it at Postgres before v0.17.0.")
+        claims = self._extract("Operators used to back it with Postgres before v0.33.0.")
         c = next(c for c in claims if c["kind"] == "retired-phrase")
         self.assertEqual(c["verdict"], "pending")
-        self.assertIn("point it at Postgres", c["claim"])
+        self.assertIn("back it with Postgres", c["claim"])
 
 
 class ExtractReleaseFindings(unittest.TestCase):
@@ -228,7 +228,7 @@ class ExtractReleaseFindings(unittest.TestCase):
             art.write_text(json.dumps(doc))
             claims = tmp / "claims.json"
             sys.argv = ["verify-claims.py", "extract", "--kind", "release-findings", "--artifact", str(art),
-                        "--artifact-ref", "v0.17.0", "--sources", str(out),
+                        "--artifact-ref", "v0.33.0", "--sources", str(out),
                         "--internal-docs", str(FIXTURES / "internal-docs"), "--out", str(claims)]
             self.assertEqual(vc.main(), 0)
             return json.loads(claims.read_text())
@@ -241,8 +241,8 @@ class ExtractReleaseFindings(unittest.TestCase):
 
     def test_retired_phrase_in_finding_is_contradicted_and_scoped(self):
         doc = {"findings": [
-            self._finding(1, "example-app sits in front of your bucket."),
-            self._finding(2, "Also sits in front of things.", verdict="not-market-worthy"),
+            self._finding(1, "example-app bolts on top of your bucket."),
+            self._finding(2, "Also bolts on top of things.", verdict="not-market-worthy"),
         ]}
         res = self._extract(doc)
         self.assertEqual(res["scope_finding_prs"], [1])

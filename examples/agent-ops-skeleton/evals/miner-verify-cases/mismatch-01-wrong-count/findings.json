@@ -41,19 +41,19 @@
       }
     },
     {
-      "id": "f-03-adr-index-format",
+      "id": "f-03-adr-job-format",
       "kind": "staleness",
-      "summary": "adr-index-format flagged by digest; last_verified > 60d.",
+      "summary": "adr-job-format flagged by digest; last_verified > 60d.",
       "evidence": [
         {
-          "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/adr/index-format.md",
+          "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/adr/job-format.md",
           "note": "last_verified: 2026-04-30."
         }
       ],
       "prevalence": { "occurrences": 1, "distinct_sources": 1 },
       "proposed_change": {
         "change_type": "frontmatter-edit",
-        "target_path": "07-engineering-docs/adr/index-format.md",
+        "target_path": "07-engineering-docs/adr/job-format.md",
         "detail": "confidence: verified -> assumed.",
         "risk_if_wrong": "False downgrade if ADR is still accurate."
       }

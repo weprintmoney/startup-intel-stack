@@ -1,8 +1,8 @@
 """Backing-store factory.
 
-example-app v0.17 ships three backing stores: ``memory``, ``disk`` (embedded
-RocksDB, the default) and ``s3`` (any S3-compatible object store). The
-``postgres`` and ``redis`` backends were removed in v0.17.0.
+example-app v0.33 ships three backing stores: ``memory``, ``disk`` (embedded
+LMDB, the default) and ``s3`` (any S3-compatible object store). The
+``postgres`` and ``redis`` backends were removed in v0.33.0.
 """
 
 from __future__ import annotations

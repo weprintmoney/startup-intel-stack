@@ -5,8 +5,8 @@
   "expected_claims": [
     { "claim": "2 findings", "expected_supported": true },
     { "claim": "f-01-storage-adr-drift concerns adr-storage-backends", "expected_supported": true },
-    { "claim": "f-02-enc-index-drift concerns component-enc-index", "expected_supported": true },
+    { "claim": "f-02-worker-pool-drift concerns component-worker-pool", "expected_supported": true },
     { "claim": "PR #291 removed Postgres and Redis", "expected_supported": true },
-    { "claim": "PR #305 replaced mock encoder", "expected_supported": true }
+    { "claim": "PR #305 replaced mock runner", "expected_supported": true }
   ]
 }

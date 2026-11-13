@@ -4,4 +4,4 @@ Mined 4 stale ADRs this week. All four are dependents of graph node `component-s
 
 - **f-01-adr-postgres-store** — staleness on `adr-postgres-store`.
 - **f-02-adr-redis-store** — staleness on `adr-redis-store`.
-- **f-03-adr-index-format** — staleness on `adr-index-format`.
+- **f-03-adr-job-format** — staleness on `adr-job-format`.

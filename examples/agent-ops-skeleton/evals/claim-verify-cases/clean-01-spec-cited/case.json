@@ -10,5 +10,5 @@
     { "claim": "component/backing-stores", "expected_verdict": "verified" }
   ],
   "expected_deterministic": [],
-  "point": "Every path:line resolves and supports its sentence; graph ids exist; v0.17.0 is in the changelog; storage surface stated correctly. Zero false positives."
+  "point": "Every path:line resolves and supports its sentence; graph ids exist; v0.33.0 is in the changelog; storage surface stated correctly. Zero false positives."
 }

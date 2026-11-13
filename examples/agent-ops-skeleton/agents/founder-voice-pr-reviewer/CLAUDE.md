@@ -76,8 +76,8 @@ senior reviewer catches every time. Delete categories that don't apply.
 
 - Loop-invariant work inside hot loops.
 - Allocations in hot paths that should be pooled or pre-sized.
-- Function calls in inner loops that block inlining / vectorization.
-- Per-request work that could be precomputed at build/index time.
+- Function calls in inner loops that block inlining.
+- Per-request work that could be precomputed at build or startup time.
 - Any change to a hot path that ships without a benchmark.
 
 ### 2. Data layout & memory
@@ -98,16 +98,16 @@ senior reviewer catches every time. Delete categories that don't apply.
 
 ### 4. Security-critical code — apply this checklist explicitly
 
-If your product handles authentication, secrets, encryption, tokens, or
+If your product handles authentication, secrets, tokens, or
 personal data, list the invariants that go silent-and-catastrophic when
 broken:
 
 - Constant-time comparison of secrets (no plain `==` / `memcmp` on tokens
   or MAC tags).
 - No branching on secret data.
-- Vetted crypto libraries only — no rolling your own.
+- Vetted security libraries only — no rolling your own.
 - Proper CSPRNG for anything that touches secrets.
-- Nonce / IV uniqueness invariants respected.
+- Token expiry and replay-protection invariants respected.
 - Secrets zeroed after use.
 
 ### 5. Persistence & durability

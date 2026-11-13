@@ -1,7 +1,7 @@
 name: Expertise Path Guard
 
 # Deterministic expertise firewall (never self-policed): agent PRs touching
-# crypto, key-handling, indexing-core, or query-path files fail this check —
+# auth, billing, scheduler-core, or data-access files fail this check —
 # those tickets are mode:requires-expertise, not mode:claude-led
 # (internal-docs/08-team-culture/coding-agents.md).
 #

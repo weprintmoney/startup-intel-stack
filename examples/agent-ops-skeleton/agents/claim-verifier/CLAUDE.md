@@ -40,9 +40,9 @@ Everything lives in `/tmp/claim-verify/`:
   - `graph.json` — the internal-docs knowledge graph index: node id →
     `title`, `path`, `graph_type`, `confidence`. Node docs live under
     `internal_docs_dir` at that `path`; open them.
-  - `invariants.md` — behavioral invariants (INV-xx), product-shape
-    invariants (PSI-xx) and verified absences (VA-xx). **The negative
-    space: anything an artifact assumes that appears on the PSI/VA lists
+  - `invariants.md` — behavioral invariants (INV-xx), design
+    boundaries (BND-xx) and non-features (NF-xx). **The negative
+    space: anything an artifact assumes that appears on the BND/NF lists
     is contradicted.**
   - `behavior-matrix.yaml` — canonical backing-store rows with `status`,
     `since_version`, `removed_in`.
@@ -69,15 +69,15 @@ note the disagreement in `note` and follow the higher-priority source.
      context. `verified` only if that line states what the artifact's
      sentence says it does. A line that exists but says something else is
      `contradicted` (quote it in `evidence`). E.g. a spec citing
-     `config.py:7` for "selects Postgres via EXAMPLE_APP_CONNECTION_STRING"
-     when line 7 reads `DB_TYPE = os.environ.get("EXAMPLE_APP_DB_TYPE", "disk")`
+     `config.py:7` for "selects Postgres via EXAMPLE_APP_STORE_URL"
+     when line 7 reads `STORE = os.environ.get("EXAMPLE_APP_STORE", "disk")`
      is contradicted.
    - `retired-phrase` (spec kind) — read the sentence. Asserted as
      *current* product behavior or positioning → `contradicted`. Quoted
      historically, negated, or described as removed ("used to point it at
      Postgres", "MySQL was never supported") → `verified`.
    - `version` — a version not in the changelog is fine as a forward-
-     looking target ("ships in v0.18") → `verified` with a note. Asserted
+     looking target ("ships in v0.34") → `verified` with a note. Asserted
      as already shipped → `contradicted`.
    - `evidence-source` (release findings) — open the path (or fetch the
      `<YOUR_ORG>/*` URL read-only with `gh api` / `gh pr view`). `verified`
@@ -90,12 +90,12 @@ note the disagreement in `note` and follow the higher-priority source.
    *today*:
    - a feature, mode, knob, endpoint, env var, error code, or default
      exists (or does not)
-   - a backing store, index type, or deployment model is supported
+   - a backing store, queue type, or deployment model is supported
    - something shipped, changed, or was removed in a named version
    - what a cited ADR, invariant, incident, or positioning doc decided or
      says
    - a comparison or measurement the artifact treats as possible
-     (e.g. "with and without encryption" — see PSI-01)
+     (e.g. "with and without authentication" — see BND-01)
    Skip editorial language ("this is worth doing"), design proposals
    ("we will add X"), acceptance criteria, and open questions — those are
    not claims about current state. Aim for the claims that would mislead a
@@ -106,7 +106,7 @@ note the disagreement in `note` and follow the higher-priority source.
    - `verified` — a source states it. Cite the source and quote or
      paraphrase the line in `evidence`.
    - `contradicted` — a source states the opposite, or the claim assumes
-     something on the PSI/VA lists, or a **closed enumeration** in a source
+     something on the BND/NF lists, or a **closed enumeration** in a source
      excludes it (the changelog and behavior matrix enumerate the backing
      stores as `memory`, `disk`, `s3` — a fourth store is contradicted,
      not merely unverified). Cite the source.
@@ -155,23 +155,23 @@ Write `/tmp/claim-verify/verdict.json` — a single JSON object:
     {
       "id": "m-01",
       "kind": "product-behavior",
-      "claim": "example-app supports Postgres storage via EXAMPLE_APP_CONNECTION_STRING",
+      "claim": "example-app supports Postgres storage via EXAMPLE_APP_STORE_URL",
       "location": "L14",
       "verdict": "contradicted",
       "material": true,
-      "source": "changelog.mdx v0.17.0; behavior-matrix.yaml postgres.removed_in",
-      "evidence": "v0.17.0 breaking changes: 'The standalone, postgres, and redis backends have been removed'; behavior matrix: postgres removed_in 0.17.0",
+      "source": "changelog.mdx v0.33.0; behavior-matrix.yaml postgres.removed_in",
+      "evidence": "v0.33.0 breaking changes: 'The embedded, postgres, and redis backends have been removed'; behavior matrix: postgres removed_in 0.33.0",
       "note": null,
       "finding_pr": null
     },
     {
       "id": "m-02",
       "kind": "doc-statement",
-      "claim": "1,560 hand-written lines (client.py 356 + encrypted_index.py 1,204)",
+      "claim": "1,560 hand-written lines (client.py 356 + scheduler.py 1,204)",
       "location": "L173",
       "verdict": "contradicted",
       "material": false,
-      "source": "product/example_app/client/client.py, product/example_app/client/encrypted_index.py (wc -l)",
+      "source": "product/example_app/client/client.py, product/example_app/client/scheduler.py (wc -l)",
       "evidence": "355 + 1,203 = 1,558; the shared-builders rationale is unchanged at 1,558",
       "note": null,
       "finding_pr": null
