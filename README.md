@@ -89,3 +89,7 @@ This template is the upstream for all instances. Generic fixes and new capabilit
 4. Respect the global `SEQUENCES_PAUSED` flag and the daily send cap.
 5. Never send from your primary domain — use a send subdomain/alt domain.
 6. No named prospects in any public or shared repo — lead data stays in this private instance.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Copy it, adapt it, and use it in your own company.
