@@ -123,7 +123,7 @@ def _git_head(d: Path | None) -> str | None:
 
 
 def _expand_slash_alternatives(phrase: str) -> list[str]:
-    """'no new database to staff/operate/manage' -> three phrases.
+    """'no new service to run/operate/manage' -> three phrases.
     Only splits a/b/c runs with no surrounding spaces (a shorthand for
     alternatives in the claims-vetted table)."""
     m = re.search(r"(\S+?)/(\S+(?:/\S+)*)", phrase)
@@ -263,7 +263,7 @@ SENTENCE_BOUNDARY_RE = re.compile(r"[.!?](?=\s)|\n")
 
 def _sentence_at(text: str, pos: int) -> str:
     """The sentence containing `pos`. Boundaries are newlines or terminal
-    punctuation followed by whitespace, so `v0.17.0` and `foo.py:12` stay whole."""
+    punctuation followed by whitespace, so `v0.33.0` and `foo.py:12` stay whole."""
     start = 0
     for m in SENTENCE_BOUNDARY_RE.finditer(text, 0, pos):
         start = m.end()

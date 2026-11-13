@@ -7,23 +7,23 @@ status: draft
 
 ## 1. Goal
 
-Large ingests saturate the Postgres connection pool. Expose pool size and
-timeout knobs so operators can tune for bulk upsert.
+Large enqueue bursts saturate the Postgres connection pool. Expose pool size and
+timeout knobs so operators can tune for bulk enqueue.
 
 ## 2. Current behavior (verified against source)
 
 - example-app supports Postgres storage; the service selects it through
-  `EXAMPLE_APP_CONNECTION_STRING` (`src/example_app/service/config.py:7`).
+  `EXAMPLE_APP_STORE_URL` (`src/example_app/service/config.py:7`).
 - The pool is created with a fixed size of 16 in
   `src/example_app/storage/postgres_pool.py:12`.
-- The disk store is the default for embedded use
+- The disk store is the default for single-node use
   (`src/example_app/service/config.py:7`).
 
 ## 3. Graph nodes consulted
 
 - `component/backing-stores` — Postgres row.
-- `adr-0041` — the decision to keep Postgres as the primary service store.
-- `terminus/performance-budgets` — bulk-upsert throughput floor.
+- `adr-0058` — the decision to keep Postgres as the primary service store.
+- `terminus/performance-budgets` — bulk-enqueue throughput floor.
 
 ## 4. Design
 
@@ -42,4 +42,4 @@ None.
 
 ## 7. References
 
-- Release notes v0.17.0.
+- Release notes v0.33.0.

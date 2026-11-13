@@ -34,5 +34,5 @@ Write your review to `/tmp/review-output/review.md`:
 - Judge the diff, not the codebase: pre-existing issues are out of scope
   unless the diff makes them worse.
 - Be specific. "Consider improving error handling" is not a finding;
-  "`load_index` swallows the `IOError` at src/x.py:42 — re-raise or log" is.
+  "`load_queue` swallows the `IOError` at src/x.py:42 — re-raise or log" is.
 - No praise padding. Findings and conformance only.

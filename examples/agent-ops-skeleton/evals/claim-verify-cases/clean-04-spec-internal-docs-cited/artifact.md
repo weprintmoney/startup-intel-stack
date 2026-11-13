@@ -1,42 +1,44 @@
 ---
-title: "Spec: metadata filter allowlist evaluates inside the encryption boundary"
+title: "Spec: batch enqueue acknowledges only after the durable write"
 status: draft
 ---
 
-# Spec: metadata filter allowlist evaluates inside the encryption boundary
+# Spec: batch enqueue acknowledges only after the durable write
 
 ## 1. Goal
 
-Operators want to filter vector queries by customer-provided metadata
-fields (e.g. `tenant_id`, `doc_type`). The filter evaluator must not create
-a plaintext side-channel index over those fields.
+Operators want a batch endpoint that enqueues many jobs in one request
+(e.g. a nightly fan-out of report jobs). The batch path must not
+acknowledge jobs that are still sitting in an in-process buffer.
 
 ## 2. Current behavior (verified against source)
 
-- Every vector and every customer-provided metadata field is encrypted
-  before it reaches any backing store — `07-engineering-docs/terminus/invariants.md:17`
-  (INV-01). A metadata filter index built outside the encryption boundary
+- Every job is written to the backing store before its enqueue call is
+  acknowledged — `07-engineering-docs/terminus/invariants.md:17`
+  (INV-01). A batch path that acknowledged from a write-behind buffer
   would violate this invariant.
 
 ## 3. Graph nodes consulted
 
-- `terminus/invariants` — INV-01 governs this design; PSI-01 (no plaintext
-  mode) rules out an "unencrypted filter index" opt-in.
+- `terminus/invariants` — INV-01 governs this design; BND-01 (no
+  unauthenticated mode) rules out an "internal, token-less batch
+  endpoint" opt-in.
 
 ## 4. Design
 
-Evaluate filters at the point where a vector is decrypted for scoring —
-inside the boundary INV-01 requires for the vector itself
-(`07-engineering-docs/terminus/invariants.md:17`); no new index, no new
-storage surface. Rejected alternative: a separate plaintext metadata
-index for filter speed — INV-01 forbids it outright.
+Acknowledge the batch only once every job in it has been written — the
+same point INV-01 requires for a single enqueue
+(`07-engineering-docs/terminus/invariants.md:17`); no new buffer, no new
+storage surface. Rejected alternative: a write-behind buffer that
+acknowledges first for throughput — INV-01 forbids it outright.
 
 ## 5. Acceptance criteria
 
-- [ ] Filtering by an allowlisted metadata field returns correct results
-- [ ] No plaintext copy of any metadata field is ever written to a backing
+- [ ] A batch of N jobs returns N job ids, all present in the backing
       store
-- [ ] Filtering by a non-allowlisted field is rejected at request time
+- [ ] A crash between request and acknowledgement loses no acknowledged
+      job
+- [ ] A batch over the size limit is rejected at request time
 
 ## 6. Open questions
 
@@ -44,4 +46,4 @@ None.
 
 ## 7. References
 
-- `terminus/invariants` INV-01, PSI-01.
+- `terminus/invariants` INV-01, BND-01.

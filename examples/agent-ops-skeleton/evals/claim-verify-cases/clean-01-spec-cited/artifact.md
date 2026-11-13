@@ -28,13 +28,14 @@ service never validates it. This spec adds validation (no leading `/`, no
 ## 3. Graph nodes consulted
 
 - `component/backing-stores` — canonical rows for `s3` (supported since
-  v0.15.0, per the behavior matrix).
-- `claim/tiered-storage-memory-disk-s3` — positioning depends on the S3
-  tier working out of the box; a bad prefix silently writing to the bucket
+  v0.31.0, per the behavior matrix).
+- `claim/job-store-memory-disk-s3` — positioning depends on the S3
+  store working out of the box; a bad prefix silently writing to the bucket
   root undermines it.
-- `terminus/invariants` — INV-01 is unaffected: the prefix is a key
-  layout choice, not an encryption boundary.
-- `adr-0001` — no interaction; single DiskIVF index type is orthogonal.
+- `terminus/invariants` — INV-01 is unaffected: the prefix is an
+  object-key layout choice; it does not change when an enqueue is
+  acknowledged.
+- `adr-0007` — no interaction; the single durable queue type is orthogonal.
 
 ## 4. Design
 
@@ -46,7 +47,7 @@ offending prefix. Rejected alternative: validate lazily in `S3Store`
 
 - [ ] `EXAMPLE_APP_S3_PREFIX=/foo` fails fast with a clear error
 - [ ] `EXAMPLE_APP_S3_PREFIX=team-a/prod` accepted
-- [ ] Docs page under the v0.17.x service guides
+- [ ] Docs page under the v0.33.x service guides
 
 ## 6. Open questions
 
@@ -54,4 +55,4 @@ None — (a) policy, (b) runtime facts, (c) roadmap context: none apply.
 
 ## 7. References
 
-- Release notes v0.17.0 — storage refactor introduced `EXAMPLE_APP_S3_*`.
+- Release notes v0.33.0 — storage refactor introduced `EXAMPLE_APP_S3_*`.

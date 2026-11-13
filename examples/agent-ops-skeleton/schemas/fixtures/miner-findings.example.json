@@ -7,7 +7,7 @@
     {
       "id": "f-01-storage-adr-superseded",
       "kind": "doc-drift",
-      "summary": "ADR-0008 still describes Postgres/Redis as supported backing stores; v0.17 removed both (memory/disk/s3 only). Three agent sessions loaded the stale claim.",
+      "summary": "ADR-0008 still describes Postgres/Redis as supported backing stores; v0.33 removed both (memory/disk/s3 only). Three agent sessions loaded the stale claim.",
       "evidence": [
         { "url": "https://github.com/example-org/example-app-service/pull/398", "note": "PR removing Postgres/Redis stores" },
         { "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/architecture-decisions/adr-0008.md", "note": "Stale node" },

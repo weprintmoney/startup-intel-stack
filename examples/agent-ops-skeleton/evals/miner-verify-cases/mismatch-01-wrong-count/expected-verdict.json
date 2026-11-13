@@ -6,6 +6,6 @@
     { "claim": "summary claims 4 stale ADRs", "expected_supported": false },
     { "claim": "f-01-adr-postgres-store present", "expected_supported": true },
     { "claim": "f-02-adr-redis-store present", "expected_supported": true },
-    { "claim": "f-03-adr-index-format present", "expected_supported": true }
+    { "claim": "f-03-adr-job-format present", "expected_supported": true }
   ]
 }

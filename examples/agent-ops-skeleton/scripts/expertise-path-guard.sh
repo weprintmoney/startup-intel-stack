@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Deterministic expertise firewall: fail when a commit range touches paths
-# reserved for human expertise (crypto, key handling, indexing core, query
+# reserved for human expertise (auth, billing, scheduler core, data-access
 # path — see internal-docs/08-team-culture/coding-agents.md).
 # Never self-policed: runs as a required CI check on agent/* branches.
 #
 # Guards file: one bash glob per line, matched with `case` semantics where
-# '*' crosses '/' (so src/cpu/** matches any depth). Full-line comments and
+# '*' crosses '/' (so src/engine/** matches any depth). Full-line comments and
 # blank lines are skipped. No list for a repo = fail closed (the workflow
 # enforces that; this script requires the file to exist).
 #

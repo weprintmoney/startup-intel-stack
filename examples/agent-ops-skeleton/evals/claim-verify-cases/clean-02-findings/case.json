@@ -2,10 +2,10 @@
   "case": "clean-02-findings",
   "kind": "release-findings",
   "artifact": "artifact.json",
-  "artifact_ref": "v0.17.0",
+  "artifact_ref": "v0.33.0",
   "expected_verdict": "verified",
   "expected_claims": [
-    { "claim": "evidence path 02-positioning/claims/self-hosted-no-key-custody.md", "expected_verdict": "verified" },
+    { "claim": "evidence path 02-positioning/claims/self-hosted-no-credential-escrow.md", "expected_verdict": "verified" },
     { "claim": "evidence path 01-market-intelligence/ideal-customer-profile.mdx", "expected_verdict": "verified" }
   ],
   "expected_deterministic": [],

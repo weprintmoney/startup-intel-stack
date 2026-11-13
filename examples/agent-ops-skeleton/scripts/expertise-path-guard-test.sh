@@ -12,38 +12,38 @@ trap 'rm -rf "$TMP"' EXIT
 cat > "$TMP/test.paths" <<'EOF'
 # comment line
 
-src/encrypted_index*
-src/cpu/**
-src/utils/api_key.*
+src/scheduler_core*
+src/engine/**
+src/utils/root_token.*
 EOF
 
 git -c init.defaultBranch=main init -q "$TMP/repo"
 cd "$TMP/repo"
 git config user.email test@example.com
 git config user.name test
-mkdir -p src/cpu src/utils docs
+mkdir -p src/engine src/utils docs
 echo base > README.md
-echo base > src/utils/api_key.cpp
+echo base > src/utils/root_token.cpp
 git add -A && git commit -qm base
 
 fail() { echo "SELF-TEST FAIL: $1" >&2; exit 1; }
 
 # 1. Guarded top-level file -> must fail
 git checkout -qb t1
-echo x > src/encrypted_index.cpp
+echo x > src/scheduler_core.cpp
 git add -A && git commit -qm t1
-bash "$GUARD" "$TMP/test.paths" main HEAD && fail "passed change to src/encrypted_index.cpp"
+bash "$GUARD" "$TMP/test.paths" main HEAD && fail "passed change to src/scheduler_core.cpp"
 
 # 2. Nested file under a ** glob -> must fail
 git checkout -q main && git checkout -qb t2
-mkdir -p src/cpu/deep && echo x > src/cpu/deep/kernel.cpp
+mkdir -p src/engine/deep && echo x > src/engine/deep/dispatch.cpp
 git add -A && git commit -qm t2
-bash "$GUARD" "$TMP/test.paths" main HEAD && fail "passed change to src/cpu/deep/kernel.cpp"
+bash "$GUARD" "$TMP/test.paths" main HEAD && fail "passed change to src/engine/deep/dispatch.cpp"
 
 # 3. Deleting a guarded file -> must fail
 git checkout -q main && git checkout -qb t3
-git rm -q src/utils/api_key.cpp && git commit -qm t3
-bash "$GUARD" "$TMP/test.paths" main HEAD && fail "passed deletion of src/utils/api_key.cpp"
+git rm -q src/utils/root_token.cpp && git commit -qm t3
+bash "$GUARD" "$TMP/test.paths" main HEAD && fail "passed deletion of src/utils/root_token.cpp"
 
 # 4. Unguarded change -> must pass
 git checkout -q main && git checkout -qb t4
@@ -125,7 +125,7 @@ sdk_case agent-ops block "CLAUDE.md"
 git checkout -q main && git checkout -qb t9
 mkdir -p docs && echo x > docs/other.md && git add -A && git commit -qm t9
 git checkout -q main
-mkdir -p src/cpu && echo y > src/cpu/new_kernel.cpp && git add -A && git commit -qm "unrelated main commit touching a guarded path"
+mkdir -p src/engine && echo y > src/engine/new_dispatch.cpp && git add -A && git commit -qm "unrelated main commit touching a guarded path"
 git checkout -q t9
 bash "$GUARD" "$TMP/test.paths" main HEAD || fail "a branch whose own diff is clean was failed by main's post-fork guarded change"
 

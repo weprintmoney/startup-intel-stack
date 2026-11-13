@@ -127,7 +127,7 @@ class Rejections(unittest.TestCase):
 
     def test_blocking_finding_with_pass(self):
         rep = self.assert_rejected(
-            good_verdict(blocking_findings=["B1: touches src/cpu/kernel.cpp"]), "implies 'fail'"
+            good_verdict(blocking_findings=["B1: touches src/engine/dispatch.cpp"]), "implies 'fail'"
         )
         self.assertEqual(rep["verdict"], "fail")
         self.assertEqual(rep["blocking_findings_count"], 1)

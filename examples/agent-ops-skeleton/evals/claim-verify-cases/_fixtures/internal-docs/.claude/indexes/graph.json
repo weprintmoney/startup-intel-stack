@@ -2,9 +2,9 @@
   "schema_version": 2,
   "node_count": 9,
   "nodes": {
-    "adr-0001": {
-      "title": "Adopt Disk IVF and Consolidate to a Single Index Type",
-      "path": "07-engineering-docs/architecture-decisions/0001-adopt-disk-ivf-and-consolidate-index-types.md",
+    "adr-0007": {
+      "title": "Consolidate to a Single Durable Queue Type",
+      "path": "07-engineering-docs/architecture-decisions/0007-consolidate-to-a-single-queue-type.md",
       "graph_type": "architectural-decision",
       "confidence": "verified",
       "last_verified": "2026-05-21",
@@ -14,9 +14,9 @@
       "supersedes": [],
       "satisfies": []
     },
-    "adr-0023": {
-      "title": "Dev mode for non-production evaluation",
-      "path": "07-engineering-docs/architecture-decisions/0023-dev-mode-for-non-production-eval.md",
+    "adr-0031": {
+      "title": "Dev mode for local evaluation",
+      "path": "07-engineering-docs/architecture-decisions/0031-dev-mode-for-local-evaluation.md",
       "graph_type": "architectural-decision",
       "confidence": "verified",
       "last_verified": "2026-08-20",
@@ -57,9 +57,9 @@
       "supersedes": [],
       "satisfies": []
     },
-    "claim/tiered-storage-memory-disk-s3": {
-      "title": "Tiered storage \u2014 RAM, local disk, S3-compatible object stores",
-      "path": "02-positioning/claims/tiered-storage-memory-disk-s3.md",
+    "claim/job-store-memory-disk-s3": {
+      "title": "Pluggable job store \u2014 memory, local disk, S3-compatible object stores",
+      "path": "02-positioning/claims/job-store-memory-disk-s3.md",
       "graph_type": "positioning-claim",
       "confidence": "verified",
       "depends_on": [
@@ -68,9 +68,9 @@
       "supersedes": [],
       "satisfies": []
     },
-    "claim/self-hosted-no-key-custody": {
-      "title": "Self-hosted; <YOUR_COMPANY> never holds customer keys",
-      "path": "02-positioning/claims/self-hosted-no-key-custody.md",
+    "claim/self-hosted-no-credential-escrow": {
+      "title": "Self-hosted; <YOUR_COMPANY> never holds customer credentials",
+      "path": "02-positioning/claims/self-hosted-no-credential-escrow.md",
       "graph_type": "positioning-claim",
       "confidence": "verified",
       "depends_on": [
@@ -86,7 +86,7 @@
       "confidence": "observed",
       "depends_on": [
         "component/example-app-service",
-        "adr-0023"
+        "adr-0031"
       ],
       "supersedes": [],
       "satisfies": []
@@ -106,20 +106,20 @@
   "reverse": {
     "dependents_of": {
       "component/example-app-core": [
-        "adr-0001",
+        "adr-0007",
         "component/example-app-service",
         "component/backing-stores",
         "terminus/performance-budgets"
       ],
       "component/example-app-service": [
-        "adr-0023",
-        "claim/self-hosted-no-key-custody",
+        "adr-0031",
+        "claim/self-hosted-no-credential-escrow",
         "terminus/invariants"
       ],
       "component/backing-stores": [
-        "claim/tiered-storage-memory-disk-s3"
+        "claim/job-store-memory-disk-s3"
       ],
-      "adr-0023": [
+      "adr-0031": [
         "terminus/invariants"
       ]
     },

@@ -18,7 +18,7 @@
           "note": "PR removes Postgres and Redis stores; keeps memory / disk / s3."
         },
         {
-          "url": "https://github.com/example-org/example-app-core/releases/tag/v0.17.0",
+          "url": "https://github.com/example-org/example-app-core/releases/tag/v0.33.0",
           "note": "Release notes: 'Postgres and Redis stores removed.'"
         }
       ],
@@ -31,28 +31,28 @@
       }
     },
     {
-      "id": "f-02-enc-index-drift",
+      "id": "f-02-worker-pool-drift",
       "kind": "doc-drift",
-      "summary": "component-enc-index depends_on still lists mock-vector-encoder; production encoder is the current dependency.",
+      "summary": "component-worker-pool depends_on still lists mock-job-runner; production runner is the current dependency.",
       "evidence": [
         {
-          "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/components/enc-index.md",
-          "note": "depends_on frontmatter: [mock-vector-encoder]."
+          "url": "https://github.com/example-org/internal-docs/blob/main/07-engineering-docs/components/worker-pool.md",
+          "note": "depends_on frontmatter: [mock-job-runner]."
         },
         {
           "url": "https://github.com/example-org/example-app-core/pull/305",
-          "note": "PR replaces mock encoder with production encoder in the encrypted-index build path."
+          "note": "PR replaces mock runner with production runner in the worker-pool dispatch path."
         },
         {
           "url": "https://github.com/example-org/example-app-core/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "note": "Merge commit for PR #305 on main; mock encoder no longer imported."
+          "note": "Merge commit for PR #305 on main; mock runner no longer imported."
         }
       ],
       "prevalence": { "occurrences": 3, "distinct_sources": 3 },
       "proposed_change": {
         "change_type": "frontmatter-edit",
-        "target_path": "07-engineering-docs/components/enc-index.md",
-        "detail": "depends_on: -mock-vector-encoder, +production-vector-encoder; last_verified: 2026-08-24.",
+        "target_path": "07-engineering-docs/components/worker-pool.md",
+        "detail": "depends_on: -mock-job-runner, +production-job-runner; last_verified: 2026-08-24.",
         "risk_if_wrong": "Wrong edge direction would break the graph reverse-index."
       }
     }

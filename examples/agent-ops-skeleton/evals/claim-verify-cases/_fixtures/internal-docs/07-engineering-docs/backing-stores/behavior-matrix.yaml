@@ -6,30 +6,30 @@ last_updated: 2026-08-20
 backing_stores:
   memory:
     status: supported
-    since_version: "0.10.0"
+    since_version: "0.20.0"
     deprecated_in: null
     removed_in: null
     persistence: none
   disk:
     status: supported
-    since_version: "0.17.0"
+    since_version: "0.33.0"
     deprecated_in: null
     removed_in: null
-    notes: "Embedded RocksDB. Default for the service (EXAMPLE_APP_DB_TYPE=disk). Renamed from `standalone` in 0.17.0."
+    notes: "Embedded LMDB. Default for the service (EXAMPLE_APP_STORE=disk). Renamed from `embedded` in 0.33.0."
   s3:
     status: supported
-    since_version: "0.15.0"
+    since_version: "0.31.0"
     deprecated_in: null
     removed_in: null
     notes: "AWS S3 and S3-compatible stores (MinIO, R2)."
   postgres:
     status: removed
-    since_version: "0.10.0"
-    deprecated_in: "0.16.0"
-    removed_in: "0.17.0"
-    notes: "Removed with the v0.17.0 storage refactor; EXAMPLE_APP_CONNECTION_STRING is gone."
+    since_version: "0.20.0"
+    deprecated_in: "0.32.0"
+    removed_in: "0.33.0"
+    notes: "Removed with the v0.33.0 storage refactor; EXAMPLE_APP_STORE_URL is gone."
   redis:
     status: removed
-    since_version: "0.11.0"
-    deprecated_in: "0.16.0"
-    removed_in: "0.17.0"
+    since_version: "0.21.0"
+    deprecated_in: "0.32.0"
+    removed_in: "0.33.0"

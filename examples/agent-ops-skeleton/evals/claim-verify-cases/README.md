@@ -62,13 +62,13 @@ _fixtures/                # shared synthetic internal-docs / docs-public / produ
 
 | Slug | Kind | Verdict | Point of the case |
 |---|---|---|---|
-| `clean-01-spec-cited` | spec | verified | Every `path:line` resolves and supports its sentence; graph ids exist; `v0.17.0` in changelog. No false alarms. |
+| `clean-01-spec-cited` | spec | verified | Every `path:line` resolves and supports its sentence; graph ids exist; `v0.33.0` in changelog. No false alarms. |
 | `clean-02-findings` | release-findings | verified | Two market-worthy findings match the changelog; evidence paths exist and support the scored dimension. Not-market-worthy findings are out of scope. |
-| `clean-03-spec-historical` | spec | verified | **Calibration.** Retired phrases quoted historically ("used to point it at Postgres", "MySQL was never supported"). Pre-pass hands them to the model as `pending`; the model must not flag them. |
+| `clean-03-spec-historical` | spec | verified | **Calibration.** Retired phrases quoted historically ("used to back it with Postgres", "MySQL was never supported"). Pre-pass hands them to the model as `pending`; the model must not flag them. |
 | `clean-04-spec-internal-docs-cited` | spec | verified | **Citation-root coverage.** Cites `07-engineering-docs/terminus/invariants.md:17` (INV-01) — the first case to resolve a path-citation against the `internal-docs` root rather than `product`. |
 | `clean-05-spec-agent-ops-cited` | spec | verified | **Citation-root coverage.** Cites `guards/example-app-sdk-js.paths:2` — the `agent-ops`-root citation shape that PR #81 fixed after it shipped with zero golden-set coverage. |
-| `planted-01-spec-postgres` | spec | contradicted | Ticket #18 AC: "example-app supports Postgres storage" is contradicted by changelog / behavior matrix / VA-01, and `config.py:7` does not say what the spec claims. Deterministic layer catches the invented `postgres_pool.py` and unknown `adr-0041`. |
-| `planted-02-findings-retired-phrase` | release-findings | contradicted | Ticket #18 AC: a finding summary using "sits in front of" / "separates compute from storage" is contradicted **deterministically** — findings become prospect-facing tickets. Second finding is clean. |
+| `planted-01-spec-postgres` | spec | contradicted | Ticket #18 AC: "example-app supports Postgres storage" is contradicted by changelog / behavior matrix / NF-01, and `config.py:7` does not say what the spec claims. Deterministic layer catches the invented `postgres_pool.py` and unknown `adr-0058`. |
+| `planted-02-findings-retired-phrase` | release-findings | contradicted | Ticket #18 AC: a finding summary using "bolts on top of" / "decouples scheduling from execution" is contradicted **deterministically** — findings become prospect-facing tickets. Second finding is clean. |
 
 ## Adding a case
 

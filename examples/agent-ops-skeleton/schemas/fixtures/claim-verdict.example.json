@@ -30,7 +30,7 @@
     {
       "id": "d-02",
       "kind": "graph-node",
-      "claim": "references graph node `adr-0041` — not in graph.json",
+      "claim": "references graph node `adr-0058` — not in graph.json",
       "location": "L23",
       "verdict": "unverified",
       "checked_by": "deterministic",
@@ -54,24 +54,24 @@
     {
       "id": "d-04",
       "kind": "version",
-      "claim": "references release `v0.17.0`",
+      "claim": "references release `v0.33.0`",
       "location": "L40",
       "verdict": "verified",
       "checked_by": "deterministic",
       "source": "changelog.mdx",
-      "evidence": "v0.17.x present in changelog",
+      "evidence": "v0.33.x present in changelog",
       "note": null,
       "finding_pr": null
     },
     {
       "id": "m-01",
       "kind": "product-behavior",
-      "claim": "example-app supports Postgres storage; the service selects it through EXAMPLE_APP_CONNECTION_STRING",
+      "claim": "example-app supports Postgres storage; the service selects it through EXAMPLE_APP_STORE_URL",
       "location": "L13",
       "verdict": "contradicted",
       "checked_by": "model",
-      "source": "changelog.mdx v0.17.0; behavior-matrix.yaml postgres.removed_in; invariants.md VA-01",
-      "evidence": "v0.17.0 breaking changes: 'The standalone, postgres, and redis backends have been removed'; EXAMPLE_APP_CONNECTION_STRING replaced by EXAMPLE_APP_DISK_PATH / EXAMPLE_APP_S3_*",
+      "source": "changelog.mdx v0.33.0; behavior-matrix.yaml postgres.removed_in; invariants.md NF-01",
+      "evidence": "v0.33.0 breaking changes: 'The embedded, postgres, and redis backends have been removed'; EXAMPLE_APP_STORE_URL replaced by EXAMPLE_APP_DATA_DIR / EXAMPLE_APP_S3_*",
       "note": null,
       "finding_pr": null
     }
