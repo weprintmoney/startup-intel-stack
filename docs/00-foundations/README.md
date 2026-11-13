@@ -15,6 +15,10 @@ The two papers in this folder describe the framework this template implements. R
 | [Context, Loops, Graphs](./context-loops-graphs.md) | The framework paper. Three levels: a single source of truth, at least one production loop, and a self-improving coding harness. Each level pays for itself; skipping ahead produces confident garbage. |
 | [The Coding Harness](./the-coding-harness.md) | The implementation companion. Phase-by-phase build order from L1-0 through L3-6, with the workflows, hooks, guardrails, and readiness gates named. This template ships the L1 and L2 skeletons; the paper covers all three levels end to end. |
 
+## Just want one piece?
+
+The [cookbook](./cookbook/README.md) adds one capability at a time to a repo you already have: a prompt to paste, what you should have afterwards, and a check to run.
+
 ## How this template maps to the papers
 
 - **Level 1 (SSOT)** — the `docs/` tree in this repo. The numbered domain folders, `company-profile.yaml`, and `CLAUDE.md` correspond to the L1-0 and L1-1 phases in *The Coding Harness*.
