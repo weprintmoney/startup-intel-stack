@@ -20,7 +20,7 @@ Most teams agree they should write down why they chose a design, and most stop a
 
 ## Before you start
 
-Do [Recipe 1](01-docs-source-of-truth.md) first if you want these records covered by the same docs check. It isn't required.
+Do [Recipe 1](00-single-source-of-truth/README.md) first if you want these records covered by the same docs check. It isn't required.
 
 ## The prompt
 
