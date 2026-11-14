@@ -8,16 +8,16 @@ last_reviewed: 2026-11-14
 
 # Cookbook
 
-You don't have to adopt this whole template to get something out of it. Each recipe here adds one capability to a repo you already have. You paste a prompt into your coding assistant, it builds the thing, and you run a short check to see that it works.
+Each recipe here adds one capability to a repo you already have, and none of them needs the rest of this repo. You paste a prompt into your coding assistant, it builds the thing, and you run a short check to see that it works.
 
 ## How to use a recipe
 
 1. Open your coding assistant inside the repo you want to change.
 2. Paste the prompt from the recipe.
 3. Read what it built before you merge it.
-4. Do the "Check it yourself" steps. They take a few minutes and they're the point: each one breaks something on purpose and confirms the new check notices.
+4. Do the "Check it yourself" steps. They take a few minutes. Each one breaks something on purpose and confirms the new check notices.
 
-Every recipe builds its checks before anything that acts on its own, and none of them needs a paid service to try.
+Every recipe builds its checks before anything that acts on its own. You can try all four without a paid service. Recipe 4 adds a model-written summary if you give it an API key.
 
 ## The recipes
 
@@ -30,14 +30,14 @@ Do them in this order. Each one stands alone, but later ones are more useful whe
 | 3 | [A vetted-claims list with a retired-claims check](03-vetted-claims.md) | One list of what you can say, one of what you've stopped saying, and a check for the second | Pasting a retired phrase into your README fails the check |
 | 4 | [A weekly signal digest](04-weekly-signal-digest.md) | A scheduled read of feeds you choose, opened as a pull request | A second run on the same day reports nothing new |
 
-Recipe 1 is a full chapter: it explains what was researched, what was chosen and what lost, with sources. Recipes 2 to 4 are earlier and shorter. Each will get the same treatment.
+Recipe 1 is a full chapter. It explains the choices built into its prompts and links to the sources behind them.
 
 ## Why this order
 
-Agents repeat what they read. So the first three recipes make what they read trustworthy: documents with owners and dates, decisions with reasons, and claims with sources. The fourth is the first agent, and it's one that can only read and report.
+Agents repeat what they read. So the first three recipes make what they read checkable. Documents get owners and dates, decisions get reasons, and claims get sources. The fourth is the first agent, and it's one that can only read and report.
 
 The two papers in the [parent folder](../README.md) explain the reasoning at length.
 
-## How the recipes are tested
+## If a check doesn't catch the break
 
-Each recipe is run in an empty repo by an assistant that has seen nothing but the prompt. The recipe's "Tested" section records the date and what happened, including anything that failed. A recipe that hasn't been through that says so.
+Run the "Check it yourself" steps after every recipe. If a step passes when it should fail, tell your assistant what you did and ask it to fix the script and add a test for that case.

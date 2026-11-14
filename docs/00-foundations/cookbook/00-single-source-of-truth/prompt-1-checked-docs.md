@@ -8,9 +8,9 @@ last_reviewed: 2026-11-14
 
 # Prompt 1: The checked docs repo
 
-Every agent you add later will read your docs and trust them. This prompt makes the docs checkable before anything depends on them. Each doc says who owns it, what state it's in and when someone last confirmed it. An approved doc also says who approved it and what it's based on. One script fails the build when any of that is missing.
+This prompt makes your docs checkable before any agent depends on them. When it's done, each doc says who owns it, what state it's in and when someone last confirmed it. An approved doc also names who approved it and what it's based on, and one script fails the check when any of that is missing.
 
-The reasons for each choice are in the [chapter overview](README.md).
+Why does a build prompt start with docs? Because every agent you add later will read them and repeat what they say. The [chapter overview](README.md) explains each choice.
 
 ## What you'll have
 
@@ -77,9 +77,9 @@ Finish by running the tests and then the script, and show me both outputs. Then 
 
 A passing test run, a clean run of `check_docs.py`, a list of docs that need an owner, the repository settings to turn on, and a short list of content problems it noticed but left alone.
 
-If some of your docs already have frontmatter that doesn't fit, the check will fail at the end and the assistant will ask you what to do with them. Answer, and ask it to regenerate the index.
+If some of your docs already start with a block of fields that doesn't fit the rule, the check will fail at the end and Claude will ask you what to do with them. Answer, then ask it to regenerate the index.
 
-Docs that haven't changed in six months will show as stale straight away. That's accurate: nobody has confirmed them.
+Docs that haven't changed in 180 days will show as stale straight away, which is correct, because nobody has confirmed them since.
 
 ## Check it yourself
 
@@ -95,32 +95,15 @@ If any step passes silently, tell the assistant what you did and ask it to fix t
 
 ## Then turn on the settings
 
-Until the repository requires the check, everything here is advisory: a failing change can still be merged.
+Until the repository requires the check, a failing change can still be merged.
 
-Open one pull request so the check runs once. Then, on GitHub, protect the default branch: require a pull request, require the docs check to pass, and don't allow anyone to bypass the rule, yourself included. GitHub's guide is [About protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches). Use the assistant's list as a starting point and check it against that page, since it was written from memory. On a private repository, whether you can require checks depends on your plan.
+Open one pull request so the check runs once. Then protect the default branch on GitHub. Require a pull request, require the docs check to pass, and turn off bypassing for everyone, yourself included. GitHub's guide is [About protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches). Check the assistant's list of settings against that page before you apply it. On a private repository, whether you can require checks depends on your plan.
 
 ## What this doesn't do
 
-- It can't tell whether a doc is true. A date shows that someone confirmed the doc, not that they were right.
-- It checks that `approved_by` holds a handle, not who typed it. Your review of the pull request is what makes approval real.
-- It checks that a source exists, not that the source supports the doc.
+- It can't tell whether a doc is true. The date records when someone says they last confirmed the doc or, for a doc you brought into line, when the file last changed.
+- It checks that `approved_by` holds a handle. It can't see who typed it, so your review of the pull request is what makes approval real.
+- It checks that a source exists. Whether the source supports the doc is for you to read.
 - `README.md` files under `docs/` are exempt from the fields, so don't keep facts in them.
 - A pull request can change the script it is judged by. Read any diff to `scripts/`, the tests and the CI configuration yourself.
 - The hidden-character scan will flag some emoji and can't see HTML comments, which are also invisible in a rendered page.
-
-## Tested
-
-2026-11-14, twice, each time in a small fictional company repo by an assistant given only the prompt. The prompt above is the one used in the second run.
-
-**Second run.** The repo held a README, one source file, three docs with no frontmatter and one doc with frontmatter that didn't fit the rule. Its only commit was dated eight months earlier.
-
-- It built the rule, the script, 58 passing tests and both workflows.
-- It gave the three bare docs the date of their last commit, not the day of the run, so all three showed as stale at once. That is the intended result.
-- It left the fourth doc alone, reported what would fail, and asked what to do. Until that was answered the check failed and no index was written. Once the doc was fixed by hand, the index was generated and the check passed.
-- All five checks above were then run by hand, and each failed as described.
-- It reported content problems without changing them: one fact stated in two places, a setup doc that didn't match the code, and two figures with nothing in the repo to support them.
-- It listed branch settings with no required approval and no bypass. The list was written from memory and not checked against GitHub.
-
-**First run**, with an earlier version of the prompt: the build passed the same checks, and a zero-width space added to a doc was caught with the file, line and code point. That version dated every doc as reviewed on the day of the run and proposed a required approval a solo operator can't give. Both were corrected in the prompt, and the second run confirms the corrections.
-
-**Not tested in either run:** neither workflow has run on a CI service, and the issue-keeping logic was tested against a stand-in, not GitHub.

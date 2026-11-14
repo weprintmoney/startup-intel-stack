@@ -8,19 +8,19 @@ last_reviewed: 2026-11-13
 
 # Recipe 2: Decision records that say when they've gone stale
 
-Most teams agree they should write down why they chose a design, and most stop after the first few. Two things make the habit stick. Writing a record has to be cheap, and something other than memory has to notice when a record is out of date. This recipe sets up both.
+Write down why you chose a design and you can check the reasons later without relying on anyone's memory. The habit lasts when a record is cheap to write and when a script notices that one is out of date. This recipe sets up both.
 
 ## What you'll have
 
 - A `docs/decisions/` folder with a template and numbered records.
 - Each record says what it depends on, what it replaces, and when someone last confirmed it's still true.
-- `scripts/decisions.py`, which fails when a record points at one that doesn't exist, when two records depend on each other in a loop, or when a live record depends on one that's been replaced.
+- `scripts/decisions.py`, which fails when a record points at one that doesn't exist, when two records depend on each other in a loop, or when an accepted record depends on a superseded one.
 - A `stale` command that lists records nobody has confirmed in 90 days, and the records that lean on them.
 - A short prompt for turning a meeting transcript into a record.
 
 ## Before you start
 
-Do [Recipe 1](00-single-source-of-truth/README.md) first if you want these records covered by the same docs check. It isn't required.
+This recipe stands alone. If you've already done [Recipe 1](00-single-source-of-truth/README.md), say so before you paste the prompt, because Recipe 1's check rejects fields it doesn't know and decision records carry their own. Ask the assistant to make the two checks agree.
 
 ## The prompt
 
@@ -72,21 +72,9 @@ Three outputs: tests passing, `check` passing and reporting one record, and `sta
 
 ## What this doesn't do
 
-It doesn't write the records for you, and it can't tell whether a record is true. It checks that every record has a row in the README table, but not that the row's title or status still matches the record. It tells you which ones to re-read, and it stops the links between them from rotting. Someone still has to open the record and update `last_verified`.
+It doesn't write the records for you, and it can't tell whether a record is true. It checks that every record has a row in the README table, but not that the row's title or status still matches the record. It lists the records to re-read, and it fails the check when a link between records breaks. Someone still has to open the record and update `last_verified`.
 
-## The working version in this repo
+## Related files
 
 - A record template: [`.claude/skills/architecture-gauntlet/assets/adr-template.md`](../../../.claude/skills/architecture-gauntlet/assets/adr-template.md)
 - A design exercise that ends by writing a record: [`.claude/skills/architecture-gauntlet/`](../../../.claude/skills/architecture-gauntlet/)
-- This repo doesn't ship the link check or the stale list. The prompt above builds them.
-
-## Tested
-
-2026-11-13, in an empty repo holding a README, one source file and one doc, by an assistant given only the prompt.
-
-- It built the template, the first record, the script, 20 passing tests and two CI workflows.
-- Pointing the record at `adr-9999` made `check` fail with `depends_on names adr-9999, which does not exist`.
-- Setting `last_verified` a year back put the record on the `stale` list at 377 days.
-- Not tested: the CI workflows were written but never run on a CI service, and the meeting-transcript prompt was not tried on a transcript.
-
-After the run, the prompt was tightened to state choices the assistant had been left to make. Those lines describe what the tested build already does.
