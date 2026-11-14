@@ -8,7 +8,7 @@ last_reviewed: 2026-11-14
 
 # Single source of truth
 
-An agent that drafts from your docs repeats what they say, so one wrong doc gets copied into every email and spec the agent writes. Build this first: a docs folder where the rules that matter are checks that fail, in a shape Claude Code can find its way around cheaply.
+An agent that drafts from your docs repeats what they say, so a wrong doc gets copied into each email and spec the agent drafts from it. Build this first: a docs folder where the rules that matter are checks that fail, in a shape Claude Code can find its way around cheaply.
 
 This chapter is written for one person who owns the whole system and uses Claude Code. It's a snapshot from November 2026.
 
@@ -23,7 +23,7 @@ Do them in order, because the second prompt assumes the files the first one crea
 
 ## Two terms
 
-A **carrier** is the place a rule lives. There are three: an instruction file that Claude reads, a hook that runs inside Claude's session, and a check in CI.
+A **carrier** is the place a rule lives. A rule can live in an instruction file that Claude reads, in a hook that runs inside Claude's session, or in a check in CI.
 
 A rule is **check-backed** when breaking it makes the CI check fail. Any other rule is advice.
 
@@ -35,17 +35,17 @@ The picture stops holding in one place. An inspector can judge whether the wirin
 
 Everything in the two prompts follows from three ideas.
 
-1. **Agents repeat what they read.** A model that drafts from your docs carries their mistakes forward and doesn't mark them as doubtful. Fix the docs before you add the agent.
-2. **Only a check enforces.** Claude Code's documentation says Claude treats instruction files "as context, not enforced configuration", with "no guarantee of strict compliance". [1] So every rule you can't afford to lose becomes a check-backed rule.
+1. **Agents repeat what they read.** An agent that drafts from your docs carries their mistakes forward and doesn't mark them as doubtful. Fix the docs before you add the agent.
+2. **Only a check enforces.** Claude Code's documentation says Claude treats instruction files "as context, not enforced configuration", with "no guarantee of strict compliance". [1] So make every rule you can't afford to lose check-backed where a script can test it, and review the rest yourself.
 3. **What loads at the start costs attention.** The same documentation sets a target of under 200 lines per instruction file and says longer files reduce adherence. [1] One study of four coding agents found that instruction files raised cost by over 20% on average and didn't generally improve task success. [2] So load only what pays for itself, which here is a short map and an index.
 
 ## One request, start to finish
 
 What does this look like once it's built? Say your repo is for a boat-tour booking tool, and you ask Claude: "Add a short doc about reminders to docs/product, based on what the README says."
 
-Claude starts with the map in `CLAUDE.md`, which lists every doc in one line each. It sees there's no reminders doc, so it reads the README and then searches the code for anything else that mentions reminders or notifications. It finds nothing.
+Claude starts with `CLAUDE.md`, which holds the map and imports the index, one line per doc. It sees there's no reminders doc, so it reads the README and then searches the code for anything else that mentions reminders or notifications. It finds nothing.
 
-It writes `docs/product/reminders.md` as a draft with no owner yet. It lists the README as the source. Because no code backs the claim, it adds a note that the claim is unverified. Then it regenerates the index, runs the check and tells you the check passed.
+It writes `docs/product/reminders.md` as a draft with the owner set to "unassigned". It lists the README as the source. Because no code backs the claim, it adds a note that the claim is unverified. Then it regenerates the index, runs the check and tells you the check passed.
 
 You didn't ask for the status, the source, the note or the index. Claude added them because the map and the rule file told it to, and the check confirmed the result.
 
@@ -57,13 +57,13 @@ That's this hook working as designed. It shows Claude the problem and leaves you
 
 | Question | What the prompts do | Why |
 |---|---|---|
-| Where does truth live? | Markdown in a git repo, changed by pull request | You get history, review and rollback with no extra product. Three teams that build coding agents chose to search files directly over keeping an embeddings store, because a store goes stale and is a second copy to secure. [3][4][5] |
-| Which carrier holds a rule? | CI for anything that must hold; the hook for fast feedback; instruction files for judgement | CI sees every change, whoever made it. A hook only runs in sessions that load it. |
+| Where does truth live? | Markdown in a git repo, changed by pull request | You get history, review and rollback with no extra product. Claude Code and Cline search files directly and keep no embeddings index. Anthropic's reason is stale indexes, and Cline adds that an index is a second copy of the code to secure. [3][4] Sourcegraph replaced embeddings in Cody Enterprise with its own code search, for scale, security and lower maintenance. [5] |
+| Which carrier holds a rule? | CI for anything that must hold; the hook for fast feedback; instruction files for judgement | CI runs on every pull request, whoever opened it. A hook only runs in sessions that load it. |
 | How does Claude find a doc? | A root `CLAUDE.md` of at most 100 lines that imports a generated index | In one evaluation, run by a vendor on its own framework docs, an index inside the instruction file scored 100%, while the same docs scored 53% when the agent had to go and look and 79% when it was told to. [6] The check warns you when the index grows too large to import. |
-| Who keeps the index current? | The script generates it, and CI fails when it's out of date | A rule that says "keep the index updated" is advice. A generated file is check-backed. |
-| Which fields does a doc carry? | Title, description, owner, status, last reviewed. Three statuses. | A short list is one you'll keep to. |
+| Who keeps the index current? | The script generates it, and CI fails when it's out of date | A rule that says "keep the index updated" is advice. A rule that fails CI when the index is out of date is check-backed. |
+| Which fields does a doc carry? | Title, description, owner, status, last reviewed. Three statuses. | Each extra field is one more thing to fill in and to check. |
 | What makes a doc approved? | A named approver and at least one source | One team, at GitHub, stores each fact with a pointer to its evidence, re-checks the pointer before use, and reported a higher pull-request merge rate with the feature on. [7] The Linux kernel's rule for coding assistants puts responsibility on a named person. [8] |
-| How do stale docs surface? | A weekly job keeps one issue listing every doc nobody has confirmed in 180 days | A date nobody looks at is decoration. |
+| How do stale docs surface? | A weekly job keeps one issue listing every doc nobody has confirmed in 180 days | The issue puts the oldest dates in front of you every week. |
 | What about hidden text? | The check fails on invisible characters in docs and instruction files | Researchers have shown that invisible characters in a shared instruction file can steer a coding assistant without showing up in review. [9] |
 
 ## Four things to expect

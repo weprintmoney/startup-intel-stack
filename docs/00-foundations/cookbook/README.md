@@ -15,9 +15,9 @@ Each recipe here adds one capability to a repo you already have, and none of the
 1. Open your coding assistant inside the repo you want to change.
 2. Paste the prompt from the recipe.
 3. Read what it built before you merge it.
-4. Do the "Check it yourself" steps. They take a few minutes. Each one breaks something on purpose and confirms the new check notices.
+4. Do the "Check it yourself" steps. They take a few minutes. Most of them break something on purpose and confirm the new check notices.
 
-Every recipe builds its checks before anything that acts on its own. You can try all four without a paid service. Recipe 4 adds a model-written summary if you give it an API key.
+Every recipe builds its checks before anything that acts on its own. You can try all four without signing up for another service. Recipe 4 adds a model-written summary if you give it an API key.
 
 ## The recipes
 
@@ -34,7 +34,7 @@ Recipe 1 is a full chapter. It explains the choices built into its prompts and l
 
 ## Why this order
 
-Agents repeat what they read. So the first three recipes make what they read checkable. Documents get owners and dates, decisions get reasons, and claims get sources. The fourth is the first agent, and it's one that can only read and report.
+Agents repeat what they read. So the first three recipes make what they read checkable. Documents get owners and dates, decisions get reasons, and claims get sources. The fourth is the first scheduled agent, and it's one that can only read and report.
 
 The two papers in the [parent folder](../README.md) explain the reasoning at length.
 

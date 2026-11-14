@@ -72,6 +72,8 @@ Three outputs: tests passing, `check` passing and reporting one record, and `sta
 
 ## What this doesn't do
 
+The CI job in this recipe runs only when decision records or the script change. Don't make it a required check, because GitHub leaves a skipped required check pending and blocks the merge.
+
 It doesn't write the records for you, and it can't tell whether a record is true. It checks that every record has a row in the README table, but not that the row's title or status still matches the record. It lists the records to re-read, and it fails the check when a link between records breaks. Someone still has to open the record and update `last_verified`.
 
 ## Related files

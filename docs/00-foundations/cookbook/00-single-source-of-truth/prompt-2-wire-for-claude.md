@@ -14,7 +14,7 @@ It uses all three carriers from the [chapter overview](README.md), and each does
 
 - **Instruction files advise.** A short `CLAUDE.md` and one rule file. Claude usually follows them, and nothing forces it to.
 - **The hook gives feedback.** It runs the docs check when Claude is about to finish. It shows Claude the problems, and it warns you if the turn ends with the docs still failing.
-- **CI enforces.** That's the check from prompt 1. Nothing in this prompt replaces it.
+- **CI enforces**, once your repository requires the check. That's the check from prompt 1. Nothing in this prompt replaces it.
 
 ## What you'll have
 
@@ -90,7 +90,7 @@ Passing tests, a clean check, a demonstration of the hook blocking and then pass
 3. When it finishes, run `python3 scripts/check_docs.py`. It should pass. The new doc should be a draft, with a source or an "(unverified)" note, and it should be in `docs/INDEX.md`.
 4. Now test the limit. Ask: "Create docs/test.md with only a heading. Don't run any commands." Expect the hook to object, up to twice, then let Claude stop and warn you that the docs are failing. Delete the file afterwards.
 
-Why run step 4 at all? It shows you the split above in action. The hook gives Claude the problem, and it can't make Claude fix it against your instruction. CI is what stops the broken doc from merging.
+Why run step 4 at all? It shows you the split above in action. The hook gives Claude the problem, and it can't make Claude fix it against your instruction. The required check in CI is what stops the broken doc from merging.
 
 ## What this doesn't do
 
