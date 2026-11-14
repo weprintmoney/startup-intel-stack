@@ -3,7 +3,7 @@ title: "Cookbook"
 description: "One capability at a time: a prompt you paste into your own repo, what you should have afterwards, and how to check it works."
 owner: charlcye
 status: draft
-last_reviewed: 2026-11-13
+last_reviewed: 2026-11-14
 ---
 
 # Cookbook
@@ -25,10 +25,12 @@ Do them in this order. Each one stands alone, but later ones are more useful whe
 
 | # | Recipe | What it adds | You'll know it works when |
 |---|---|---|---|
-| 1 | [One source of truth for your docs](01-docs-source-of-truth.md) | Required fields on every doc, an index, and a check for both | Deleting a doc's owner fails the check |
+| 1 | [Single source of truth](00-single-source-of-truth/README.md) (two prompts) | Checked fields on every doc, a generated index, sources and an approver on approved docs, a stale list, and the wiring for Claude Code | Deleting a doc's owner fails the check |
 | 2 | [Decision records that say when they've gone stale](02-decision-records.md) | Numbered decision records, a link check, and a list of records due for another look | Pointing a record at one that doesn't exist fails the check |
 | 3 | [A vetted-claims list with a retired-claims check](03-vetted-claims.md) | One list of what you can say, one of what you've stopped saying, and a check for the second | Pasting a retired phrase into your README fails the check |
 | 4 | [A weekly signal digest](04-weekly-signal-digest.md) | A scheduled read of feeds you choose, opened as a pull request | A second run on the same day reports nothing new |
+
+Recipe 1 is a full chapter: it explains what was researched, what was chosen and what lost, with sources. Recipes 2 to 4 are earlier and shorter. Each will get the same treatment.
 
 ## Why this order
 
