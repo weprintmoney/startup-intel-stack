@@ -8,7 +8,7 @@ last_reviewed: 2026-11-13
 
 # Recipe 3: A vetted-claims list with a retired-claims check
 
-Products change faster than the sentences written about them. A number that was true in spring stays on the website through autumn, and an agent that drafts copy will repeat whatever it finds. This recipe gives you one place that says what's true to claim today, and a check that catches the old lines wherever they're still sitting.
+Products change faster than the sentences written about them. A number that was true in spring stays on the website through autumn, and an agent that drafts copy will repeat whatever it finds. This recipe gives you one place that says what you can claim today, and a check that fails when a retired claim appears, word for word, in the folders you scan.
 
 Retired claims are the hard ones to catch by reading, because most of them used to be true.
 
@@ -18,11 +18,13 @@ Retired claims are the hard ones to catch by reading, because most of them used 
 - `scripts/check_retired_claims.py`, which reads the retired phrases from that table and fails when one appears in the files you point it at.
 - A CI job that runs it on every pull request.
 
-There is one list. The script reads the table. Nobody maintains a second copy of the phrases inside the script.
+The retired phrases live in one place. The script reads them from the table each time it runs, so there's no second copy inside the script to keep in step.
 
 ## Before you start
 
-Decide which folders hold words a customer might read: a website, a README, sales templates, docs. You'll be asked for them. If you don't know yet, the prompt picks sensible defaults and tells you what it chose.
+Decide which folders hold words a customer might read: a website, a README, sales templates, docs. The assistant picks the folders by looking at your repo and reports what it chose, so check its list against yours.
+
+If you've already done [Recipe 1](00-single-source-of-truth/README.md), say so before you paste the prompt. Recipe 1's check expects every file under `docs/` to start with its required fields, so ask the assistant to make the two checks agree.
 
 ## The prompt
 
@@ -74,18 +76,11 @@ Tests passing, a clean `--all` run, the list of paths being scanned, and a list 
 - When something stops being true, move it to the retired table the same day.
 - Point any agent that writes copy at `docs/claims-vetted.md` and tell it to use those claims word for word.
 
-## The working version in this repo
+## What this doesn't do
 
-- The claims file this template ships: [`docs/04-marketing/content-ops/claims-vetted.md`](../../04-marketing/content-ops/claims-vetted.md)
+It matches retired phrases word for word, so a paraphrase of an old claim passes. It can't tell whether a claim in the first table is true. It warns when a claim's expiry date has passed, and someone still has to check the source.
+
+## Related files
+
+- An example claims file: [`docs/04-marketing/content-ops/claims-vetted.md`](../../04-marketing/content-ops/claims-vetted.md)
 - A gate that checks agent-written specs against it: [`examples/agent-ops-skeleton/agents/claim-verifier/`](../../../examples/agent-ops-skeleton/agents/claim-verifier/)
-- This repo doesn't ship the standalone check script. The prompt above builds it.
-
-## Tested
-
-2026-11-13, in an empty repo holding a README, one source file and one doc, by an assistant given only the prompt.
-
-- It built the claims file, the script, 11 passing tests and a CI workflow, and seeded four claims copied word for word from the README.
-- A retired phrase added to the table and pasted into the README, in different capitals and split across a line break, made the check fail with the file, the line and the "say instead" text. Removing it made the check pass.
-- Not tested: the CI workflow was written but never run on a CI service.
-
-After the run, the prompt was tightened to state choices the assistant had been left to make. Those lines describe what the tested build already does.

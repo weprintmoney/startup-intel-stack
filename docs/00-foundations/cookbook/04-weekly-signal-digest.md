@@ -8,7 +8,7 @@ last_reviewed: 2026-11-13
 
 # Recipe 4: A weekly signal digest
 
-This is a good first agent because it can't break anything. It reads public feeds, writes one file, and opens a pull request for you to read. It also teaches the pattern the bigger agents use: code decides what counts, and the model only writes about what the code handed it.
+This is a good first agent because everything it produces arrives as a pull request you can close. It reads public feeds, writes a dated file of the items that match and opens that pull request. It also teaches a pattern worth keeping for every later agent. Code decides which items count, and the model only writes about the items the code handed it.
 
 ## What you'll have
 
@@ -21,7 +21,7 @@ This is a good first agent because it can't break anything. It reads public feed
 
 - Pick three to six RSS or Atom feeds: competitors' blogs, a standards body, a news source for your field.
 - For the summary step you need an API key for your model provider, saved as a CI secret. Without it the job still runs and lists the items with no summary.
-- On GitHub, the repo setting "Allow GitHub Actions to create and approve pull requests" has to be on, or the job can't open its pull request.
+- On GitHub, the repo setting "Allow GitHub Actions to create and approve pull requests" has to be on, or the job can't open its pull request. The setting covers every workflow in the repo, so check what else runs there first.
 
 ## The prompt
 
@@ -69,24 +69,13 @@ Tests passing, a first run that lists matched items, and a second run that print
 3. Run it without `--dry-run`, then run it again. The second run should report nothing new.
 4. Add the API key secret, trigger the job by hand, and read the pull request it opens. Click three links in the summary. Each should go to an item that says what the sentence says.
 
-If a sentence in the summary has no link, or the link doesn't support it, tighten `signals/PROMPT.md` and say which sentence failed.
+If a sentence in the summary has no link, or the link doesn't support it, tell your assistant which sentence failed and ask it to tighten `signals/PROMPT.md`.
 
 ## What this doesn't do
 
-It doesn't judge whether a source is reliable, and a keyword match isn't understanding. Treat the digest as a reading list with a short introduction.
+It doesn't judge whether a source is reliable. A keyword match lets through items that mention your topic in passing and misses items that use other words. Treat the digest as a reading list with a short introduction.
 
-## The working version in this repo
+## Related files
 
 - A fuller competitive-signals agent: [`.github/workflows/weekly-competitive-signals.yml`](../../../.github/workflows/weekly-competitive-signals.yml)
 - Its siblings: [`weekly-engineering-signals.yml`](../../../.github/workflows/weekly-engineering-signals.yml), [`analyst-signals.yml`](../../../.github/workflows/analyst-signals.yml)
-
-## Tested
-
-2026-11-13, in an empty repo holding a README, one source file and one doc, by an assistant given only the prompt.
-
-- It built the script, 8 passing tests, the summary instructions and a CI workflow.
-- Two runs against the fixture feeds: the first found 3 new items, the second printed `no new items`.
-- A live dry run against the two example feeds it chose parsed 60 items and matched 2.
-- Not tested: the CI workflow never ran, so the summary step, the model's file permissions and the pull request are unproven. Expect to fix something the first time you trigger it.
-
-After the run, the prompt was tightened to state choices the assistant had been left to make. Those lines describe what the tested build already does.

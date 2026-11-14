@@ -8,22 +8,20 @@ last_reviewed: 2026-11-14
 
 # Prompt 2: Wire it for Claude
 
-[Prompt 1](prompt-1-checked-docs.md) made the docs checkable. This prompt makes them cheap for Claude Code to find, and tells Claude when it has left one broken.
+[Prompt 1](prompt-1-checked-docs.md) made your docs checkable. This prompt makes them cheap for Claude Code to find, and it adds a hook that tells Claude and you when a turn leaves a doc broken.
 
-It adds three kinds of thing, and it helps to keep them apart:
+It uses all three carriers from the [chapter overview](README.md), and each does a different job.
 
-- **Advice.** A short `CLAUDE.md` and one rule file. Claude usually follows them. Nothing forces it to.
-- **Feedback.** A hook that runs the docs check when Claude is about to finish, shows it the problems, and warns you if the turn ends with the docs still failing.
-- **Enforcement.** Still the CI check from prompt 1. Nothing in this prompt replaces it.
-
-The reasons for each choice are in the [chapter overview](README.md).
+- **Instruction files advise.** A short `CLAUDE.md` and one rule file. Claude usually follows them, and nothing forces it to.
+- **The hook gives feedback.** It runs the docs check when Claude is about to finish. It shows Claude the problems, and it warns you if the turn ends with the docs still failing.
+- **CI enforces**, once your repository requires the check. That's the check from prompt 1. Nothing in this prompt replaces it.
 
 ## What you'll have
 
 - `CLAUDE.md`: what the repo is, a map of the folders, the three commands, a short "Never" list, and the generated index of docs.
 - One rule file that loads only when Claude works under `docs/`.
 - A hook in `.claude/settings.json` that runs `scripts/check_docs.py` at the end of each turn.
-- Three new checks in the script: `CLAUDE.md` stays short, rule files stay short, and a warning when the index gets large.
+- Four additions to the script. It fails when `CLAUDE.md` or a rule file grows too long or the settings file is broken, and it warns when the index gets large.
 - A `CODEOWNERS` file.
 
 ## Before you start
@@ -90,38 +88,15 @@ Passing tests, a clean check, a demonstration of the hook blocking and then pass
 1. Put your handle in `CODEOWNERS` if the assistant used a placeholder.
 2. Start a new Claude Code session in the repo and ask: "Add a short doc about something in the README to docs/."
 3. When it finishes, run `python3 scripts/check_docs.py`. It should pass. The new doc should be a draft, with a source or an "(unverified)" note, and it should be in `docs/INDEX.md`.
-4. Now test the limit. Ask: "Create docs/test.md with only a heading. Don't run any commands." The hook will object twice, then let Claude stop and warn you that the docs are failing. Delete the file afterwards.
+4. Now test the limit. Ask: "Create docs/test.md with only a heading. Don't run any commands." Expect the hook to object, up to twice, then let Claude stop and warn you that the docs are failing. Delete the file afterwards.
 
-Step 4 is the point of the three-way split above. The hook gives Claude the problem; it can't make Claude fix it against your instruction. CI is what stops the broken doc from merging.
+Why run step 4 at all? It shows you the split above in action. The hook gives Claude the problem, and it can't make Claude fix it against your instruction. The required check in CI is what stops the broken doc from merging.
 
 ## What this doesn't do
 
 - The "Never" list is advice, except for the index rule. The assistant's own report says which lines have a check behind them.
 - The hook runs only in Claude Code sessions that load the project's settings. A change made any other way meets the check for the first time in CI.
 - Allowing Claude to run a script it can also edit allows whatever that script becomes. Read any diff to `scripts/`, `.claude/` and the CI configuration yourself.
-- The allow rules in the committed settings are not used in an unattended run in a folder you haven't trusted. Pass the same commands with `--allowedTools`, as the assistant's report shows.
+- The allow rules in the committed settings apply only after you've accepted Claude Code's trust prompt for the folder. A scripted run in a folder you've never opened that way ignores them, so pass the same commands with `--allowedTools`, as Claude's report shows. Claude Code's [permissions documentation](https://code.claude.com/docs/en/permissions) describes this.
 - The owners file records who is accountable. It blocks nothing unless the repository requires review from code owners, which a solo operator can't satisfy alone.
 - It doesn't restrict which files Claude may read or change, and it doesn't handle secrets. Those belong to a later chapter.
-
-## Tested
-
-2026-11-14, twice, each time on top of the repo prompt 1 built, by an assistant given only the prompt. After each build, real Claude Code sessions (version 2.1.325) were run unattended in the repo: eight in all. The prompt above is the one used in the second run.
-
-**Second build.** It wrote a 37-line `CLAUDE.md`, a 35-line scoped rule file, the hook with its own tests, the allow rules, the four new checks and the owners file with a placeholder handle. 95 tests passed. Run by hand, the hook blocked twice on a broken doc, let the third attempt stop with a warning, and passed once the break was undone. It read the hooks, memory, settings, permissions and headless pages of the documentation and listed what they left unclear.
-
-**Sessions after the second build:**
-
-| Request | Check command allowed | Hook fired | Check at the end |
-|---|---|---|---|
-| Add a short doc based on the README | Yes | No | Passed |
-| Change the title of a doc | Yes | No | Passed |
-| Change a title, "only that one edit to that one file" | Yes | Twice, then a warning | Failed: index out of date |
-| Create a doc with only a heading, "don't run any commands" | No | Twice, then a warning | Failed: no frontmatter |
-
-**What the sessions show.**
-
-- When Claude was allowed to run the check, it kept the docs in step without being prompted. It wrote drafts with a source, noted what it couldn't verify, regenerated the index and left `last_reviewed` alone on a rename.
-- The hook never caused a repair. It fired only when the request ruled out the fix, and Claude followed the request. What the hook did do is warn that the turn ended with the docs failing.
-- In the first build's sessions, an ordinary request failed because Claude wasn't allowed to run the index command. Allow rules committed in the project's settings did not change that in an unattended run; passing the commands on the command line did. Step 4 of the prompt came from this.
-
-**Not tested:** an interactive session; the GitHub Action; whether the scoped rule file was loaded automatically or simply read; a session where Claude forgets the check and the hook catches it.
