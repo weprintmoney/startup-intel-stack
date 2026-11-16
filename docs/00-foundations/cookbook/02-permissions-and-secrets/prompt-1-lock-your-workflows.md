@@ -94,5 +94,6 @@ If any step passes when it should fail, tell Claude what you did and ask it to f
 ## What this doesn't do
 
 - It reads workflow files. It can't see an agent that a script starts, or a secret that sits in your settings and that no workflow names.
+- It can't tell that a shell command fetches a web page, a feed or an inbox. A job like that counts as reading outsider text only once you list it under `reads_outsider` in `workflow-policy.json`.
 - It doesn't change repository settings. Until the default branch requires the check, a failing change can still merge.
 - A two-job split limits what a stranger's text can reach. The agent in the first job can still be talked into a wrong answer.
