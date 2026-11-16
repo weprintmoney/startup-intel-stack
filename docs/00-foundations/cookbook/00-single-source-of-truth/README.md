@@ -8,80 +8,88 @@ last_reviewed: 2026-11-14
 
 # Single source of truth
 
-An agent that drafts from your docs repeats what they say, so a wrong doc gets copied into each email and spec the agent drafts from it. Build this first: a docs folder where the rules that matter are checks that fail, in a shape Claude Code can find its way around cheaply.
+In this chapter you set up a docs folder that both you and Claude Code can trust. Every doc in it says who owns it, what state it's in and when someone last confirmed it. A script checks those rules on every change, and Claude Code loads a short map of the folder so it can find the right doc quickly.
 
-This chapter is written for one person who owns the whole system and uses Claude Code. It's a snapshot from November 2026.
+Do this before you build anything else. An agent that drafts from your docs repeats what they say, and it doesn't flag what it isn't sure of. One wrong doc ends up in every email and spec the agent writes from it, so fix the docs before you add the agent.
 
-## What you'll build
+The chapter assumes you're the only person who owns the system and that you use Claude Code. It describes the tools as they were in November 2026.
 
-| # | Prompt | What it adds | You'll know it works when |
-|---|---|---|---|
-| 1 | [The checked docs repo](prompt-1-checked-docs.md) | Required fields on every doc, a generated index, sources and an approver on approved docs, one script in CI, a weekly stale list | Deleting a doc's owner fails the check |
-| 2 | [Wire it for Claude](prompt-2-wire-for-claude.md) | A short map Claude loads at the start, one scoped rule file, a hook that runs the check before Claude finishes, an owners file | Claude adds a doc and the check still passes |
+## The two prompts
 
-Do them in order, because the second prompt assumes the files the first one creates.
+Run them in order. The second prompt expects the files the first one creates.
 
-## Two terms
+1. **[The checked docs repo](prompt-1-checked-docs.md).** Adds required fields to every doc, a generated index, a source and an approver on every approved doc, one check script that runs in CI, and a weekly list of stale docs. To test it, delete a doc's owner: the check should fail.
+2. **[Wire it for Claude](prompt-2-wire-for-claude.md).** Adds a short map that Claude loads when a session starts, one rule file for writing docs, a hook that runs the check before Claude finishes, and an owners file. To test it, ask Claude to add a doc: the check should still pass.
 
-A **carrier** is the place a rule lives. A rule can live in an instruction file that Claude reads, in a hook that runs inside Claude's session, or in a check in CI.
+The rest of this page explains how the pieces fit together, so you know what each part does when you see it in action.
 
-A rule is **check-backed** when breaking it makes the CI check fail. Any other rule is advice.
+## Where a rule can live
 
-Picture a building site. The sign that says "hard hats required" is an instruction file. The foreman at the gate is a hook, and he's only there on his own shift. The inspector who won't sign off the building is CI, and a site that requires her sign-off can't open without it.
+A rule in this setup can live in one of three places, called **carriers**:
 
-The picture stops holding in one place. An inspector can judge whether the wiring is safe, while CI can only confirm that a doc names a source. You still have to read the source.
+- an **instruction file** that Claude reads, such as `CLAUDE.md`
+- a **hook**, which runs inside Claude's session
+- a **check in CI**, which runs on every pull request
 
-## Three principles
+They aren't equally strong. Think of a building site. The "hard hats required" sign is the instruction file. The foreman at the gate is the hook, and he only works his own shift. The inspector is CI: if the site needs her sign-off, it can't open without it. The comparison has one limit. An inspector can judge whether the wiring is safe, but CI can only confirm that a doc names a source. You still have to read the source.
 
-Everything in the two prompts follows from three ideas.
+A rule is **check-backed** when breaking it makes the CI check fail. Every other rule is advice, however firmly it's worded. Claude Code's own documentation says Claude treats instruction files "as context, not enforced configuration", with "no guarantee of strict compliance". [1] So if a script can test a rule you can't afford to lose, make it check-backed. Review the rest yourself.
 
-1. **Agents repeat what they read.** An agent that drafts from your docs carries their mistakes forward and doesn't mark them as doubtful. Fix the docs before you add the agent.
-2. **Only a check enforces.** Claude Code's documentation says Claude treats instruction files "as context, not enforced configuration", with "no guarantee of strict compliance". [1] So make every rule you can't afford to lose check-backed where a script can test it, and review the rest yourself.
-3. **What loads at the start costs attention.** The same documentation sets a target of under 200 lines per instruction file and says longer files reduce adherence. [1] One study of four coding agents found that instruction files raised cost by over 20% on average and didn't generally improve task success. [2] So load only what pays for itself, which here is a short map and an index.
+That gives each carrier its job:
 
-## One request, start to finish
+- **CI** holds anything that must hold. It runs on every pull request, whoever opened it.
+- **The hook** gives Claude fast feedback. It only runs in sessions that load it.
+- **Instruction files** cover judgement, the things a script can't test.
 
-What does this look like once it's built? Say your repo is for a boat-tour booking tool, and you ask Claude: "Add a short doc about reminders to docs/product, based on what the README says."
+Instruction files also have a cost. Whatever Claude loads at the start of a session takes up its attention. The same documentation sets a target of under 200 lines per instruction file and says longer files reduce adherence. [1] One study of four coding agents found that instruction files raised cost by over 20% on average and didn't generally improve task success. [2] So the prompts load only what earns its place: a short map and an index.
 
-Claude starts with `CLAUDE.md`, which holds the map and imports the index, one line per doc. It sees there's no reminders doc, so it reads the README and then searches the code for anything else that mentions reminders or notifications. It finds nothing.
+## A request, from start to finish
 
-It writes `docs/product/reminders.md` as a draft with the owner set to "unassigned". It lists the README as the source. Because no code backs the claim, it adds a note that the claim is unverified. Then it regenerates the index, runs the check and tells you the check passed.
+Here is the finished setup at work. Suppose your repo holds a booking tool for boat tours, and you ask Claude: "Add a short doc about reminders to docs/product, based on what the README says."
 
-You didn't ask for the status, the source, the note or the index. Claude added them because the map and the rule file told it to, and the check confirmed the result.
+1. Claude starts with `CLAUDE.md`. It holds the map of the repo and imports the index, which lists every doc on one line.
+2. The index shows there's no reminders doc yet. Claude reads the README, then searches the code for anything else about reminders or notifications. It finds nothing.
+3. It writes `docs/product/reminders.md` as a draft, with the owner set to "unassigned" and the README listed as the source. No code backs the claim, so it adds a note that the claim is unverified.
+4. It regenerates the index, runs the check and tells you the check passed.
 
-Now try a request that rules out the fix: "Change this doc's title. Make only that one edit to that one file." Claude changes the title and stops there, so the index is out of date. The hook shows Claude the failing check, up to twice. If Claude keeps to your instruction, the hook then warns you that the turn ended with the docs failing.
+You didn't ask for the status, the source, the note or the new index entry. The map and the rule file told Claude to add them, and the check confirmed it did.
 
-That's this hook working as designed. It shows Claude the problem and leaves your instruction in force. The failing check in CI keeps the change from merging, once your repository requires it.
+Now give an instruction that rules out the fix: "Change this doc's title. Make only that one edit to that one file." Claude changes the title and stops, which leaves the index out of date. The hook shows Claude the failing check, up to twice. If Claude sticks to your instruction, the hook then warns you that the turn ended with the docs failing.
 
-## The choices built into the prompts
+The hook is working as designed here. It tells Claude about the problem but doesn't override your instruction. What stops the change is the failing check in CI, which keeps it from merging once your repository requires that check.
 
-| Question | What the prompts do | Why |
-|---|---|---|
-| Where does truth live? | Markdown in a git repo, changed by pull request | You get history, review and rollback with no extra product. Claude Code and Cline search files directly and keep no embeddings index. Anthropic's reason is stale indexes, and Cline adds that an index is a second copy of the code to secure. [3][4] Sourcegraph replaced embeddings in Cody Enterprise with its own code search, for scale, security and lower maintenance. [5] |
-| Which carrier holds a rule? | CI for anything that must hold; the hook for fast feedback; instruction files for judgement | CI runs on every pull request, whoever opened it. A hook only runs in sessions that load it. |
-| How does Claude find a doc? | A root `CLAUDE.md` of at most 100 lines that imports a generated index | In one evaluation, run by a vendor on its own framework docs, an index inside the instruction file scored 100%, while the same docs scored 53% when the agent had to go and look and 79% when it was told to. [6] The check warns you when the index grows too large to import. |
-| Who keeps the index current? | The script generates it, and CI fails when it's out of date | A rule that says "keep the index updated" is advice. A rule that fails CI when the index is out of date is check-backed. |
-| Which fields does a doc carry? | Title, description, owner, status, last reviewed. Three statuses. | Each extra field is one more thing to fill in and to check. |
-| What makes a doc approved? | A named approver and at least one source | One team, at GitHub, stores each fact with a pointer to its evidence, re-checks the pointer before use, and reported a higher pull-request merge rate with the feature on. [7] The Linux kernel's rule for coding assistants puts responsibility on a named person. [8] |
-| How do stale docs surface? | A weekly job keeps one issue listing every doc nobody has confirmed in 180 days | The issue puts the oldest dates in front of you every week. |
-| What about hidden text? | The check fails on invisible characters in docs and instruction files | Researchers have shown that invisible characters in a shared instruction file can steer a coding assistant without showing up in review. [9] |
+## Why the prompts are built this way
 
-## Four things to expect
+**The docs are Markdown files in a git repo, changed by pull request.** That gives you history, review and rollback without another product. Claude Code and Cline search files directly and keep no embeddings index. Anthropic's reason is that indexes go stale, and Cline adds that an index is a second copy of the code to secure. [3][4] Sourcegraph replaced embeddings in Cody Enterprise with its own code search, for scale, security and lower maintenance. [5]
 
-**Expect the hook to stay quiet.** The map lists the check command and the settings allow it, so Claude can run the check before the hook has to. The hook matters on the day a turn ends with broken docs, because it warns you.
+**Claude finds docs through a root `CLAUDE.md` of at most 100 lines that imports a generated index.** In one evaluation, run by a vendor on its own framework docs, an index inside the instruction file scored 100%. The same docs scored 53% when the agent had to go and look for them, and 79% when it was told to. [6] The check warns you when the index grows too large to import.
 
-**Adding the required fields isn't a review.** When you bring old docs into line, each one keeps the date of its last change, so many will show as stale on the first day. Leave them stale until someone re-reads them.
+**The script generates the index, and CI fails when it's out of date.** A rule that says "keep the index updated" is advice. A check that fails when the index is out of date is check-backed.
 
-**A required check has to run on every pull request.** If a workflow only runs when certain paths change, GitHub leaves its check pending on every other pull request and blocks the merge. [10] So the docs check runs on every change.
+**Every doc carries five fields: title, description, owner, status and last reviewed.** Status has three values. Each extra field would be one more thing to fill in and to check.
 
-**Allow rules need a trusted folder.** Rules in the committed settings let Claude run the check without asking once you've accepted Claude Code's trust prompt for the folder. A scripted run doesn't show that prompt, so in a folder you've never opened interactively, pass the same commands with `--allowedTools`. [11]
+**An approved doc needs a named approver and at least one source.** One team at GitHub stores each fact with a pointer to its evidence and re-checks the pointer before using the fact. They reported a higher pull-request merge rate with the feature on. [7] The Linux kernel's rule for coding assistants puts responsibility on a named person. [8]
+
+**A weekly job keeps one issue listing every doc nobody has confirmed in 180 days.** It puts the oldest dates in front of you every week.
+
+**The check fails on invisible characters in docs and instruction files.** Researchers have shown that invisible characters in a shared instruction file can steer a coding assistant without showing up in review. [9]
+
+## What to expect when you run it
+
+**Expect the hook to stay quiet.** The map lists the check command and the settings allow Claude to run it, so Claude can run the check itself before the hook has to. The hook earns its place on the day a turn ends with broken docs, because that's when it warns you.
+
+**Many old docs will show as stale on the first day.** When you add the required fields to existing docs, each one keeps the date of its last change, because adding fields isn't a review. Leave those docs stale until someone re-reads them.
+
+**The docs check runs on every pull request, not just ones that touch docs.** A required check has to. If a workflow only runs when certain paths change, GitHub leaves its check pending on every other pull request and blocks the merge. [10]
+
+**Unattended runs need the allowed commands passed in.** The allow rules in the committed settings let Claude run the check without asking, once you've accepted Claude Code's trust prompt for the folder. A scripted run doesn't show that prompt. In a folder you've never opened interactively, pass the same commands with `--allowedTools`. [11]
 
 ## What this chapter doesn't do
 
-- It can't tell you whether a doc is true. It tells you which docs have an owner, a source and a recent review.
-- Nothing is enforced until your repository requires the check on the default branch with no bypass. Prompt 1 tells you which settings to turn on.
-- Secrets, tokens and which paths an agent may touch are covered in a later chapter.
-- It doesn't find two docs that contradict each other. Keeping one home per fact makes contradictions rarer.
+- **It can't tell you whether a doc is true.** It tells you which docs have an owner, a source and a recent review.
+- **It enforces nothing until you turn the check on.** Your repository has to require the check on the default branch, with no bypass. Prompt 1 tells you which settings to change.
+- **It doesn't cover secrets, tokens or which paths an agent may touch.** A later chapter does.
+- **It doesn't find two docs that contradict each other.** Keeping one home for each fact makes that rarer.
 
 ## Sources
 
