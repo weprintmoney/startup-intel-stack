@@ -81,7 +81,7 @@ The two failures took different routes for one reason: whether a script could te
 
 ## What to expect when you run it
 
-**Agent pull requests need their own identity.** A pull request opened with the workflow's built-in `GITHUB_TOKEN` starts no workflows, so it gets no checks at all. Use a GitHub App token or a bot account's token. Prompt 1's report covers the setup.
+**Agent pull requests need their own identity.** A pull request opened with the workflow's built-in `GITHUB_TOKEN` doesn't get its checks run automatically. GitHub's documentation says its workflow runs wait in an approval-required state until a person approves them, and a push made with that token outside a pull request starts no workflows. To have checks run without that step, use a GitHub App token or a bot account's token. Prompt 1's report covers the setup.
 
 **Prompt 2 won't label for you.** It runs an agent a few times, builds the sheet and stops. A week's read at the cap of 30 records takes roughly 30 to 60 minutes, as an estimate. If you skip a week, nothing is lost: unlabelled records come up again.
 

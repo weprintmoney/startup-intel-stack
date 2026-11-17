@@ -110,7 +110,7 @@ If any step passes when it should fail, tell Claude what you did and ask it to f
 ## Then finish the job
 
 - **Answer Claude's questions.** Confirm each agent's model, limits, checks and owner.
-- **Set up the identity agent pull requests are opened with.** A pull request opened with the workflow's built-in `GITHUB_TOKEN` starts no workflows, so it gets no checks at all. Use a GitHub App token or a bot account's token, as the report describes.
+- **Set up the identity agent pull requests are opened with.** A pull request opened with the workflow's built-in `GITHUB_TOKEN` doesn't get its checks run automatically. GitHub's documentation says its workflow runs wait in an approval-required state until a person approves them, and a push made with that token outside a pull request starts no workflows. To have checks run without that step, use a GitHub App token or a bot account's token, as the report describes.
 - **Require the check on the default branch.**
 - **Set a spend limit on the account.** The dollar limit on each run is the CLI's estimate, and spend can pass it.
 
