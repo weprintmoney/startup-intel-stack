@@ -10,19 +10,21 @@ last_reviewed: 2026-11-14
 
 This prompt reads every workflow in your repo, tells you what each job can reach, and adds a check that fails when a job can reach too much. It also lists your secrets by name and adds a pause switch, a repository variable that stops a job unless it reads exactly `false`.
 
-Why start with a table of what exists? Because a workflow is usually written to get a job done, and what it can reach is easy to leave unexamined. The [chapter overview](README.md) explains the two terms the check uses, outsider text and power.
+Claude starts by showing you a table of what exists. A workflow is usually written to get a job done, and what it can reach is easy to leave unexamined. The check sorts jobs by whether they read outsider text and whether they hold power; the [chapter overview](README.md#outsider-text-and-power) explains both terms.
 
 ## What you'll have
 
-- `scripts/check_workflows.py`: the workflow check, run in CI on every change.
-- `docs/terminus/secrets.md`: every secret your workflows name, with questions for you about its kind, reach and rotation date.
-- `workflow-policy.json`: the jobs that send or post outside the repo, the jobs that read outsider text in ways the check can't see, and any exceptions you accept.
-- `scripts/require_not_paused.sh`: a pause check that stops the job unless the switch reads exactly `false`.
-- Your existing workflows changed so the check passes, or switched to manual start where it can't.
+- **`scripts/check_workflows.py`**, the workflow check, run in CI on every change.
+- **`docs/terminus/secrets.md`**, listing every secret your workflows name, with questions for you about its kind, reach and rotation date.
+- **`workflow-policy.json`**, naming the jobs that send or post outside the repo, the jobs that read outsider text in ways the check can't see, and any exceptions you accept.
+- **`scripts/require_not_paused.sh`**, a pause check that stops the job unless the switch reads exactly `false`.
+- **Your existing workflows**, changed so the check passes, or switched to manual start where they can't pass.
 
 ## Before you start
 
-Do the [single source of truth](../00-single-source-of-truth/README.md) and [terminus documents](../01-terminus-documents/README.md) chapters first. This prompt assumes GitHub Actions. If a scheduled job sends email or posts anywhere, read "Then finish the job" below before you run the prompt. Adding or replacing its pause check means that job will stop until you create its switch.
+Do the [single source of truth](../00-single-source-of-truth/README.md) and [terminus documents](../01-terminus-documents/README.md) chapters first. This prompt assumes GitHub Actions.
+
+If a scheduled job sends email or posts anywhere, read [Then finish the job](#then-finish-the-job) before you run the prompt. Once the prompt adds or replaces that job's pause check, the job stops until you create its switch.
 
 ## The prompt
 
@@ -68,13 +70,13 @@ Finish by running all the tests, the docs check and the workflow check, and show
 
 ## What you should see
 
-First, a table of every job: its triggers, permissions, secrets, agent tools, and whether it reads outsider text, holds power or both. After the build, you get passing tests, a passing workflow check and the same table showing what changed.
+Before it builds anything, Claude shows you a table of every job: its triggers, permissions, secrets and agent tools, and whether it reads outsider text, holds power or both. After the build you get passing tests, a passing workflow check and the same table, updated to show what changed.
 
-Claude's report also names any workflow it disabled and describes a safe version with the reading and the acting in separate jobs. It lists the repository settings to turn on and every question it needs you to answer.
+The report also names any workflow Claude disabled and describes a safe version of each, with the reading and the acting in separate jobs. It ends with the repository settings to turn on and every question you need to answer.
 
 ## Check it yourself
 
-If Claude created a requirements file for the check, install it with `python3 -m pip install -r` and the file's name. Undo each edit before the next.
+If Claude created a requirements file for the check, install it first with `python3 -m pip install -r` followed by the file's name. Then try each step below, and undo each edit before you start the next.
 
 1. Add `issues: write` under the top-level `permissions:` of any workflow. Run `python3 scripts/check_workflows.py`. It should fail and name the top-level write.
 2. Add a line to any step's `env:` that names a secret you don't have, such as `NEW_KEY: ${{ secrets.NEW_KEY }}`. The check should fail and say the secret isn't in `docs/terminus/secrets.md`.
@@ -85,15 +87,17 @@ If any step passes when it should fail, tell Claude what you did and ask it to f
 
 ## Then finish the job
 
-- Create the pause variable for each job that sends or posts, with the value `false`, when you're ready for it to run. Set it to `true` to pause.
-- Answer the questions in `docs/terminus/secrets.md`. Compare the list with the secrets in your repository settings, and delete any that nothing uses.
-- Confirm the two lists in `workflow-policy.json`.
-- Turn on the repository settings Claude listed, and check each against GitHub's documentation first.
-- For each disabled workflow, ask Claude to build the safe version or leave it off.
+The prompt leaves these steps to you.
+
+- **Create the pause switches.** For each job that sends or posts, create its pause variable with the value `false` when you're ready for it to run. Set it to `true` to pause.
+- **Answer the questions in `docs/terminus/secrets.md`.** Compare the list with the secrets in your repository settings, and delete any that nothing uses.
+- **Confirm the two lists in `workflow-policy.json`.**
+- **Turn on the repository settings Claude listed.** Check each one against GitHub's documentation first.
+- **Decide on each disabled workflow.** Ask Claude to build the safe version, or leave it off.
 
 ## What this doesn't do
 
-- It reads workflow files. It can't see an agent that a script starts, or a secret that sits in your settings and that no workflow names.
-- It can't tell that a shell command fetches a web page, a feed or an inbox. A job like that counts as reading outsider text only once you list it under `reads_outsider` in `workflow-policy.json`.
-- It doesn't change repository settings. Until the default branch requires the check, a failing change can still merge.
-- A two-job split limits what a stranger's text can reach. The agent in the first job can still be talked into a wrong answer.
+- **It reads workflow files.** It can't see an agent that a script starts, or a secret that sits in your settings and that no workflow names.
+- **It can't tell that a shell command fetches a web page, a feed or an inbox.** A job like that counts as reading outsider text only once you list it under `reads_outsider` in `workflow-policy.json`.
+- **It doesn't change repository settings.** Until the default branch requires the check, a failing change can still merge.
+- **A two-job split limits what a stranger's text can reach.** The agent in the first job can still be talked into a wrong answer.

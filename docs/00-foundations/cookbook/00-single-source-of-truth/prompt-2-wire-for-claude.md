@@ -8,25 +8,25 @@ last_reviewed: 2026-11-14
 
 # Prompt 2: Wire it for Claude
 
-[Prompt 1](prompt-1-checked-docs.md) made your docs checkable. This prompt makes them cheap for Claude Code to find, and it adds a hook that tells Claude and you when a turn leaves a doc broken.
+[Prompt 1](prompt-1-checked-docs.md) made your docs checkable. This prompt makes them cheap for Claude Code to find. It also adds a hook that tells Claude, and you, when a turn leaves a doc broken.
 
-It uses all three carriers from the [chapter overview](README.md), and each does a different job.
+The prompt uses all three carriers from the [chapter overview](README.md), and each one has a different job:
 
-- **Instruction files advise.** A short `CLAUDE.md` and one rule file. Claude usually follows them, and nothing forces it to.
-- **The hook gives feedback.** It runs the docs check when Claude is about to finish. It shows Claude the problems, and it warns you if the turn ends with the docs still failing.
-- **CI enforces**, once your repository requires the check. That's the check from prompt 1. Nothing in this prompt replaces it.
+- **Instruction files advise.** Here that means a short `CLAUDE.md` and one rule file. Claude usually follows them, but nothing forces it to.
+- **The hook gives feedback.** It runs the docs check when Claude is about to finish and shows Claude the problems. If the turn ends with the docs still failing, it warns you.
+- **CI enforces**, once your repository requires the check. That's the check from prompt 1, and nothing in this prompt replaces it.
 
 ## What you'll have
 
 - `CLAUDE.md`: what the repo is, a map of the folders, the three commands, a short "Never" list, and the generated index of docs.
 - One rule file that loads only when Claude works under `docs/`.
 - A hook in `.claude/settings.json` that runs `scripts/check_docs.py` at the end of each turn.
-- Four additions to the script. It fails when `CLAUDE.md` or a rule file grows too long or the settings file is broken, and it warns when the index gets large.
+- Four additions to the script: it fails when `CLAUDE.md` or a rule file grows too long or the settings file is broken, and it warns when the index gets large.
 - A `CODEOWNERS` file.
 
 ## Before you start
 
-Do prompt 1 first. Have your GitHub handle ready; the prompt asks for it.
+Do prompt 1 first. Have your GitHub handle ready, because the prompt asks for it.
 
 ## The prompt
 
@@ -81,22 +81,22 @@ Finish by running the tests and the check and showing me both outputs. Then prov
 
 ## What you should see
 
-Passing tests, a clean check, a demonstration of the hook blocking and then passing, the list of documentation pages it read, and a table of which rules are checked and which are advice.
+Claude shows you passing tests and a clean check. Then it demonstrates the hook: first blocking a broken doc, then passing once the break is undone. It ends with the documentation pages it read and a table of which rules are checked and which are advice.
 
 ## Check it yourself
 
-1. Put your handle in `CODEOWNERS` if the assistant used a placeholder.
+1. If Claude used a placeholder in `CODEOWNERS`, put your handle there.
 2. Start a new Claude Code session in the repo and ask: "Add a short doc about something in the README to docs/."
 3. When it finishes, run `python3 scripts/check_docs.py`. It should pass. The new doc should be a draft, with a source or an "(unverified)" note, and it should be in `docs/INDEX.md`.
 4. Now test the limit. Ask: "Create docs/test.md with only a heading. Don't run any commands." Expect the hook to object, up to twice, then let Claude stop and warn you that the docs are failing. Delete the file afterwards.
 
-Why run step 4 at all? It shows you the split above in action. The hook gives Claude the problem, and it can't make Claude fix it against your instruction. The required check in CI is what stops the broken doc from merging.
+Step 4 shows the carriers splitting the work. The hook gives Claude the problem, but it can't make Claude fix it against your instruction. The required check in CI is what stops the broken doc from merging.
 
 ## What this doesn't do
 
-- The "Never" list is advice, except for the index rule. The assistant's own report says which lines have a check behind them.
-- The hook runs only in Claude Code sessions that load the project's settings. A change made any other way meets the check for the first time in CI.
-- Allowing Claude to run a script it can also edit allows whatever that script becomes. Read any diff to `scripts/`, `.claude/` and the CI configuration yourself.
-- The allow rules in the committed settings apply only after you've accepted Claude Code's trust prompt for the folder. A scripted run in a folder you've never opened that way ignores them, so pass the same commands with `--allowedTools`, as Claude's report shows. Claude Code's [permissions documentation](https://code.claude.com/docs/en/permissions) describes this.
-- The owners file records who is accountable. It blocks nothing unless the repository requires review from code owners, which a solo operator can't satisfy alone.
-- It doesn't restrict which files Claude may read or change, and it doesn't handle secrets. Those belong to a later chapter.
+- **Most of the "Never" list is advice.** Only the index rule has a check behind it. Claude's report tells you which lines are checked.
+- **The hook runs only in Claude Code sessions that load the project's settings.** A change made any other way meets the check for the first time in CI.
+- **Allowing Claude to run a script it can also edit allows whatever that script becomes.** Read every diff to `scripts/`, `.claude/` and the CI configuration yourself.
+- **Unattended runs ignore the committed allow rules until you trust the folder.** The rules apply only after you've accepted Claude Code's trust prompt for the folder. In a folder you've never opened interactively, a scripted run ignores them, so pass the same commands with `--allowedTools`, as Claude's report shows. Claude Code's [permissions documentation](https://code.claude.com/docs/en/permissions) describes this.
+- **The owners file blocks nothing.** It records who is accountable. It only blocks changes if the repository requires review from code owners, which a solo operator can't satisfy alone.
+- **It doesn't limit which files Claude may read or change, and it doesn't handle secrets.** A later chapter covers those.

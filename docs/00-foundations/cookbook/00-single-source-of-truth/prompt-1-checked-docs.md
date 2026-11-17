@@ -8,9 +8,9 @@ last_reviewed: 2026-11-14
 
 # Prompt 1: The checked docs repo
 
-This prompt makes your docs checkable before any agent depends on them. When it's done, each doc says who owns it, what state it's in and when someone last confirmed it. An approved doc also names who approved it and what it's based on, and one script fails the check when any of that is missing.
+This prompt makes your docs checkable before any agent depends on them. When it's done, every doc says who owns it, what state it's in and when someone last confirmed it. An approved doc also names who approved it and what it's based on. One script checks all of this, and the check fails when any of it is missing.
 
-Why does a build prompt start with docs? Because every agent you add later will read them and repeat what they say. The [chapter overview](README.md) explains each choice.
+Start with the docs because every agent you add later will read them and repeat what they say. The [chapter overview](README.md) explains each choice.
 
 ## What you'll have
 
@@ -22,7 +22,7 @@ Why does a build prompt start with docs? Because every agent you add later will 
 
 ## Before you start
 
-Open Claude Code in the repo. The script uses only the Python standard library. The weekly issue needs GitHub; everything else works on any CI system.
+Open Claude Code in the repo. The script needs only the Python standard library. The weekly issue needs GitHub. Everything else works on any CI system.
 
 ## The prompt
 
@@ -75,15 +75,15 @@ Finish by running the tests and then the script, and show me both outputs. Then 
 
 ## What you should see
 
-A passing test run, a clean run of `check_docs.py`, a list of docs that need an owner, the repository settings to turn on, and a short list of content problems it noticed but left alone.
+Claude shows you a passing test run and a clean run of `check_docs.py`. Then it lists the docs that need an owner, the repository settings to turn on, and a short list of content problems it noticed but left alone.
 
-If some of your docs already start with a block of fields that doesn't fit the rule, the check will fail at the end and Claude will ask you what to do with them. Answer, then ask it to regenerate the index.
+Some of your docs may already start with a block of fields that doesn't fit the rule. If so, the check fails at the end and Claude asks you what to do with them. Answer, then ask it to regenerate the index.
 
-Docs that haven't changed in 180 days will show as stale straight away, which is correct, because nobody has confirmed them since.
+Docs that haven't changed in 180 days show as stale straight away. That's correct: nobody has confirmed them since.
 
 ## Check it yourself
 
-Each step breaks one thing. Undo each before the next.
+Each step below breaks one thing. Undo it before you start the next.
 
 1. Delete the `owner:` line from any doc and run `python3 scripts/check_docs.py`. It should name the file and say `owner` is missing.
 2. Add a line to the end of `docs/INDEX.md`. The check should say the index differs from the generated one.
@@ -91,19 +91,25 @@ Each step breaks one thing. Undo each before the next.
 4. Change a doc's `status` to `approved`. The check should say it has no `approved_by` and no sources.
 5. Run `python3 scripts/check_docs.py --stale --today 2030-01-01`. Every doc that isn't archived should be listed with its age.
 
-If any step passes silently, tell the assistant what you did and ask it to fix the script and add a test for that case.
+If a step passes without an error, tell Claude what you did and ask it to fix the script and add a test for that case.
 
 ## Then turn on the settings
 
 Until the repository requires the check, a failing change can still be merged.
 
-Open one pull request so the check runs once. Then protect the default branch on GitHub. Require a pull request, require the docs check to pass, and turn off bypassing for everyone, yourself included. GitHub's guide is [About protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches). Check the assistant's list of settings against that page before you apply it. On a private repository, whether you can require checks depends on your plan.
+Open one pull request so the check runs once. Then protect the default branch on GitHub:
+
+- Require a pull request.
+- Require the docs check to pass.
+- Turn off bypassing for everyone, yourself included.
+
+Before you apply the settings Claude listed, compare them with GitHub's guide, [About protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches). On a private repository, whether you can require checks depends on your plan.
 
 ## What this doesn't do
 
-- It can't tell whether a doc is true. The date records when someone says they last confirmed the doc or, for a doc you brought into line, when the file last changed.
-- It checks that `approved_by` holds a handle. It can't see who typed it, so your review of the pull request is what makes approval real.
-- It checks that a source exists. Whether the source supports the doc is for you to read.
-- `README.md` files under `docs/` are exempt from the fields, so don't keep facts in them.
-- A pull request can change the script it is judged by. Read any diff to `scripts/`, the tests and the CI configuration yourself.
-- The hidden-character scan will flag some emoji and can't see HTML comments, which are also invisible in a rendered page.
+- **It can't tell you whether a doc is true.** The date records when someone says they last confirmed the doc. For a doc you brought into line, it records when the file last changed.
+- **It can't see who approved a doc.** It checks that `approved_by` holds a handle, not who typed it. Your review of the pull request is what makes an approval real.
+- **It doesn't read your sources.** It checks that a source exists. You still have to read it to see whether it supports the doc.
+- **It skips `README.md` files under `docs/`.** They don't need the fields, so don't keep facts in them.
+- **It can't protect itself.** A pull request can change the script that judges it. Read every diff to `scripts/`, the tests and the CI configuration yourself.
+- **The hidden-character scan isn't exact.** It flags some emoji, and it can't see HTML comments, which are also invisible on a rendered page.

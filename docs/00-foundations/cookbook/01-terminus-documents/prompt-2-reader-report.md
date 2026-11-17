@@ -8,9 +8,9 @@ last_reviewed: 2026-11-14
 
 # Prompt 2: See which docs your agents lean on
 
-This prompt shows you which documents your agents depend on, by counting the files that name each one. The reader report also fails when a reader names a document that's missing or archived, or a terminus document that's still a draft. A reader is any file that tells an agent or a job what to do and names a document.
+This prompt shows you which documents your agents depend on, by counting the files that name each one. Those files are your readers: a reader is any file that tells an agent or a job what to do and names a document. The reader report also fails when a reader names a document that's missing or archived, or a terminus document that's still a draft.
 
-How do you know which of your docs matter most? You could guess, or you could count. The count can show a draft page that three readers rely on, or an approved document that no reader names. The [chapter overview](README.md) explains each choice.
+Counting replaces guessing at which docs matter most. The count can show a draft page that three readers rely on, or an approved document that no reader names. The [chapter overview](README.md) explains each choice built into the prompt.
 
 ## What you'll have
 
@@ -22,7 +22,7 @@ How do you know which of your docs matter most? You could guess, or you could co
 
 ## Before you start
 
-Do [prompt 1](prompt-1-write-terminus-documents.md) first. It's fine if some of your terminus documents are still drafts.
+Do [prompt 1](prompt-1-write-terminus-documents.md) first. Your terminus documents don't need to be approved yet; drafts are fine.
 
 ## The prompt
 
@@ -60,27 +60,29 @@ Finish by running the tests, the docs check and the reader report, and show me a
 
 ## What you should see
 
-Passing tests, a passing docs check, and the reader table. While any terminus document is a draft, run the report with `--allow-draft-terminus`. It then prints a warning for each reader that names a draft, and it still passes. Without the flag it fails.
+You should get passing tests, a passing docs check and the reader table. While any terminus document is a draft, run the report with `--allow-draft-terminus`. It then prints a warning for each reader that names a draft, and it still passes. Without the flag it fails.
 
 ## Check it yourself
 
-Undo each step before the next.
+Undo each step before you start the next.
 
 1. Add this line to `CLAUDE.md`: "Read docs/product/shipping.md before quoting delivery times." Run `python3 scripts/doc_readers.py --allow-draft-terminus`. It should fail and say the file doesn't exist.
 2. Change one document's `status` to `archived`, add its path to `CLAUDE.md`, and run the same command. It should fail and say the document is archived.
 3. Run `python3 scripts/doc_readers.py --allow-draft-terminus --candidates 1`. It lists every document outside `docs/terminus/` that at least one reader names, apart from README files and the index. Run it again with `--candidates 3` to see only those with three or more readers, which may be none yet.
 4. Start a new Claude Code session and ask for something one of your goals rules out. Claude should read the goals document, leave that part out and tell you which line rules it out.
 
-If step 4 goes ahead without a word, look at the "when to read it" lines in `CLAUDE.md`. Make the one for goals say plainly which kinds of request it covers.
+If Claude goes ahead in step 4 without a word, look at the "when to read it" lines in `CLAUDE.md`, and make the one for goals say plainly which kinds of request it covers.
 
 ## Then keep it current
 
-- Once every terminus document is approved, remove `--allow-draft-terminus` from the CI job. The comment in the workflow reminds you.
-- When a doc appears as a candidate, ask whether its facts belong in a terminus document. The fix can be as small as moving two lines.
-- When a terminus document has no readers, add the missing line to `CLAUDE.md` or archive the document.
+Once every terminus document is approved, remove `--allow-draft-terminus` from the CI job. The comment in the workflow reminds you.
+
+When a doc appears as a candidate, ask whether its facts belong in a terminus document. The fix can be as small as moving two lines.
+
+When a terminus document has no readers, either add the missing line to `CLAUDE.md` or archive the document.
 
 ## What this doesn't do
 
-- It counts readers that name a document, so an agent that finds one by searching goes uncounted.
-- It can't tell whether an agent followed a document it read.
-- If a script names a document it creates later, the reader report fails on it. Remove that script from the readers in `doc-readers.json`.
+- **It only counts readers that name a document.** An agent that finds a document by searching goes uncounted.
+- **It can't tell whether an agent followed a document it read.**
+- **It fails on a document a script creates later.** If a script names a document it creates later, the reader report fails on it. Remove that script from the readers in `doc-readers.json`.

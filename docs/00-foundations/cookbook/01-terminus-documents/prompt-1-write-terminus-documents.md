@@ -10,7 +10,7 @@ last_reviewed: 2026-11-14
 
 This prompt gets the facts that live only in your head into four short documents, in your own words. Claude asks the questions and does the typing. The prompt tells Claude never to mark a document approved, so that step stays with you.
 
-Why an interview and not a template? With a template you fill every box, including the ones an agent could have filled from your code and docs. The interview asks only for what no file contains. The [chapter overview](README.md) explains each choice.
+Claude interviews you instead of handing you a template. A template makes you fill every box, including the ones an agent could have filled from your code and docs. The interview asks only for what no file contains. The [chapter overview](README.md) explains each choice built into the prompt.
 
 ## What you'll have
 
@@ -18,11 +18,12 @@ Why an interview and not a template? With a template you fill every box, includi
 - `docs/terminus/goals.md`: up to three priorities in order, how you'll know, and what you won't trade away.
 - `docs/terminus/boundaries.md`: what an agent always does, asks you about first, and never does.
 - `docs/terminus/glossary.md`: the words that mean something specific in your company, and the words you don't use.
-- `docs/terminus/README.md` and a changelog, new checks in `scripts/check_docs.py`, and four new lines in `CLAUDE.md`.
+- `docs/terminus/README.md` and a changelog.
+- New checks in `scripts/check_docs.py`, and four new lines in `CLAUDE.md`.
 
 ## Before you start
 
-Do both prompts in the [single source of truth](../00-single-source-of-truth/README.md) chapter first. Set aside half an hour when you can answer questions. Have your GitHub handle ready.
+Do both prompts in the [single source of truth](../00-single-source-of-truth/README.md) chapter first. Then set aside half an hour when you can answer questions, and have your GitHub handle ready.
 
 ## The prompt
 
@@ -70,29 +71,31 @@ Finish by regenerating the index, running the tests and the check, and showing m
 
 ## What you should see
 
-First, a short list of what Claude already knows from your files for each document, and what it would have to ask. Then the questions, one document at a time, followed by two yes-or-no questions about the work your agents will do. If you'd rather answer everything at once, say so.
+Claude starts with a short list, for each document, of what it already knows from your files and what it would have to ask. Then come the questions, one document at a time, and two yes-or-no questions about the work your agents will do. If you'd rather answer everything at once, say so.
 
-After your answers, you get four drafts, passing tests and a passing check. Claude's closing report sorts each document's lines by where they came from and lists its open questions. It also shows where your answers disagree and gives the exact commands to approve a document. Read its last section, which says what Claude couldn't do or did differently.
+Once you've answered, you get four drafts, passing tests and a passing check. Claude's closing report sorts each document's lines by where they came from, lists the open questions, shows where your answers disagree and gives the exact commands to approve a document. Read its last section with care: it says what Claude couldn't do or did differently.
 
 ## Check it yourself
 
-Undo the edits you make in steps 2 and 3, and keep the commit. Step 4 is a real approval, so keep that too.
+Steps 2 and 3 are tests, so undo their edits when you're done, but keep the commit. Step 4 is a real approval, so keep that too.
 
 1. Open `docs/terminus/goals.md`. Every line you gave should carry "(owner, " and the date of the interview. Every other statement of fact should name the file it came from or end with "(unverified)".
 2. Pick a document that still has an open question, or add one under "Open questions". Set its `status` to `approved` and add `approved_by` with your handle. Run `python3 scripts/check_docs.py`. It should fail and point at the open question. It will also report the index as out of date, because the index records each status.
 3. Commit everything the prompt built. Then add a line to any terminus document, leave the changelog alone, and run `python3 scripts/check_docs.py --changed-against HEAD`. It should fail and ask for a changelog line.
 4. Answer the open questions in one document, and confirm or remove every line that ends with "(unverified)". Then approve it with the commands Claude gave you, which include a changelog line. The check should pass.
 
-If step 1 turns up a line you didn't say, tell Claude which line and ask where it came from.
+If step 1 turns up a line you didn't say, tell Claude which line it is and ask where it came from.
 
 ## Then finish the set
 
-- Work through the list of disagreements. Settle each one and tell Claude which answer stands.
-- Approve each document once its open questions are gone. An agent can read a draft in the meantime, and prompt 2 warns you about every reader that names one.
-- When you correct an agent twice for the same missing fact, ask Claude to propose a line for the right document.
+Work through the list of disagreements. Settle each one and tell Claude which answer stands.
+
+Approve each document once its open questions are gone. An agent can read a draft in the meantime, and prompt 2 warns you about every reader that names one.
+
+From then on, when you correct an agent twice for the same missing fact, ask Claude to propose a line for the right document.
 
 ## What this doesn't do
 
-- It can't tell whether your answers are right. Read each document before you approve it.
-- The documents advise an agent and don't restrain it. A rule that needs enforcing belongs in a hook or a check.
-- It leaves the product and go-to-market documents unwritten. If you told Claude that agents will do that work, they're listed in `docs/terminus/README.md` under "Not written yet".
+- **It can't tell whether your answers are right.** Read each document before you approve it.
+- **It doesn't restrain an agent.** The documents advise it. A rule that needs enforcing belongs in a hook or a check.
+- **It leaves the product and go-to-market documents unwritten.** If you told Claude that agents will do that work, they're listed in `docs/terminus/README.md` under "Not written yet".
