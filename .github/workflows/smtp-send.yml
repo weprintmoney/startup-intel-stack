@@ -32,12 +32,18 @@ jobs:
       - name: Check SEQUENCES_PAUSED
         id: check-paused
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Read from the vars context, which every job can read. Looking the
+          # variable up through the API needs a permission the built-in token
+          # does not have, and a failed lookup must never read as "not paused".
+          PAUSED: ${{ vars.SEQUENCES_PAUSED }}
         run: |
-          PAUSED=$(gh api repos/${{ github.repository }}/actions/variables/SEQUENCES_PAUSED \
-            --jq '.value' 2>/dev/null || echo "false")
-          echo "paused=${PAUSED}" >> "$GITHUB_OUTPUT"
-          echo "SEQUENCES_PAUSED=${PAUSED}"
+          PAUSED=$(printf '%s' "$PAUSED" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+          if [ "$PAUSED" = "true" ]; then
+            echo "paused=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "paused=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "SEQUENCES_PAUSED=${PAUSED:-<not set>}"
 
       - name: Preflight (mode gate + provider key + config)
         id: gate
