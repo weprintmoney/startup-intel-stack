@@ -10,20 +10,22 @@ last_reviewed: 2026-11-14
 
 This prompt limits what Claude Code can touch on your laptop and in unattended runs. It turns on the sandbox, denies your credential folders and token variables to shell commands, and adds checks that fail a workflow job that runs Claude without a strict permission mode, a turn limit and a timeout.
 
-Does this slow Claude down? Inside the repo, very little. The sandbox lets shell commands write to the repo and reach the hosts you list, so editing, running tests and running the checks go on as before. A command that needs a denied credential or an unlisted host, such as a push, fails or stops to ask you. The [chapter overview](README.md) explains why the sandbox does the heavy lifting and the deny rules are a second layer.
+Inside the repo, this slows Claude down very little. The sandbox lets shell commands write to the repo and reach the hosts you list, so editing, running tests and running the checks go on as before. A command that needs a denied credential or an unlisted host, such as a push, fails or stops to ask you. The [chapter overview](README.md) explains why the sandbox does the heavy lifting and the deny rules are a second layer.
 
 ## What you'll have
 
-- Sandbox settings in `.claude/settings.json`: on, writes limited to the repo, a short host list, credentials denied.
-- Deny rules for Claude's file tools on `.env` files and `secrets` folders.
-- Four new rules in the workflow check for jobs that run the Claude Code command line: the strict permission mode, a turn limit, a job timeout, and a checkout that doesn't leave the repository token in a file the agent can read.
-- `scripts/check_secrets.py` in CI, and a pre-commit hook you install once.
-- A notice in the CI job summary when a pull request touches the files it's checked by.
-- `docs/setup-claude-code.md`: what is enforced and by what, and the steps only you can do.
+- **Sandbox settings in `.claude/settings.json`**: on, writes limited to the repo, a short host list, credentials denied.
+- **Deny rules for Claude's file tools** on `.env` files and `secrets` folders.
+- **Four new rules in the workflow check** for jobs that run the Claude Code command line: the strict permission mode, a turn limit, a job timeout, and a checkout that doesn't leave the repository token in a file the agent can read.
+- **`scripts/check_secrets.py`** in CI, and a pre-commit hook you install once.
+- **A notice in the CI job summary** when a pull request touches the files it's checked by.
+- **`docs/setup-claude-code.md`**, which says what is enforced and by what, and lists the steps only you can do.
 
 ## Before you start
 
-Do [prompt 1](prompt-1-lock-your-workflows.md) first. The prompt tells Claude to test the sandbox with decoy files and to leave your real credential files alone. That's an instruction, so ask Claude which files the test opened.
+Do [prompt 1](prompt-1-lock-your-workflows.md) first.
+
+The prompt tells Claude to test the sandbox with decoy files and to leave your real credential files alone. That's an instruction, so ask Claude afterwards which files the test opened.
 
 ## The prompt
 
@@ -73,9 +75,9 @@ Then tell me:
 
 ## What you should see
 
-Passing tests and checks, then the sandbox test. Claude asks a session to print a decoy file and a decoy token variable and to call a host that isn't on your list, and shows you each one refused. If it can't run the test, it gives you the commands to run it yourself. Claude's report includes a table of every protection, what it stops, what it doesn't, and what enforces it.
+First, passing tests and checks. Then the sandbox test: Claude asks a session to print a decoy file and a decoy token variable and to call a host that isn't on your list, and shows you each one refused. If it can't run the test, it gives you the commands to run it yourself.
 
-If the documentation says a setting can't be set from inside a repo, Claude puts it in `docs/setup-claude-code.md` as a block for your user settings.
+The report includes a table of every protection: what it stops, what it doesn't, and what enforces it. If the documentation says a setting can't be set from inside a repo, Claude puts it in `docs/setup-claude-code.md` as a block for your user settings.
 
 ## Check it yourself
 
@@ -88,15 +90,15 @@ If step 2 succeeds, check that the sandbox is on in the settings Claude Code loa
 
 ## Then finish the job
 
-- Run `bash scripts/install_hooks.sh` once. The prompt leaves this step to you.
-- Add the user-settings block from `docs/setup-claude-code.md`, if Claude wrote one.
-- Confirm the host list and keep it short, because a command can send data to any host on it.
-- In your model provider's console, create one key per kind of agent, each in a workspace with its own spending limit, and record each key's name, never its value, in `docs/terminus/secrets.md`.
+- **Install the pre-commit hook.** Run `bash scripts/install_hooks.sh` once. The prompt leaves this step to you.
+- **Add the user-settings block** from `docs/setup-claude-code.md`, if Claude wrote one.
+- **Confirm the host list and keep it short.** A command can send data to any host on it.
+- **Create your model keys.** In your model provider's console, create one key per kind of agent, each in a workspace with its own spending limit. Record each key's name, never its value, in `docs/terminus/secrets.md`.
 
 ## What this doesn't do
 
-- The sandbox covers shell commands. Claude's file tools, its web tool, hooks and connected servers run outside it.
-- A per-user temporary folder stays writable.
-- The credential scan knows common key formats. It won't catch a password, and it doesn't search your git history.
-- A pre-commit hook can be skipped with `--no-verify`. The scan in CI still runs, but only after the commit is pushed, so revoke any key it finds there.
-- The notice about changed rules informs you. It doesn't block the merge.
+- **The sandbox covers shell commands.** Claude's file tools, its web tool, hooks and connected servers run outside it.
+- **A per-user temporary folder stays writable.**
+- **The credential scan knows common key formats.** It won't catch a password, and it doesn't search your git history.
+- **A pre-commit hook can be skipped with `--no-verify`.** The scan in CI still runs, but only after the commit is pushed, so revoke any key it finds there.
+- **The notice about changed rules informs you.** It doesn't block the merge.
